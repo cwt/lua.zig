@@ -6,21 +6,41 @@ tags: [tables, hashtable, phase-b]
 timestamp: 2026-07-10T00:00:00Z
 ---
 
-## Current State
+## Current State (updated 2026-07-10 — Phase B complete)
 
-The `lua_Table` struct exists but has only an array part:
+`lua_Table` is fully implemented in `src/ltable.zig` with both an array part and a
+chained-scatter hash part. Semantics follow `lua/ltable.c` (array part for integer
+keys `1..asize`, hash part for everything else), but the representation is idiomatic
+Zig rather than the C inverted bit-packed layout (per AGENTS.md §0.1):
 
 ```zig
+pub const Node = struct {
+    key: TValue,
+    val: TValue,
+    next: i32, // absolute node index, 0 = end of chain
+};
+
 pub const lua_Table = struct {
-    flags: u8,
-    ls: i8,
-    array: std.ArrayList(?TValue),
-    i_size: u32,
-    nsize: u32,
+    allocator: std.mem.Allocator,
+    array: std.ArrayList(TValue),   // slot i (1-based) -> array[i-1]; nil = empty
+    node: std.ArrayList(Node),      // hash part; entry present iff key != nil && val != nil
+    lastfree: usize,                // backward scan pointer for free nodes
+    lenhint: usize,                 // hint for #t
 };
 ```
 
-The hash part is missing. All get/set operations are stubs returning nil/no-op.
+Implemented API (in `src/lua.zig`, delegating to `ltable`): `lua_createtable`,
+`lua_gettable`/`lua_getfield`/`lua_geti`/`lua_rawget`/`lua_rawgeti`/`lua_rawgetp`,
+`lua_settable`/`lua_setfield`/`lua_seti`/`lua_rawset`/`lua_rawseti`/`lua_rawsetp`,
+`lua_next`, `lua_rawlen`. `get`/`set`/`getInt`/`setInt`/`next`/`getn` live in
+`ltable.zig`. Hash part grows 2x (min 4) and rehashes on overflow. `next` traverses
+array part by ascending index then hash part by node order. `getn` returns the Lua
+border via binary search over the array part plus a hash fallback.
+
+Note: `lua_gettable`/`lua_settable` currently do **raw** access (no `__index`/
+`__newindex` dispatch) — that is Phase E. OOM in the set paths is swallowed (`catch {}`)
+because the C API has no error return; this will move to the error-union mechanism in
+Phase E.
 
 ## C Reference (`lua/ltable.c` + `lua/ltable.h`)
 

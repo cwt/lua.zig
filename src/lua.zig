@@ -2,6 +2,8 @@ const std = @import("std");
 const lprefix = @import("lprefix.zig");
 const llimits = @import("llimits.zig");
 const lvm = @import("lvm.zig");
+const ltable = @import("ltable.zig");
+const lstring = @import("lstring.zig");
 
 pub const lua_Number = llimits.lua_Number;
 pub const lua_Integer = llimits.lua_Integer;
@@ -88,6 +90,7 @@ pub const LUA_MULTRET: i32 = -1;
 pub const lua_TString = struct {
     s: []const u8,
     len: usize,
+    hash: u32,
 };
 
 pub const lua_Udata = struct {
@@ -125,16 +128,26 @@ pub const TValue = union(enum) {
     }
 
     fn toBoolean(self: TValue) bool {
-        return self != .nil;
+        return switch (self) {
+            .nil => false,
+            .boolean => |b| b,
+            else => true,
+        };
     }
 };
 
+pub const Node = struct {
+    key: TValue,
+    val: TValue,
+    next: i32,
+};
+
 pub const lua_Table = struct {
-    flags: u8,
-    ls: i8,
-    array: std.ArrayList(?TValue),
-    i_size: u32,
-    nsize: u32,
+    allocator: std.mem.Allocator,
+    array: std.ArrayList(TValue),
+    node: std.ArrayList(Node),
+    lastfree: usize,
+    lenhint: usize,
 };
 
 pub const lua_CClosure = struct {
@@ -172,8 +185,15 @@ pub const CallInfo = struct {
 };
 
 pub const global_State = struct {
-    // placeholder — full definition in lstate.zig
+    allocator: std.mem.Allocator,
+    strt: std.array_hash_map.String(*lua_TString),
+    seed: usize,
+    registry: TValue,
 };
+
+inline fn G(L: *lua_State) *global_State {
+    return L.l_G orelse @panic("global state not initialized");
+}
 
 pub const GCObject = struct {
     tt: i8,
@@ -410,7 +430,7 @@ pub fn lua_rawlen(L: *lua_State, idx: i32) usize {
     return switch (v) {
         .string => |s| s.?.len,
         .table => |t| {
-            if (t) |tp| return tp.array.items.len;
+            if (t) |tp| return ltable.getn(tp);
             return 0;
         },
         else => 0,
@@ -536,11 +556,11 @@ pub fn lua_pushinteger(L: *lua_State, n: lua_Integer) void {
 }
 
 pub fn lua_pushlstring(L: *lua_State, s: []const u8, len: usize) ?[]const u8 {
-    const str = L.allocator.create(lua_TString) catch return null;
-    str.* = .{ .s = s[0..len], .len = len };
-    L.stack[L.top] = TValue{ .string = str };
+    const g = G(L);
+    const ts = lstring.luaS_new(g.allocator, &g.strt, g.seed, s[0..len]) catch return null;
+    L.stack[L.top] = TValue{ .string = ts };
     L.top += 1;
-    return str.s;
+    return ts.s;
 }
 
 pub fn lua_pushstring(L: *lua_State, s: []const u8) ?[]const u8 {
@@ -596,57 +616,73 @@ pub fn lua_getglobal(L: *lua_State, name: []const u8) i32 {
     return 1;
 }
 
+fn getTable(L: *lua_State, idx: i32) ?*lua_Table {
+    const v = stackAt(L, idx);
+    if (v == .table) return v.table;
+    return null;
+}
+
 pub fn lua_gettable(L: *lua_State, idx: i32) i32 {
-    _ = idx;
-    lua_pushnil(L);
+    const t = getTable(L, idx) orelse {
+        lua_pushnil(L);
+        return 1;
+    };
+    const key = L.stack[L.top - 1];
+    const val = ltable.get(t, key);
+    L.top -= 1;
+    L.stack[L.top] = val;
+    L.top += 1;
     return 1;
 }
 
 pub fn lua_getfield(L: *lua_State, idx: i32, k: []const u8) i32 {
-    _ = idx;
-    _ = k;
-    lua_pushnil(L);
+    const t = getTable(L, idx) orelse {
+        lua_pushnil(L);
+        return 1;
+    };
+    const g = G(L);
+    const ts = lstring.luaS_new(g.allocator, &g.strt, g.seed, k) catch {
+        lua_pushnil(L);
+        return 1;
+    };
+    const val = ltable.get(t, TValue{ .string = ts });
+    L.stack[L.top] = val;
+    L.top += 1;
     return 1;
 }
 
 pub fn lua_geti(L: *lua_State, idx: i32, n: lua_Integer) i32 {
-    _ = idx;
-    _ = n;
-    lua_pushnil(L);
+    const t = getTable(L, idx) orelse {
+        lua_pushnil(L);
+        return 1;
+    };
+    const val = ltable.getInt(t, n);
+    L.stack[L.top] = val;
+    L.top += 1;
     return 1;
 }
 
 pub fn lua_rawget(L: *lua_State, idx: i32) i32 {
-    _ = idx;
-    lua_pushnil(L);
-    return 1;
+    return lua_gettable(L, idx);
 }
 
 pub fn lua_rawgeti(L: *lua_State, idx: i32, n: lua_Integer) i32 {
-    _ = idx;
-    _ = n;
-    lua_pushnil(L);
-    return 1;
+    return lua_geti(L, idx, n);
 }
 
 pub fn lua_rawgetp(L: *lua_State, idx: i32, p: ?*const anyopaque) i32 {
-    _ = idx;
-    _ = p;
-    lua_pushnil(L);
+    const t = getTable(L, idx) orelse {
+        lua_pushnil(L);
+        return 1;
+    };
+    const val = ltable.get(t, TValue{ .lightud = @constCast(p) });
+    L.stack[L.top] = val;
+    L.top += 1;
     return 1;
 }
 
 pub fn lua_createtable(L: *lua_State, narr: i32, nrec: i32) void {
-    _ = narr;
-    _ = nrec;
-    const t = L.allocator.create(lua_Table) catch return;
-    t.* = .{
-        .flags = 0,
-        .ls = 0,
-        .array = std.ArrayList(?TValue).empty,
-        .i_size = 0,
-        .nsize = 0,
-    };
+    const t = ltable.createTable(L.allocator, @intCast(narr), @intCast(nrec)) catch return;
     L.stack[L.top] = TValue{ .table = t };
     L.top += 1;
 }
@@ -679,37 +715,57 @@ pub fn lua_setglobal(L: *lua_State, name: []const u8) void {
 }
 
 pub fn lua_settable(L: *lua_State, idx: i32) void {
-    _ = L;
-    _ = idx;
+    const t = getTable(L, idx) orelse {
+        L.top -= 2;
+        return;
+    };
+    const key = L.stack[L.top - 2];
+    const val = L.stack[L.top - 1];
+    ltable.set(t, key, val) catch {};
+    L.top -= 2;
 }
 
 pub fn lua_setfield(L: *lua_State, idx: i32, k: []const u8) void {
-    _ = L;
-    _ = idx;
-    _ = k;
+    const t = getTable(L, idx) orelse {
+        L.top -= 1;
+        return;
+    };
+    const g = G(L);
+    const ts = lstring.luaS_new(g.allocator, &g.strt, g.seed, k) catch {
+        L.top -= 1;
+        return;
+    };
+    const val = L.stack[L.top - 1];
+    ltable.set(t, TValue{ .string = ts }, val) catch {};
+    L.top -= 1;
 }
 
 pub fn lua_seti(L: *lua_State, idx: i32, n: lua_Integer) void {
-    _ = L;
-    _ = idx;
-    _ = n;
+    const t = getTable(L, idx) orelse {
+        L.top -= 1;
+        return;
+    };
+    const val = L.stack[L.top - 1];
+    ltable.setInt(t, n, val) catch {};
+    L.top -= 1;
 }
 
 pub fn lua_rawset(L: *lua_State, idx: i32) void {
-    _ = L;
-    _ = idx;
+    lua_settable(L, idx);
 }
 
 pub fn lua_rawseti(L: *lua_State, idx: i32, n: lua_Integer) void {
-    _ = L;
-    _ = idx;
-    _ = n;
+    lua_seti(L, idx, n);
 }
 
 pub fn lua_rawsetp(L: *lua_State, idx: i32, p: ?*anyopaque) void {
-    _ = L;
-    _ = idx;
-    _ = p;
+    const t = getTable(L, idx) orelse {
+        L.top -= 1;
+        return;
+    };
+    const val = L.stack[L.top - 1];
+    ltable.set(t, TValue{ .lightud = @constCast(p) }, val) catch {};
+    L.top -= 1;
 }
 
 pub fn lua_setmetatable(L: *lua_State, objindex: i32) i32 {
@@ -814,8 +870,17 @@ pub fn lua_error(L: *lua_State) i32 {
 }
 
 pub fn lua_next(L: *lua_State, idx: i32) i32 {
-    _ = L;
-    _ = idx;
+    const t = getTable(L, idx) orelse return 0;
+    const key = stackAt(L, -1);
+    const r = ltable.next(t, key);
+    L.top -= 1;
+    if (r) |kv| {
+        L.stack[L.top] = kv.key;
+        L.top += 1;
+        L.stack[L.top] = kv.val;
+        L.top += 1;
+        return 1;
+    }
     return 0;
 }
 
@@ -858,6 +923,13 @@ pub fn lua_closeslot(L: *lua_State, idx: i32) void {
 }
 
 pub fn luaL_newstate(L: *lua_State, gpa: std.mem.Allocator) !void {
+    const g = try gpa.create(global_State);
+    g.* = .{
+        .allocator = gpa,
+        .strt = std.array_hash_map.String(*lua_TString).empty,
+        .seed = @intFromPtr(L) ^ 0x9e3779b97f4a7c15,
+        .registry = TValue{ .nil = {} },
+    };
     const stack = try gpa.alloc(TValue, LUA_MINSTACK + 1);
     L.* = .{
         .tt = 0,
@@ -866,7 +938,7 @@ pub fn luaL_newstate(L: *lua_State, gpa: std.mem.Allocator) !void {
         .allowhook = 0,
         .status = 0,
         .top = 0,
-        .l_G = null,
+        .l_G = g,
         .ci = null,
         .stack = stack,
         .stack_last = stack.len - 1,
@@ -920,6 +992,34 @@ pub fn lua_tostring(L: *lua_State, idx: i32) ?[]const u8 {
     return lua_tolstring(L, idx, null);
 }
 
+fn freeValue(L: *lua_State, v: TValue) void {
+    if (v == .table) {
+        if (v.table) |t| freeTable(L, t);
+    }
+}
+
+fn freeTable(L: *lua_State, t: *lua_Table) void {
+    for (t.array.items) |item| freeValue(L, item);
+    for (t.node.items) |nd| {
+        freeValue(L, nd.key);
+        freeValue(L, nd.val);
+    }
+    ltable.deinit(t);
+}
+
 pub fn lua_close(L: *lua_State) void {
+    if (L.l_G) |g| {
+        var i: usize = 0;
+        while (i < L.top) : (i += 1) {
+            freeValue(L, L.stack[i]);
+        }
+        freeValue(L, g.registry);
+        var it = g.strt.iterator();
+        while (it.next()) |entry| {
+            g.allocator.destroy(entry.value_ptr.*);
+        }
+        g.strt.deinit(g.allocator);
+        L.allocator.destroy(g);
+    }
     L.allocator.free(L.stack);
 }

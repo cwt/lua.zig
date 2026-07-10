@@ -10,6 +10,12 @@ pub fn build(b: *std.Build) void {
         .optimize = optimize,
     });
 
+    const lua_module = b.createModule(.{
+        .root_source_file = b.path("src/lua.zig"),
+        .target = target,
+        .optimize = optimize,
+    });
+
     const exe = b.addExecutable(.{
         .name = "luazig",
         .root_module = root_module,
@@ -24,9 +30,16 @@ pub fn build(b: *std.Build) void {
 
     b.installArtifact(lib);
 
+    const test_mod = b.createModule(.{
+        .root_source_file = b.path("tests/test_basic.zig"),
+        .target = target,
+        .optimize = optimize,
+    });
+    test_mod.addImport("lua", lua_module);
+
     const test_exe = b.addTest(.{
         .name = "test_basic",
-        .root_module = root_module,
+        .root_module = test_mod,
     });
 
     const run_tests = b.addRunArtifact(test_exe);

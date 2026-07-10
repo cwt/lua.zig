@@ -51,35 +51,39 @@ typedef struct stringtable {
 } stringtable;
 ```
 
-## Zig Implementation Strategy
+## Zig Implementation Strategy (updated 2026-07-10 — implemented)
 
 ### lua_TString
 
 ```zig
 pub const lua_TString = struct {
-    // GC common header (via GCObject)
-    tt: i8,
-    marked: u8,
-    // String data
     s: []const u8,       // the string bytes (slice, NOT null-terminated)
     len: usize,          // string length
     hash: u32,           // precomputed hash
-    extra: u8,           // reserved word index for short strings
-    hnext: ?*lua_TString, // next in hash chain
 };
 ```
+
+All strings are interned (the short/long string split is deferred with GC); this is
+sufficient for correctness and keeps table string-key lookups O(1) by pointer.
 
 ### String Table
 
 ```zig
-pub const stringtable = struct {
-    hash: []?*lua_TString,  // open hash table
-    nuse: i32,              // number of strings in use
-    size: i32,              // hash array size (power of 2)
+pub const global_State = struct {
+    allocator: std.mem.Allocator,
+    strt: std.array_hash_map.String(*lua_TString),  // key bytes -> *lua_TString
+    seed: usize,
+    registry: TValue,
 };
 ```
 
-Stored in `global_State.strt`.
+`strt` owns the key bytes; `lua_TString.s` points into that owned storage, so there is
+a single copy of each distinct string. Implemented in `src/lstring.zig`:
+`luaS_new` (intern / reuse), `luaS_hash` (FNV-1a with the state seed), `luaS_eqstr`.
+
+`global_State` is created in `luaL_newstate` and freed in `lua_close` (which also
+destroys every interned `lua_TString` and the `strt` map). `lua_pushlstring` /
+`lua_pushstring` now intern via `luaS_new`.
 
 ### Hash Computation
 

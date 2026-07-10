@@ -136,8 +136,19 @@ are available as a Git subrepo.
   have all been removed.
 - **juicy-main entry point** is in `src/luazig.zig` using `std.process.Init`.
 - **`build.zig`** builds exe (`luazig`) + library (`lua`). Test step works.
-- **7 passing tests** in `tests/test_basic.zig`: nil, boolean, number, integer,
-  string, table type checks and stack push/pop round-trip.
+- **15 passing tests** in `tests/test_basic.zig`: nil, boolean, number, integer,
+   string, table type checks, stack push/pop round-trip, string interning,
+   table setfield/getfield, seti/geti + length, empty/remove length, hash-part
+   string keys, `next` traversal, and stack-key gettable/settable.
+- **Phase B complete — Tables & string interning.**
+   Real `lua_Table` (array part + chained-scatter hash part) in `src/ltable.zig`;
+   string interning in `global_State.strt` (`std.array_hash_map.String`) in
+   `src/lstring.zig`. Table API fully wired: `lua_createtable`, `lua_gettable`/
+   `getfield`/`geti`/`rawget`/`rawgetp`, `lua_settable`/`setfield`/`seti`/
+   `rawset`/`rawseti`/`rawsetp`, `lua_next`, `lua_rawlen`. `lua_gettable`/
+   `lua_settable` are currently raw (no `__index`/`__newindex` — Phase E).
+- **`global_State` is now real** (allocator, `strt`, seed, registry), created in
+   `luaL_newstate` and freed recursively in `lua_close`.
 - **Google OKF v0.1 knowledge bundle** lives in `docs/` and is kept current with
   every phase (architecture, log, glossary). See `docs/README.md`.
 - **`lua/` is a Git subrepo** tracked via `.hgsub` (`[git]git@github.com:lua/lua.git`),
@@ -149,15 +160,14 @@ are available as a Git subrepo.
    stubs. No lexer, parser, compiler, or bytecode loader.
 2. **The VM does not function.** `lvm.run` is a decode skeleton; most opcodes
    are no-ops; no constant-pool loading, function calls, closures, upvalues.
-3. **Tables do not work.** `lua_Table` has a stub `array: std.ArrayList(?TValue)`
-   but no hash part. `lua_settable`/`lua_rawset`/`lua_gettable` are stubs.
-4. **`lua_arith` is simplified** — partial arithmetic ops, no metamethod dispatch.
-5. **No `lua_compare`/`lua_rawequal` semantic depth** — type-only comparison.
-6. **No metatables, no GC, no string interning, no registry, no upvalues, no
-   coroutines, no debug API.**
-7. **`src/lib/*.zig` library bodies are stubs.**
-8. **`src/lstate.zig` `global_State`** has more fields than `lua.zig`'s
-   placeholder — the two need merging when GC/string-interning are implemented.
+3. **`lua_arith` is simplified** — partial arithmetic ops, no metamethod dispatch.
+4. **No `lua_compare`/`lua_rawequal` semantic depth** — type-only comparison.
+5. **No metatables, no GC, no upvalues, no coroutines, no debug API.** String
+   interning and a basic registry now exist.
+6. **`src/lib/*.zig` library bodies are stubs.**
+7. **`src/lstate.zig` is stale/dead code** — its `global_State`/`CallInfo`/
+   `GCUnion` duplicate `lua.zig`'s types and it is NOT in the build graph. It
+   must be reconciled (or deleted) when GC lands.
 
 ---
 
@@ -182,9 +192,11 @@ All four prerequisites from the original §4 list are complete:
 
 ### 4.1 ~~Reconcile the type model~~ ✅
 - Single `lua_State` struct in `lua.zig`. `llimits.zig` stripped of type
-  definitions. `lua_CFunction`/`lua_KFunction`/etc. defined in `lua.zig`.
+   definitions. `lua_CFunction`/`lua_KFunction`/etc. defined in `lua.zig`.
 - Duplicate `lua_State` in `main.zig` deleted. `main.zig` itself deleted.
-- `global_State` placeholder in `lua.zig`; full struct in `lstate.zig`.
+- `global_State` is now real in `lua.zig` (allocator, `strt`, seed, registry),
+   created/freed in `luaL_newstate`/`lua_close`. `lstate.zig` still carries a
+   stale duplicate and is not compiled.
 
 ### 4.2 ~~Give the state a real stack~~ ✅
 - `stack: usize` → `stack: []TValue`. Allocated in `luaL_newstate` via `gpa`.
@@ -204,13 +216,12 @@ All four prerequisites from the original §4 list are complete:
 Work **top-down from the foundation**, validating each layer with a real test
 before moving on. Do not parallelize layers that depend on each other.
 
-### Phase B — Tables & values (next)
-5. Implement `lua_Table` properly: array part (`std.ArrayList(?TValue)`) + hash
-   part (open-addressing modeled on `lua/ltable.c`). Provide
-   `lua_createtable`, `lua_settable`/`lua_gettable`, `lua_rawset`/`lua_rawget`,
-   `lua_seti`/`lua_geti`, `lua_next`, `lua_rawlen` with real hashing.
-6. Real `lua_TString` with interning in `global_State.strt` (dedupe equal
-   strings) — needed for table keys and `lua_pushstring` correctness.
+### Phase B — Tables & values ✅ DONE (2026-07-10)
+Implemented `lua_Table` (array part + chained-scatter hash part) in `src/ltable.zig`
+and string interning in `global_State.strt` (`std.array_hash_map.String`) in
+`src/lstring.zig`. Full table API wired (`lua_createtable`, `lua_gettable`/
+`getfield`/`geti`/`rawget*`/`rawset*`, `lua_next`, `lua_rawlen`). `gettable`/
+`settable` are raw for now (no `__index`/`__newindex` — Phase E). 15/15 tests pass.
 
 ### Phase C — Front-end (lexer/parser/compiler) or loader
 7. **Decision:** either (a) port the lexer+parser+codegen from `lua/llex.c`,
@@ -245,15 +256,17 @@ before moving on. Do not parallelize layers that depend on each other.
 |------|--------|-------------|
 | `build.zig` | ✅ exe+lib build OK; test step works | Expand when adding deps or test targets. |
 | `src/luazig.zig` | ✅ entry point, juicy-main | Thread `io` down to `iolib`/`oslib` when those are implemented. |
-| `src/lua.zig` | ✅ type model, real stack, §0.1-clean stubs | Phase B (tables) + Phase C (front-end). Heart of the project. |
+| `src/lua.zig` | ✅ type model, real stack, real `global_State`, table API wired | Phase C (front-end) + Phase D (VM). Heart of the project. |
 | `src/llimits.zig` | ✅ constants only, no types | Keep as-is. |
 | `src/luaconf.zig` | ✅ version/layout config | Fix `LUA_VDIR` if reference changes. |
-| `src/lstate.zig` | full `global_State`/`CallInfo`/`GCUnion` | Merge with `lua.zig`'s placeholder `global_State` when GC is implemented. |
+| `src/lstate.zig` | full `global_State`/`CallInfo`/`GCUnion` | Stale/dead — reconcile with `lua.zig` (or delete) when GC lands. |
+| `src/ltable.zig` | ✅ `lua_Table` array+hash, `get`/`set`/`getInt`/`setInt`/`next`/`getn`/`deinit` | Add `__index`/`__newindex` dispatch in Phase E. |
+| `src/lstring.zig` | ✅ `luaS_new`/`luaS_hash`/`luaS_eqstr`, interning in `global_State.strt` | Add short/long string split with GC. |
 | `src/lvm.zig` | opcode enum OK; decode fixed; run skeleton | Phase D — implement `lvm.run` for real. |
 | `src/lauxlib.zig` | aux helpers, §0.1-clean stubs | Implement real `luaL_check*`/`luaL_error`/`luaL_ref` once core works. |
 | `src/lualib.zig` | inline stubs for all libraries | Phase F — move to `src/lib/*.zig` bodies. |
 | `src/lib/*.zig` | library bodies present but broken | Phase F — rewrite per module with tests. |
-| `tests/test_basic.zig` | ✅ 7 passing tests | Expand with table, VM, and front-end tests. |
+| `tests/test_basic.zig` | ✅ 15 passing tests | Expand with VM and front-end tests. |
 | `docs/` | ✅ OKF v0.1 bundle (architecture, log, glossary) | Update after every phase; see `docs/README.md`. |
 | `lua/` | ✅ Git subrepo tracking git@github.com:lua/lua.git | Reference source; update with `git pull` when needed. |
 | `.hgsub` | ✅ defines `lua = [git]git@github.com:lua/lua.git` | Add more subrepos if needed. |
@@ -281,11 +294,19 @@ before moving on. Do not parallelize layers that depend on each other.
 
 ## 8. What to work on next
 
-The highest-value next task is **Phase B** — implement tables with a real hash
-part, proper `lua_gettable`/`lua_settable`, and a string interning table. This
-is the immediate dependency for every higher layer (parser needs string keys,
-VM needs table access, libraries need globals).
+Phase B (tables + string interning) is **done**. The immediate next task is
+**Phase C — Front-end**: port the lexer + parser + codegen from `lua/llex.c`,
+`lparser.c`, `lcode.c` to produce `lua_Proto` structures that `lvm` can execute.
+This unblocks `luaL_dostring`/`lua_load` so source scripts can be compiled; it is
+the most self-contained large chunk now that string keys and tables are real.
 
-After Phase B, tackle **Phase D (VM)** and **Phase C (front-end)** in whichever
-order unlocks the demo you need first (a parser-less approach can use precompiled
-bytecode chunks).
+After Phase C, do **Phase D — A working VM** (`lvm.run` for real + function-call
+dispatch to C and Lua closures) so the compiled `lua_Proto` actually executes.
+Phase C and Phase D are independent to *implement* but both are required before a
+script can run end-to-end.
+
+In parallel (or just after), start **Phase E** where it is cheap: metatables +
+`__index`/`__newindex` dispatch on the now-real tables, real error propagation
+for `lua_error`/`lua_pcall`, and a minimal GC (the one-shot recursive free in
+`lua_close` is only a stopgap and would double-free cycles). The stale
+`src/lstate.zig` should be reconciled or deleted as part of the GC work.
