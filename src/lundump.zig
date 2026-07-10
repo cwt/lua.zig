@@ -207,6 +207,8 @@ const LoadState = struct {
 
         while (loaded < @as(usize, @intCast(n))) : (loaded += 1) {
             const sub = try lua.createProto(self.allocator);
+            sub.is_sub = true;
+            try lua.registerGC(self.L, sub);
             sub_protos[loaded] = sub;
             try self.loadFunction(sub);
         }
@@ -354,6 +356,7 @@ pub fn loadBinaryChunk(L: *lua.lua_State, reader: lua.lua_Reader, dt: ?*anyopaqu
 
     const proto = try lua.createProto(L.allocator);
     errdefer lua.destroyProto(L.allocator, proto);
+    try lua.registerGC(L, proto);
 
     try S.loadFunction(proto);
     return proto;

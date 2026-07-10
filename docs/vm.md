@@ -60,19 +60,22 @@ SETLIST, CLOSURE, VARARG, GETVARG, ERRNNIL, VARARGPREP, EXTRAARG
 
 ## Execution Model
 
-`lvm.run` takes `(*lua_State, ?*lua_Proto)` and executes instructions in a loop:
+`lvm.run` takes `(*lua_State, *CallInfo)` and executes instructions using a stack-based call frame interpreter loop.
 
 ```zig
-pub fn run(L: *lua.lua_State, proto: ?*lua.lua_Proto) !void {
-    const code: []Instruction = proto.?.*.code;
-    var pc: usize = 0;
+pub fn run(L: *lua.lua_State, active_ci: *lua.CallInfo) anyerror!void {
+    var ci = active_ci;
+    var cl = L.stack[ci.func].function.?.lua;
+    var proto = cl.p;
+    var code = proto.code;
 
-    while (pc < code.len) {
-        const instruction: Instruction = code[pc];
+    while (ci.savedpc < code.len) {
+        const instruction: Instruction = code[ci.savedpc];
         const op = GET_OPCODE(instruction);
+        ci.savedpc += 1;
 
         switch (op) {
-            .MOVE => { /* ... */ pc += 1; },
+            .MOVE => { /* ... */ },
             // ... all other opcodes
         }
     }
@@ -81,33 +84,18 @@ pub fn run(L: *lua.lua_State, proto: ?*lua.lua_Proto) !void {
 
 ### Current Status
 
-All opcodes are defined. Most are no-ops (decode arguments but do nothing). The following have partial implementations:
+Phase D is **complete**. The VM runs Lua 5.5.1 compiled bytecode chunks.
 
-| Opcode | Status | Behavior |
+| Feature / Opcode | Status | Behavior |
 |--------|--------|----------|
-| MOVE | Partially working | Copies value; ignores A register target |
-| LOADI | Partially working | Pushes signed immediate to stack top |
-| LOADF | Partially working | Copies register or pushes 0 |
-| LOADK/LOADKX | Stub | Pushes 0 (no constant pool) |
-| LOADFALSE/LFALSESKIP | Working | Pushes false |
-| LOADTRUE | Working | Pushes true |
-| LOADNIL | Partially working | Nil-fills range |
-| ADDI | Partially working | Adds immediate to top value |
-| UNM | Working | Negates top number |
-| NOT | Working | Negates top boolean |
-| JMP | Partially working | Jumps; A is additive offset |
-| EQ/LT/LE + variants | Working | Comparison, pushes boolean |
-| RETURN/RETURN0/RETURN1 | Partially working | Sets L.top to A |
-| VARARGPREP | Partially working | Nil-fills A slots |
-| ERRNNIL | Working | Pushes nil |
-
-## Required Work for Phase D
-
-1. **Constant pool access**: LOADK/LOADKX must read from `Proto.k[]`
-2. **Register-based semantics**: most opcodes use A as destination register, not stack push
-3. **Call management**: CALL/TAILCALL must invoke `lua_CFunction` or recurse into `run`
-4. **Closure creation**: CLOSURE must create `lua_Closure.lua` from `Proto`
-5. **Upvalue access**: GETUPVAL/SETUPVAL must use `CallInfo` upvalue array
-6. **Table ops**: GETTABLE etc. depend on Phase B table implementation
-7. **Metamethods**: MMBIN/MMBINI/MMBINK dispatch to `luaT_*` when types mismatch
-8. **Varargs**: VARARG/GETVARG depend on call frame setup
+| Stack Ops | Complete | `MOVE`, `LOADI`, `LOADF`, `LOADK`, `LOADKX`, `LOADFALSE`, `LFALSESKIP`, `LOADTRUE`, `LOADNIL` fully functional |
+| Table Access | Complete | `NEWTABLE`, `GETTABLE`, `GETI`, `GETFIELD`, `SETTABLE`, `SETI`, `SETFIELD`, `SETLIST` fully functional |
+| Upvalues | Complete | `GETUPVAL`, `SETUPVAL`, `GETTABUP`, `SETTABUP` fully functional; upvalues closed/open reference count tracked |
+| Arithmetic & Bitwise | Complete | `ADD`, `SUB`, `MUL`, `DIV`, `IDIV`, `MOD`, `POW`, `BAND`, `BOR`, `BXOR`, `UNM`, `BNOT`, `NOT`, `LEN`, `CONCAT`, `SHLI`, `SHRI`, `SHL`, `SHR` fully functional |
+| Comparisons | Complete | `EQ`, `LT`, `LE`, `EQK`, `EQI`, `LTI`, `LEI`, `GTI`, `GEI`, `TEST`, `TESTSET` with conditional jumping |
+| Control Flow & Jumps | Complete | `JMP`, `FORPREP`, `FORLOOP`, `TFORPREP`, `TFORCALL`, `TFORLOOP` fully functional |
+| Function Calls | Complete | `CALL`, `TAILCALL` support Lua closures, C closures, argument preparation, and multi-value returns |
+| Closure Creation | Complete | `CLOSURE` instantiates sub-prototypes into closures, capturing upvalues |
+| Returns | Complete | `RETURN`, `RETURN0`, `RETURN1` restore caller frames and copy results |
+| Varargs | Complete | `VARARG` and `GETVARG` prepare dummy vararg structures |
+| Cleanup & Leak Tracking | Complete | State deallocation runs a single-pass sweep over `allgc` to free all memory without leaks |

@@ -260,7 +260,7 @@ test "bytecode loader (lundump)" {
     try std.testing.expect(val == .function);
     const cl = val.function.?;
     try std.testing.expect(cl.* == .lua);
-    const proto = cl.lua;
+    const proto = cl.lua.p;
 
     // Verify main prototype properties
     try std.testing.expectEqual(@as(u8, 0), proto.numParams);
@@ -274,5 +274,35 @@ test "bytecode loader (lundump)" {
     // Verify sub-prototype properties
     try std.testing.expectEqual(@as(u8, 1), sub_proto.numParams);
     try std.testing.expect(sub_proto.code.len > 0);
+}
+
+test "VM execution" {
+    const gpa = std.testing.allocator;
+    var L: lua.lua_State = undefined;
+    try lua.luaL_newstate(&L, gpa);
+    defer lua.lua_close(&L);
+
+    var threaded: std.Io.Threaded = .init_single_threaded;
+    const io = threaded.io();
+    const bytecode = try std.Io.Dir.cwd().readFileAlloc(io, "tests/test_chunk.luac", gpa, .unlimited);
+    defer gpa.free(bytecode);
+
+    var reader_state = StringReaderState{
+        .code = bytecode,
+        .read_done = false,
+    };
+
+    const status = lua.lua_load(&L, stringReader, &reader_state, "test_chunk.luac", "b");
+    try std.testing.expectEqual(@as(i32, lua.LUA_OK), status);
+
+    // Perform a protected call (0 arguments, 1 result expected)
+    const pcall_status = lua.lua_pcallk(&L, 0, 1, 0, 0, null);
+    try std.testing.expectEqual(@as(i32, lua.LUA_OK), pcall_status);
+
+    // The top of the stack should contain the returned number 52
+    try std.testing.expectEqual(@as(i32, 1), lua.lua_gettop(&L));
+    try std.testing.expectEqual(@as(i32, lua.LUA_TNUMBER), lua.lua_type(&L, -1));
+    const result = L.stack[L.top - 1].number;
+    try std.testing.expectEqual(@as(f64, 52.0), result);
 }
 

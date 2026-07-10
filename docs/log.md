@@ -130,3 +130,35 @@ Implemented the binary bytecode loader (`lundump.zig`), allowing precompiled Lua
 
 `zig build test` compiled and passed all 16/16 tests successfully.
 
+## Phase D — Working VM (2026-07-10)
+
+### Changes
+
+- **`src/lvm.zig`**:
+  - Implemented the full instruction execution loop in `run(L, active_ci)`.
+  - Re-implemented instruction decoding and encoding helper functions (`GETARG_A`, `GETARG_B`, `GETARG_C`, `GETARG_k`, `GETARG_vB`, `GETARG_vC`, `GETARG_Bx`, `GETARG_Ax`, `GETARG_sBx`, `GETARG_sJ`, etc.) to match the precise Lua 5.5.1 instruction layout and bit widths.
+  - Implemented execution bodies for core instructions, including stack manipulation (`MOVE`, `LOADI`, `LOADF`, `LOADK`, `LOADKX`, `LOADFALSE`, `LFALSESKIP`, `LOADTRUE`, `LOADNIL`), table creation/access (`NEWTABLE`, `GETTABLE`, `GETI`, `GETFIELD`, `SETTABLE`, `SETI`, `SETFIELD`, `SETLIST`), upvalues (`GETUPVAL`, `SETUPVAL`, `GETTABUP`, `SETTABUP`), comparisons with conditional jumping (`EQ`, `LT`, `LE`, `EQK`, `EQI`, `LTI`, `LEI`, `GTI`, `GEI`, `TEST`, `TESTSET`), arithmetic (`ADD`, `SUB`, `MUL`, `DIV`, `IDIV`, `MOD`, `POW`, `BAND`, `BOR`, `BXOR`, `UNM`, `BNOT`, `NOT`, `LEN`, `CONCAT`, `SHLI`, `SHRI`, `SHL`, `SHR`), closure generation (`CLOSURE`), method calls (`SELF`), jumps (`JMP`), calls and tailcalls (`CALL`, `TAILCALL`), loops (`FORPREP`, `FORLOOP`, `TFORPREP`, `TFORCALL`, `TFORLOOP`), and returns (`RETURN`, `RETURN0`, `RETURN1`).
+  - Added support for conditional jumps, tail calls, and multi-value returns.
+- **`src/lua.zig`**:
+  - Re-designed the VM type model: updated `CallInfo` to use stack indices instead of pointers (preventing invalidation during stack reallocation), restructured `lua_LClosure` and `lua_CClosure` and added upvalue lifetime reference counting (`refcount`) to `UpVal`.
+  - Implemented function call preparation and return helpers `precall` and `poscall`.
+  - Implemented upvalue list management functions `findupval` and `closeupvals` to track open upvalues on the stack.
+  - Updated `lua_callk` and `lua_pcallk` to trigger the interpreter.
+  - Added `VMGCObject` struct to trace all heap-allocated objects (tables, closures, upvalues, prototypes) in a singly linked list (`allgc`) on `global_State`.
+  - Updated `lua_close` to perform a single-pass sweep over `allgc` to cleanly reclaim all allocations.
+- **`tests/test_basic.zig`**:
+  - Added a new `VM execution` test case.
+  - Loads and runs a compiled chunk (`tests/test_chunk.luac`) that performs table creation, local scoping, function calls with upvalue lookup, arithmetic, and returns.
+  - Validates that the VM runs, returns `LUA_OK`, and yields the expected result of `52.0` on the stack with zero memory leaks.
+
+### §0.1 Self-Audit
+
+- Stack growth and reallocation handled safely using stack indices inside `CallInfo`.
+- Allocations cleanly tracked in `global_State.allgc` and swept in `lua_close`, eliminating all memory leaks.
+- Tagged unions are exhaustively handled.
+- Threaded memory allocation and error propagation used throughout.
+
+### Verification
+
+`zig build test` compiled and passed all 17/17 tests successfully with zero memory leaks.
+

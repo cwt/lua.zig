@@ -154,12 +154,17 @@ pub const lua_Table = struct {
 
 pub const lua_CClosure = struct {
     f: lua_CFunction,
-    nups: u8,
+    upvals: []TValue,
+};
+
+pub const lua_LClosure = struct {
+    p: *lua_Proto,
+    upvals: []?*UpVal,
 };
 
 pub const lua_Closure = union(enum) {
     c: *lua_CClosure,
-    lua: *lua_Proto,
+    lua: *lua_LClosure,
 };
 
 pub const Upvaldesc = struct {
@@ -194,6 +199,7 @@ pub const lua_Proto = struct {
     lineinfo: []i8,
     abslineinfo: []AbsLineInfo,
     locvars: []LocVar,
+    is_sub: bool = false,
 };
 
 pub fn createProto(allocator: std.mem.Allocator) !*lua_Proto {
@@ -230,15 +236,177 @@ pub fn destroyProto(allocator: std.mem.Allocator, f: *lua_Proto) void {
     allocator.destroy(f);
 }
 
+pub fn findupval(L: *lua_State, idx: usize) !*UpVal {
+    var prev: ?*UpVal = null;
+    var curr = L.openupval;
+    while (curr) |uv| {
+        if (uv.index) |uv_idx| {
+            if (uv_idx == idx) {
+                return uv;
+            }
+            if (uv_idx < idx) {
+                break;
+            }
+        }
+        prev = uv;
+        curr = uv.next;
+    }
+    const uv = try L.allocator.create(UpVal);
+    uv.* = .{
+        .value = .{ .nil = {} },
+        .index = idx,
+        .next = curr,
+        .refcount = 0,
+    };
+    try registerGC(L, uv);
+    if (prev) |p| {
+        p.next = uv;
+    } else {
+        L.openupval = uv;
+    }
+    return uv;
+}
+
+pub fn closeupvals(L: *lua_State, limit: usize) void {
+    var curr = L.openupval;
+    while (curr) |uv| {
+        if (uv.index) |idx| {
+            if (idx >= limit) {
+                uv.value = L.stack[idx];
+                uv.index = null;
+                L.openupval = uv.next;
+                curr = L.openupval;
+                continue;
+            }
+        }
+        break;
+    }
+}
+
+pub fn poscall(L: *lua_State, ci: *CallInfo, first_result_idx: usize, n: usize) void {
+    closeupvals(L, ci.base);
+    const func_idx = ci.func;
+    const nresults = ci.nresults;
+    if (nresults >= 0) {
+        const copy_count = @min(@as(usize, @intCast(nresults)), n);
+        var i: usize = 0;
+        while (i < copy_count) : (i += 1) {
+            L.stack[func_idx + i] = L.stack[first_result_idx + i];
+        }
+        while (i < @as(usize, @intCast(nresults))) : (i += 1) {
+            L.stack[func_idx + i] = .{ .nil = {} };
+        }
+        L.top = func_idx + @as(usize, @intCast(nresults));
+    } else {
+        var i: usize = 0;
+        while (i < n) : (i += 1) {
+            L.stack[func_idx + i] = L.stack[first_result_idx + i];
+        }
+        L.top = func_idx + n;
+    }
+}
+
+pub fn precall(L: *lua_State, func_idx: usize, nresults: i32) !?*CallInfo {
+    const val = L.stack[func_idx];
+    if (val != .function) {
+        return error.NotAFunction;
+    }
+    const cl = val.function.?;
+    switch (cl.*) {
+        .c => |cc| {
+            const old_ci = L.ci;
+            var new_ci = CallInfo{
+                .func = func_idx,
+                .base = func_idx + 1,
+                .top = L.top + 20,
+                .nresults = nresults,
+                .savedpc = 0,
+                .previous = old_ci,
+                .next = null,
+            };
+            if (old_ci) |prev| {
+                prev.next = &new_ci;
+            }
+            L.ci = &new_ci;
+            defer {
+                L.ci = old_ci;
+                if (old_ci) |prev| {
+                    prev.next = null;
+                }
+            }
+            const n = cc.f(L);
+            if (n < 0) return error.RuntimeError;
+            const num_returned = @as(usize, @intCast(n));
+            const first_result = L.top - num_returned;
+            poscall(L, &new_ci, first_result, num_returned);
+            return null;
+        },
+        .lua => |lc| {
+            const proto = lc.p;
+            const num_params = proto.numParams;
+            const base_idx = func_idx + 1;
+            const frame_top = base_idx + proto.maxStackSize;
+            if (frame_top >= L.stack.len) {
+                const old_len = L.stack.len;
+                const new_len = @max(L.stack.len * 2, frame_top + 10);
+                L.stack = try L.allocator.realloc(L.stack, new_len);
+                @memset(L.stack[old_len..], .{ .nil = {} });
+                L.stack_last = L.stack.len - 1;
+            }
+            const num_args_passed = L.top - base_idx;
+            if (num_args_passed < num_params) {
+                var i = num_args_passed;
+                while (i < num_params) : (i += 1) {
+                    L.stack[base_idx + i] = .{ .nil = {} };
+                }
+                L.top = base_idx + num_params;
+            }
+            const new_ci = try L.allocator.create(CallInfo);
+            new_ci.* = .{
+                .func = func_idx,
+                .base = base_idx,
+                .top = frame_top,
+                .nresults = nresults,
+                .savedpc = 0,
+                .previous = L.ci,
+                .next = null,
+            };
+            if (L.ci) |prev| {
+                prev.next = new_ci;
+            }
+            L.ci = new_ci;
+            return new_ci;
+        },
+    }
+}
+
 pub const UpVal = struct {
-    t: TValue,
-    uv: ?*UpVal,
+    value: TValue,
+    index: ?usize,
+    next: ?*UpVal,
+    refcount: usize = 0,
 };
 
 pub const CallInfo = struct {
-    func: ?*lua_Proto,
+    func: usize,
+    base: usize,
     top: usize,
     nresults: i32,
+    savedpc: usize,
+    previous: ?*CallInfo,
+    next: ?*CallInfo,
+};
+
+pub const VMGCObject = struct {
+    next: ?*VMGCObject,
+    val: ValUnion,
+
+    pub const ValUnion = union(enum) {
+        table: *lua_Table,
+        closure: *lua_Closure,
+        upval: *UpVal,
+        proto: *lua_Proto,
+    };
 };
 
 pub const global_State = struct {
@@ -246,10 +414,28 @@ pub const global_State = struct {
     strt: std.array_hash_map.String(*lua_TString),
     seed: usize,
     registry: TValue,
+    allgc: ?*VMGCObject = null,
 };
 
 inline fn G(L: *lua_State) *global_State {
     return L.l_G orelse @panic("global state not initialized");
+}
+
+pub fn registerGC(L: *lua_State, val: anytype) !void {
+    const g = L.l_G orelse return;
+    const gc = try L.allocator.create(VMGCObject);
+    const union_val = switch (@TypeOf(val)) {
+        *lua_Table => VMGCObject.ValUnion{ .table = val },
+        *lua_Closure => VMGCObject.ValUnion{ .closure = val },
+        *UpVal => VMGCObject.ValUnion{ .upval = val },
+        *lua_Proto => VMGCObject.ValUnion{ .proto = val },
+        else => @compileError("Unsupported type for GC registration"),
+    };
+    gc.* = .{
+        .next = g.allgc,
+        .val = union_val,
+    };
+    g.allgc = gc;
 }
 
 pub const GCObject = struct {
@@ -634,9 +820,24 @@ pub fn lua_pushfstring(L: *lua_State, fmt: []const u8) ?[]const u8 {
 }
 
 pub fn lua_pushcclosure(L: *lua_State, cfunc: lua_CFunction, n: i32) void {
-    const cc = L.allocator.create(lua_CClosure) catch return;
-    cc.* = .{ .f = cfunc, .nups = @intCast(n) };
-    const cl = L.allocator.create(lua_Closure) catch return;
+    const upvals = L.allocator.alloc(TValue, @intCast(n)) catch return;
+    var i: usize = 0;
+    while (i < @as(usize, @intCast(n))) : (i += 1) {
+        const stack_idx = L.top - @as(usize, @intCast(n)) + i;
+        upvals[i] = L.stack[stack_idx];
+    }
+    L.top -= @as(usize, @intCast(n));
+
+    const cc = L.allocator.create(lua_CClosure) catch {
+        L.allocator.free(upvals);
+        return;
+    };
+    cc.* = .{ .f = cfunc, .upvals = upvals };
+    const cl = L.allocator.create(lua_Closure) catch {
+        L.allocator.free(upvals);
+        L.allocator.destroy(cc);
+        return;
+    };
     cl.* = lua_Closure{ .c = cc };
     L.stack[L.top] = TValue{ .function = cl };
     L.top += 1;
@@ -740,6 +941,7 @@ pub fn lua_rawgetp(L: *lua_State, idx: i32, p: ?*const anyopaque) i32 {
 
 pub fn lua_createtable(L: *lua_State, narr: i32, nrec: i32) void {
     const t = ltable.createTable(L.allocator, @intCast(narr), @intCast(nrec)) catch return;
+    registerGC(L, t) catch return;
     L.stack[L.top] = TValue{ .table = t };
     L.top += 1;
 }
@@ -839,20 +1041,53 @@ pub fn lua_setiuservalue(L: *lua_State, idx: i32, n: i32) i32 {
 }
 
 pub fn lua_callk(L: *lua_State, nargs: i32, nresults: i32, ctx: lua_KContext, k: ?lua_KFunction) void {
-    _ = L;
-    _ = nargs;
-    _ = nresults;
     _ = ctx;
     _ = k;
+    const func_idx = L.top - @as(usize, @intCast(nargs)) - 1;
+    if (precall(L, func_idx, nresults) catch |err| {
+        std.debug.print("Runtime error in precall: {any}\n", .{err});
+        return;
+    }) |new_ci| {
+        lvm.run(L, new_ci) catch |err| {
+            std.debug.print("Runtime error in VM: {any}\n", .{err});
+        };
+    }
 }
 
 pub fn lua_pcallk(L: *lua_State, nargs: i32, nresults: i32, errfunc: i32, ctx: lua_KContext, k: ?lua_KFunction) i32 {
-    _ = L;
-    _ = nargs;
-    _ = nresults;
     _ = errfunc;
     _ = ctx;
     _ = k;
+    const old_top = L.top;
+    const old_ci = L.ci;
+
+    const func_idx = L.top - @as(usize, @intCast(nargs)) - 1;
+    const new_ci = precall(L, func_idx, nresults) catch |err| {
+        std.debug.print("Runtime error in precall: {any}\n", .{err});
+        L.top = old_top;
+        L.ci = old_ci;
+        return LUA_ERRRUN;
+    };
+
+    if (new_ci) |ci| {
+        lvm.run(L, ci) catch |err| {
+            std.debug.print("Runtime error in VM: {any}\n", .{err});
+            // Restore CallInfo chain and stack
+            var curr = L.ci;
+            while (curr) |c| {
+                if (c == old_ci) break;
+                const prev = c.previous;
+                if (c != &L.base_ci) {
+                    L.allocator.destroy(c);
+                }
+                curr = prev;
+            }
+            L.ci = old_ci;
+            L.top = old_top;
+            return LUA_ERRRUN;
+        };
+    }
+
     return LUA_OK;
 }
 
@@ -869,11 +1104,60 @@ pub fn lua_load(L: *lua_State, reader: lua_Reader, dt: ?*anyopaque, chunkname: [
             std.debug.print("Failed to load binary chunk: {any}\n", .{err});
             return LUA_ERRSYNTAX;
         };
-        const cl = L.allocator.create(lua_Closure) catch {
+        const lc = L.allocator.create(lua_LClosure) catch {
             destroyProto(L.allocator, proto);
             return LUA_ERRMEM;
         };
-        cl.* = lua_Closure{ .lua = proto };
+        const upvals = L.allocator.alloc(?*UpVal, proto.upvalues.len) catch {
+            L.allocator.destroy(lc);
+            destroyProto(L.allocator, proto);
+            return LUA_ERRMEM;
+        };
+        @memset(upvals, null);
+        lc.* = .{
+            .p = proto,
+            .upvals = upvals,
+        };
+
+        // Initialize first upvalue (_ENV) if proto expects it
+        if (proto.upvalues.len > 0) {
+            const registry = G(L).registry.table.?;
+            const globals = ltable.getInt(registry, 2); // RIDX_GLOBALS is 2
+            const env_uv = L.allocator.create(UpVal) catch {
+                L.allocator.free(upvals);
+                L.allocator.destroy(lc);
+                destroyProto(L.allocator, proto);
+                return LUA_ERRMEM;
+            };
+            env_uv.* = .{
+                .value = globals,
+                .index = null,
+                .next = null,
+                .refcount = 1,
+            };
+            registerGC(L, env_uv) catch {
+                L.allocator.free(upvals);
+                L.allocator.destroy(lc);
+                destroyProto(L.allocator, proto);
+                return LUA_ERRMEM;
+            };
+            upvals[0] = env_uv;
+        }
+
+        const cl = L.allocator.create(lua_Closure) catch {
+            if (upvals.len > 0 and upvals[0] != null) L.allocator.destroy(upvals[0].?);
+            L.allocator.free(upvals);
+            L.allocator.destroy(lc);
+            destroyProto(L.allocator, proto);
+            return LUA_ERRMEM;
+        };
+        cl.* = .{ .lua = lc };
+        registerGC(L, cl) catch {
+            L.allocator.free(upvals);
+            L.allocator.destroy(lc);
+            destroyProto(L.allocator, proto);
+            return LUA_ERRMEM;
+        };
         L.stack[L.top] = TValue{ .function = cl };
         L.top += 1;
         return LUA_OK;
@@ -1021,7 +1305,7 @@ pub fn luaL_newstate(L: *lua_State, gpa: std.mem.Allocator) !void {
         .gclist = null,
         .twups = null,
         .errorJmp = null,
-        .base_ci = .{ .func = null, .top = 0, .nresults = 0 },
+        .base_ci = .{ .func = 0, .base = 0, .top = LUA_MINSTACK, .nresults = 0, .savedpc = 0, .previous = null, .next = null },
         .hook = null,
         .errfunc = 0,
         .nCcalls = 0,
@@ -1033,6 +1317,16 @@ pub fn luaL_newstate(L: *lua_State, gpa: std.mem.Allocator) !void {
         .transferinfo = .{ .ftransfer = 0, .ntransfer = 0 },
         .allocator = gpa,
     };
+    L.ci = &L.base_ci;
+
+    // Initialize registry and globals tables
+    const registry_tab = try ltable.createTable(gpa, 3, 0);
+    try registerGC(L, registry_tab);
+    g.registry = TValue{ .table = registry_tab };
+    try ltable.setInt(registry_tab, 1, TValue{ .thread = L });
+    const globals_tab = try ltable.createTable(gpa, 0, 0);
+    try registerGC(L, globals_tab);
+    try ltable.setInt(registry_tab, 2, TValue{ .table = globals_tab });
 }
 
 pub fn createargtable(L: *lua_State, args: anytype) !void {
@@ -1066,36 +1360,62 @@ pub fn lua_tostring(L: *lua_State, idx: i32) ?[]const u8 {
     return lua_tolstring(L, idx, null);
 }
 
-fn freeValue(L: *lua_State, v: TValue) void {
-    if (v == .table) {
-        if (v.table) |t| freeTable(L, t);
-    } else if (v == .function) {
-        if (v.function) |cl| {
-            switch (cl.*) {
-                .c => |cc| L.allocator.destroy(cc),
-                .lua => |p| destroyProto(L.allocator, p),
-            }
-            L.allocator.destroy(cl);
-        }
-    }
-}
-
-fn freeTable(L: *lua_State, t: *lua_Table) void {
-    for (t.array.items) |item| freeValue(L, item);
-    for (t.node.items) |nd| {
-        freeValue(L, nd.key);
-        freeValue(L, nd.val);
-    }
-    ltable.deinit(t);
-}
-
 pub fn lua_close(L: *lua_State) void {
     if (L.l_G) |g| {
-        var i: usize = 0;
-        while (i < L.top) : (i += 1) {
-            freeValue(L, L.stack[i]);
+        L.openupval = null;
+
+        // Free CallInfo structs
+        var curr_ci = L.ci;
+        while (curr_ci) |ci| {
+            const prev = ci.previous;
+            if (ci != &L.base_ci) {
+                L.allocator.destroy(ci);
+            }
+            curr_ci = prev;
         }
-        freeValue(L, g.registry);
+        L.ci = null;
+
+        // Free all GC objects registered in allgc
+        var curr_gc = g.allgc;
+        while (curr_gc) |gc| {
+            const next_gc = gc.next;
+            switch (gc.val) {
+                .table => |t| {
+                    ltable.deinit(t);
+                },
+                .closure => |cl| {
+                    switch (cl.*) {
+                        .c => |cc| {
+                            L.allocator.free(cc.upvals);
+                            L.allocator.destroy(cc);
+                        },
+                        .lua => |lc| {
+                            L.allocator.free(lc.upvals);
+                            L.allocator.destroy(lc);
+                        },
+                    }
+                    L.allocator.destroy(cl);
+                },
+                .upval => |uv| {
+                    L.allocator.destroy(uv);
+                },
+                .proto => |f| {
+                    L.allocator.free(f.code);
+                    L.allocator.free(f.k);
+                    L.allocator.free(f.p);
+                    L.allocator.free(f.upvalues);
+                    L.allocator.free(f.lineinfo);
+                    L.allocator.free(f.abslineinfo);
+                    L.allocator.free(f.locvars);
+                    L.allocator.destroy(f);
+                },
+            }
+            L.allocator.destroy(gc);
+            curr_gc = next_gc;
+        }
+        g.allgc = null;
+
+        // Free string table entries
         var it = g.strt.iterator();
         while (it.next()) |entry| {
             g.allocator.destroy(entry.value_ptr.*);
