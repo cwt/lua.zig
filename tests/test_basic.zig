@@ -539,4 +539,93 @@ test "VM execution of arithmetic metamethod" {
     try std.testing.expectEqual(@as(f64, 999.0), result);
 }
 
+test "__eq metamethod via C API" {
+    const gpa = std.testing.allocator;
+    var L: lua.lua_State = undefined;
+    try lua.luaL_newstate(&L, gpa);
+    defer lua.lua_close(&L);
+
+    lua.lua_createtable(&L, 0, 0); // t1 (idx 1)
+    const t1_idx = lua.lua_gettop(&L);
+
+    lua.lua_createtable(&L, 0, 0); // t2 (idx 2)
+    const t2_idx = lua.lua_gettop(&L);
+
+    lua.lua_createtable(&L, 0, 1); // mt (idx 3)
+    const mt_idx = lua.lua_gettop(&L);
+
+    const EqFn = struct {
+        fn eq(LS: *lua.lua_State) i32 {
+            lua.lua_pushboolean(LS, 1);
+            return 1;
+        }
+    };
+    lua.lua_pushcfunction(&L, EqFn.eq);
+    lua.lua_setfield(&L, mt_idx, "__eq");
+
+    // Set mt on t1
+    lua.lua_pushvalue(&L, mt_idx);
+    _ = lua.lua_setmetatable(&L, t1_idx);
+
+    // Set mt on t2
+    lua.lua_pushvalue(&L, mt_idx);
+    _ = lua.lua_setmetatable(&L, t2_idx);
+
+    lua.lua_pop(&L, 1); // pop mt
+
+    const cond = lua.lua_compare(&L, t1_idx, t2_idx, lua.LUA_OPEQ);
+    try std.testing.expectEqual(@as(i32, 1), cond);
+}
+
+test "__lt and __le metamethods via C API" {
+    const gpa = std.testing.allocator;
+    var L: lua.lua_State = undefined;
+    try lua.luaL_newstate(&L, gpa);
+    defer lua.lua_close(&L);
+
+    lua.lua_createtable(&L, 0, 0); // t1 (idx 1)
+    const t1_idx = lua.lua_gettop(&L);
+
+    lua.lua_createtable(&L, 0, 0); // t2 (idx 2)
+    const t2_idx = lua.lua_gettop(&L);
+
+    lua.lua_createtable(&L, 0, 2); // mt (idx 3)
+    const mt_idx = lua.lua_gettop(&L);
+
+    const LtFn = struct {
+        fn lt(LS: *lua.lua_State) i32 {
+            lua.lua_pushboolean(LS, 1);
+            return 1;
+        }
+    };
+    lua.lua_pushcfunction(&L, LtFn.lt);
+    lua.lua_setfield(&L, mt_idx, "__lt");
+
+    const LeFn = struct {
+        fn le(LS: *lua.lua_State) i32 {
+            lua.lua_pushboolean(LS, 1);
+            return 1;
+        }
+    };
+    lua.lua_pushcfunction(&L, LeFn.le);
+    lua.lua_setfield(&L, mt_idx, "__le");
+
+    // Set mt on t1
+    lua.lua_pushvalue(&L, mt_idx);
+    _ = lua.lua_setmetatable(&L, t1_idx);
+
+    // Set mt on t2
+    lua.lua_pushvalue(&L, mt_idx);
+    _ = lua.lua_setmetatable(&L, t2_idx);
+
+    lua.lua_pop(&L, 1); // pop mt
+
+    const cond_lt = lua.lua_compare(&L, t1_idx, t2_idx, lua.LUA_OPLT);
+    try std.testing.expectEqual(@as(i32, 1), cond_lt);
+
+    const cond_le = lua.lua_compare(&L, t1_idx, t2_idx, lua.LUA_OPLE);
+    try std.testing.expectEqual(@as(i32, 1), cond_le);
+}
+
+
 

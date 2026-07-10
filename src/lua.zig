@@ -858,19 +858,15 @@ pub fn lua_rawequal(L: *lua_State, idx1: i32, idx2: i32) i32 {
 pub fn lua_compare(L: *lua_State, idx1: i32, idx2: i32, op: i32) i32 {
     const a = stackAt(L, idx1);
     const b = stackAt(L, idx2);
-    return switch (op) {
-        0 => lua_rawequal(L, idx1, idx2),
-        1 => if (a == .number and b == .number)
-            if (a.number < b.number) 1 else 0
-        else
-            0,
-        2 => if (a == .number and b == .number)
-            if (a.number <= b.number) 1 else 0
-        else
-            0,
-        else => 0,
+    const res = switch (op) {
+        LUA_OPEQ => ltm.luaT_equalobj(L, a, b) catch false,
+        LUA_OPLT => ltm.luaT_lt(L, a, b) catch false,
+        LUA_OPLE => ltm.luaT_le(L, a, b) catch false,
+        else => false,
     };
+    return if (res) 1 else 0;
 }
+
 
 pub fn lua_pushnil(L: *lua_State) void {
     L.stack[L.top] = TValue{ .nil = {} };

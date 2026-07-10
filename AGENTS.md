@@ -136,12 +136,12 @@ are available as a Git subrepo.
   have all been removed.
 - **juicy-main entry point** is in `src/luazig.zig` using `std.process.Init`.
 - **`build.zig`** builds exe (`luazig`) + library (`lua`). Test step works.
-- **22 passing tests** in `tests/test_basic.zig`: nil, boolean, number, integer,
+- **24 passing tests** in `tests/test_basic.zig`: nil, boolean, number, integer,
    string, table type checks, stack push/pop round-trip, string interning,
    table setfield/getfield, seti/geti + length, empty/remove length, hash-part
    string keys, `next` traversal, stack-key gettable/settable, bytecode loader,
-   VM execution, and **5 metamethod tests** (`__index` function, `__index` table
-   chain, `__newindex` function, `__add` via C API, and `__add` via VM execution).
+   VM execution, and **8 metamethod tests** (`__index` function, `__index` table
+   chain, `__newindex` function, `__add` via C API, `__add` via VM execution, `__eq` via C API, `__lt`/`__le` via C API).
 - **Phase B complete — Tables & string interning.**
    Real `lua_Table` (array part + chained-scatter hash part) in `src/ltable.zig`;
    string interning in `global_State.strt` (`std.array_hash_map.String`) in
@@ -163,22 +163,21 @@ are available as a Git subrepo.
    providing the authoritative Lua 5.5.1 C reference for porting.
 - **Repository initialized** with `.hgignore`, `.hgsub`, `LICENSE`, `AGENTS.md`.
 
-- **Phase E partially complete — Metamethod dispatch for __index/__newindex and Arithmetic Metamethods.**
+- **Phase E partially complete — Metamethod dispatch for __index/__newindex, Arithmetic, and Comparison Metamethods.**
    `luaV_gettable` and `luaV_settable` in `src/ltm.zig` follow `__index`/`__newindex`
    chains (up to MAXTAGLOOP=2000). All table-access opcodes in `src/lvm.zig` and all
    C API table functions (`lua_gettable`, `lua_getfield`, `lua_geti`, `lua_settable`,
    `lua_setfield`, `lua_seti`) now dispatch through these. Raw variants (`lua_rawget*`,
    `lua_rawset*`) remain raw. `idxPtr` now frame-relative for positive indices.
    `lua_pushcfunction`, `lua_upvalueindex`, `lua_getupvalue`, `lua_setupvalue` added.
-   Arithmetic metamethods (`__add`, `__sub`, etc.) fully implemented in `lua_arith` and VM execution with fallback.
-   C closures now GC-registered (no memory leaks). **5 metamethod tests pass.**
+   Arithmetic and comparison metamethods (`__add`, `__eq`, `__lt`, `__le`, etc.) fully implemented in C API and VM execution with fallback.
+   C closures now GC-registered (no memory leaks). **8 metamethod tests pass.**
 
 ### What is NOT done (blocking next phase)
 1. **No source text compilation.** Lexer (`llex.c`), parser (`lparser.c`), and code generator (`lcode.c`) are not implemented (we rely on precompiled bytecode). `luaL_dostring` is still a stub.
-2. **No `lua_compare`/`lua_rawequal` semantic depth** — type-only comparison.
-3. **No coroutines, no debug API.** Memory allocations are tracked in a flat sweep list `allgc` for leak-free teardowns, but there is no real garbage collector sweep phase yet.
-4. **`src/lib/*.zig` library bodies are stubs.**
-5. **`src/lstate.zig` is stale/dead code** — its `global_State`/`CallInfo`/
+2. **No coroutines, no debug API.** Memory allocations are tracked in a flat sweep list `allgc` for leak-free teardowns, but there is no real garbage collector sweep phase yet.
+3. **`src/lib/*.zig` library bodies are stubs.**
+4. **`src/lstate.zig` is stale/dead code** — its `global_State`/`CallInfo`/
    `GCUnion` duplicate `lua.zig`'s types and it is NOT in the build graph. It
    must be reconciled (or deleted) when GC lands.
 
@@ -276,7 +275,7 @@ and string interning in `global_State.strt` (`std.array_hash_map.String`) in
 | `src/lauxlib.zig` | aux helpers, §0.1-clean stubs | Implement real `luaL_check*`/`luaL_error`/`luaL_ref` once core works. |
 | `src/lualib.zig` | inline stubs for all libraries | Phase F — move to `src/lib/*.zig` bodies. |
 | `src/lib/*.zig` | library bodies present but broken | Phase F — rewrite per module with tests. |
-| `tests/test_basic.zig` | ✅ 20 passing tests | Expand with more metamethod tests (arithmetic, __len, error handling). |
+| `tests/test_basic.zig` | ✅ 24 passing tests | Expand with more metamethod tests (arithmetic, __len, error handling). |
 | `docs/` | ✅ OKF v0.1 bundle (architecture, log, glossary) | Update after every phase; see `docs/README.md`. |
 | `lua/` | ✅ Git subrepo tracking git@github.com:lua/lua.git | Reference source; update with `git pull` when needed. |
 | `.hgsub` | ✅ defines `lua = [git]git@github.com:lua/lua.git` | Add more subrepos if needed. |
