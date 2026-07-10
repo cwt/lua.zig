@@ -75,7 +75,7 @@ justification in your commit message, and even then prefer the Zig way.
 ### 0.2 How to work
 
 - Before writing any function, ask: *"What would a native Zig programmer write
-  here?"* — then write that. Diff against `/lua/` only for **semantics** (opcode
+  here?"* — then write that. Diff against `lua/` only for **semantics** (opcode
   behavior, algorithm), never for **structure**.
 - Prefer `defer`/`errdefer` for cleanup over manual `free`.
 - Prefer `anytype` + `comptime` for generic helpers (skill §4.4) over void
@@ -95,15 +95,15 @@ against §0.1 before reporting completion.
 ## 1. What this project is
 
 `luazig` is a from-scratch port of the Lua reference implementation (the C tree at
-`/lua/`, which is **Lua 5.5.1** per `lua.h`) to **Zig 0.16.0**. The goal is a
+`lua/`, which is **Lua 5.5.1** per `lua.h`) to **Zig 0.16.0**. The goal is a
 working Lua interpreter that follows the reference semantics while adopting the
 Zig 0.16.0 idioms described in the `zig-0.16.0-development` skill
 (`std.process.Init` juicy main, explicit `std.Io`, unmanaged containers, no
 `@cImport`).
 
-The reference C sources live in `/lua/` (the sibling directory) and are the
+The reference C sources live in `lua/` (the sibling directory) and are the
 **authoritative source of truth** for opcodes, data layouts, and semantics.
-Always diff against `/lua/` when implementing a module.
+Always diff against `lua/` when implementing a module.
 
 ---
 
@@ -196,14 +196,14 @@ before moving on. Do not parallelize layers that depend on each other.
 
 ### Phase B — Tables & values (next)
 5. Implement `lua_Table` properly: array part (`std.ArrayList(?TValue)`) + hash
-   part (open-addressing modeled on `/lua/ltable.c`). Provide
+   part (open-addressing modeled on `lua/ltable.c`). Provide
    `lua_createtable`, `lua_settable`/`lua_gettable`, `lua_rawset`/`lua_rawget`,
    `lua_seti`/`lua_geti`, `lua_next`, `lua_rawlen` with real hashing.
 6. Real `lua_TString` with interning in `global_State.strt` (dedupe equal
    strings) — needed for table keys and `lua_pushstring` correctness.
 
 ### Phase C — Front-end (lexer/parser/compiler) or loader
-7. **Decision:** either (a) port the lexer+parser+codegen from `/lua/llex.c`,
+7. **Decision:** either (a) port the lexer+parser+codegen from `lua/llex.c`,
    `lparser.c`, `lcode.c`, or (b) implement a Lua chunk **loader** (`lundump.c`)
    plus a way to obtain bytecode. Option (a) is required to run source scripts
    via `luaL_dostring`/`lua_load`.
@@ -218,7 +218,7 @@ before moving on. Do not parallelize layers that depend on each other.
 11. Error propagation (`lua_error`, `lua_pcall`, longjmp-equivalent via
     Zig `error`/`try` or a setjmp-free continuation design).
 12. Metatables + metamethod dispatch in `lua_arith`/`lua_compare`/`lua_get*/set*`
-    (mirror `/lua/ltm.c`).
+    (mirror `lua/ltm.c`).
 13. Minimal garbage collector or ownership/arenas.
 
 ### Phase F — Standard libraries
@@ -252,7 +252,7 @@ before moving on. Do not parallelize layers that depend on each other.
 - After each phase, run `zig build` AND `zig build test`. Both must succeed.
 - Add a focused unit test for every function you implement (stack ops, table
   ops, each opcode). Mirror the reference `lua/testes/` suite where practical.
-- Diff your data layouts and opcode semantics against `/lua/` (the C reference)
+- Diff your data layouts and opcode semantics against `lua/` (the C reference)
   rather than inventing representations.
 - Keep the single-type-model invariant: one `lua_State`, one `lua_CFunction`,
   one `global_State`. No `*anyopaque` shortcuts for Lua objects.
