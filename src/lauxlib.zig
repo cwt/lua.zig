@@ -63,14 +63,50 @@ pub fn luaL_checklstring(L: *lua.lua_State, idx: i32, len: ?*usize) ![]const u8 
     return s orelse error.InvalidType;
 }
 
-pub fn luaL_checkoption(L: *lua.lua_State, idx: i32, def: []const u8, opts: [][]const u8) !i32 {
-    _ = def;
-    const s = try luaL_checklstring(L, idx, null);
-    var i: i32 = 0;
-    while (i < opts.len) : (i += 1) {
-        if (std.mem.eql(u8, s, opts[i])) return i;
+pub fn luaL_checkany(L: *lua.lua_State, idx: i32) !void {
+    if (lua.lua_type(L, idx) == lua.LUA_TNONE) {
+        return luaL_argerror(L, idx, "value expected");
     }
-    return @intCast(opts.len);
+}
+
+pub fn luaL_optinteger(L: *lua.lua_State, idx: i32, def: i64) i64 {
+    if (lua.lua_isnoneornil(L, idx)) return def;
+    return luaL_checkinteger(L, idx) catch def;
+}
+
+pub fn luaL_optlstring(L: *lua.lua_State, idx: i32, def: ?[]const u8, len: ?*usize) !?[]const u8 {
+    if (lua.lua_isnoneornil(L, idx)) {
+        if (len) |l| {
+            l.* = if (def) |d| d.len else 0;
+        }
+        return def;
+    }
+    return try luaL_checklstring(L, idx, len);
+}
+
+pub fn luaL_getmetafield(L: *lua.lua_State, idx: i32, field: []const u8) i32 {
+    if (lua.lua_getmetatable(L, idx) == 0) return lua.LUA_TNIL;
+    _ = lua.lua_pushstring(L, field);
+    const tt = lua.lua_rawget(L, -2);
+    if (tt == lua.LUA_TNIL) {
+        lua.lua_pop(L, 2);
+        return lua.LUA_TNIL;
+    }
+    lua.lua_remove(L, -2);
+    return tt;
+}
+
+pub fn luaL_checkoption(L: *lua.lua_State, idx: i32, def: []const u8, opts: [][]const u8) !i32 {
+    const s = blk: {
+        if (lua.lua_isnoneornil(L, idx)) {
+            break :blk def;
+        }
+        break :blk try luaL_checklstring(L, idx, null);
+    };
+    for (opts, 0..) |opt, i| {
+        if (std.mem.eql(u8, s, opt)) return @intCast(i);
+    }
+    return luaL_argerror(L, idx, "invalid option");
 }
 
 pub fn luaL_register(L: *lua.lua_State, libname: []const u8, l: ?[]?lua.lua_CFunction) !void {
@@ -92,21 +128,23 @@ pub fn luaL_register(L: *lua.lua_State, libname: []const u8, l: ?[]?lua.lua_CFun
 // Error handling
 // ===================================================================
 
-pub fn luaL_error(L: *lua.lua_State, msg: []const u8) !void {
-    lua.lua_pushstring(L, msg);
+pub fn luaL_error(L: *lua.lua_State, msg: []const u8) anyerror {
+    _ = lua.lua_pushstring(L, msg);
     return lua.lua_error(L);
 }
 
-pub fn luaL_argerror(L: *lua.lua_State, arg: i32, msg: []const u8) !void {
-    _ = arg;
-    lua.lua_pushstring(L, msg);
+pub fn luaL_argerror(L: *lua.lua_State, arg: i32, msg: []const u8) anyerror {
+    var buf: [256]u8 = undefined;
+    const s = std.fmt.bufPrint(&buf, "bad argument #{d} ({s})", .{ arg, msg }) catch msg;
+    _ = lua.lua_pushstring(L, s);
     return lua.lua_error(L);
 }
 
-pub fn luaL_typeerror(L: *lua.lua_State, idx: i32, msg: []const u8) !void {
-    _ = idx;
-    lua.lua_pushstring(L, msg);
-    return lua.lua_error(L);
+pub fn luaL_typeerror(L: *lua.lua_State, idx: i32, tname: []const u8) anyerror {
+    const actual = lua.lua_typename(lua.lua_type(L, idx));
+    var buf: [256]u8 = undefined;
+    const s = std.fmt.bufPrint(&buf, "{s} expected, got {s}", .{ tname, actual }) catch tname;
+    return luaL_argerror(L, idx, s);
 }
 
 // ===================================================================
@@ -124,15 +162,40 @@ pub fn luaL_checkstack(L: *lua.lua_State, n: i32, msg: []const u8) !void {
 
 pub fn luaL_tolstring(L: *lua.lua_State, idx: i32, len: ?*usize) ?[]const u8 {
     const actual_type = lua.lua_type(L, idx);
-    if (actual_type == lua.LUA_TSTRING) {
-        return lua.lua_tolstring(L, idx, len);
-    } else if (actual_type == lua.LUA_TNUMBER) {
-        var buf: [128]u8 = undefined;
-        const s = std.fmt.bufPrint(&buf, "{d}", .{0}) catch return null;
-        lua.lua_pushstring(L, s);
-        return lua.lua_tolstring(L, -1, len);
-    } else {
-        return null;
+    switch (actual_type) {
+        lua.LUA_TSTRING => return lua.lua_tolstring(L, idx, len),
+        lua.LUA_TNUMBER => {
+            var buf: [128]u8 = undefined;
+            if (lua.lua_isinteger(L, idx) != 0) {
+                const iv = lua.lua_tointeger(L, idx) orelse 0;
+                const s = std.fmt.bufPrint(&buf, "{d}", .{iv}) catch return null;
+                _ = lua.lua_pushstring(L, s);
+            } else {
+                const fv = lua.lua_tonumber(L, idx) orelse 0.0;
+                const s = std.fmt.bufPrint(&buf, "{d}", .{fv}) catch return null;
+                _ = lua.lua_pushstring(L, s);
+            }
+            return lua.lua_tolstring(L, -1, len);
+        },
+        lua.LUA_TBOOLEAN => {
+            const b = lua.lua_toboolean(L, idx);
+            const s: []const u8 = if (b != 0) "true" else "false";
+            _ = lua.lua_pushstring(L, s);
+            return lua.lua_tolstring(L, -1, len);
+        },
+        lua.LUA_TNIL => {
+            _ = lua.lua_pushstring(L, "nil");
+            return lua.lua_tolstring(L, -1, len);
+        },
+        else => {
+            // For tables, functions, etc. push a pointer string
+            var buf: [128]u8 = undefined;
+            const ptr = lua.lua_topointer(L, idx);
+            const tname = lua.lua_typename(actual_type);
+            const s = std.fmt.bufPrint(&buf, "{s}: 0x{x:0>14}", .{ tname, @intFromPtr(ptr) }) catch return null;
+            _ = lua.lua_pushstring(L, s);
+            return lua.lua_tolstring(L, -1, len);
+        },
     }
 }
 

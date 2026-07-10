@@ -1,19 +1,20 @@
-/*
-** $Id: baselib.zig
-** Base library for Zua (Zig port of Lua 5.5.1)
-** See Copyright Notice in c_compat.zig
-*/
+//
+// ** $Id: baselib.zig
+// ** Base library for Zua (Zig port of Lua 5.5.1)
+// ** See Copyright Notice in c_compat.zig
+//
 
 const std = @import("std");
-const lua = @import("lua.zig");
-const lprefix = @import("lprefix.zig");
-const llimits = @import("llimits.zig");
+const lua = @import("../lua.zig");
+const lprefix = @import("../lprefix.zig");
+const llimits = @import("../llimits.zig");
+const lauxlib = @import("../lauxlib.zig");
 
 // ===================================================================
 // Base library functions
 // ===================================================================
 
-pub fn openbaselib(L: *lua_State) !void {
+pub fn openbaselib(L: *lua.lua_State) !void {
     // Register base library functions in _G table
 
     // assert(cond [, message])
@@ -29,7 +30,7 @@ pub fn openbaselib(L: *lua_State) !void {
     lua.lua_setglobal(L, "dofile");
 
     // error(message [, level])
-    lua.lua_pushcfunction(L, error);
+    lua.lua_pushcfunction(L, error_fn);
     lua.lua_setglobal(L, "error");
 
     // getmetatable(object)
@@ -49,7 +50,7 @@ pub fn openbaselib(L: *lua_State) !void {
     lua.lua_setglobal(L, "load");
 
     // next(table [, index])
-    lua.lua_pushcfunction(L, next);
+    lua.lua_pushcfunction(L, next_fn);
     lua.lua_setglobal(L, "next");
 
     // pairs(table)
@@ -101,7 +102,7 @@ pub fn openbaselib(L: *lua_State) !void {
     lua.lua_setglobal(L, "tostring");
 
     // type(v)
-    lua.lua_pushcfunction(L, type);
+    lua.lua_pushcfunction(L, type_fn);
     lua.lua_setglobal(L, "type");
 
     // xpcall(function, errfunc, vararg)
@@ -110,282 +111,333 @@ pub fn openbaselib(L: *lua_State) !void {
 }
 
 // ===================================================================
+// Helper reader for slice loading
+// ===================================================================
+
+fn sliceReader(L: *lua.lua_State, dt: ?*anyopaque, size: ?*usize) ?[]const u8 {
+    _ = L;
+    const slice_ptr = @as(?*[]const u8, @ptrCast(@alignCast(dt))) orelse return null;
+    if (slice_ptr.*.len == 0) {
+        if (size) |s| s.* = 0;
+        return null;
+    }
+    const chunk = slice_ptr.*;
+    slice_ptr.* = &[_]u8{}; // empty it so next read returns 0
+    if (size) |s| s.* = chunk.len;
+    return chunk;
+}
+
+// ===================================================================
 // Base library function implementations
 // ===================================================================
 
-fn assert(L: *lua_State) i32 {
-    if (lua.lua_toboolean(L, 1) == 0) {
-        const msg = if (lua.lua_gettop(L) >= 2) {
-            const m = lua.lua_tolstring(L, 2, null);
-            if (m) |s| s else "assertion failed!"
-        } else "assertion failed!";
-        lua.lua_pushstring(L, msg);
-        return lua.lua_error(L);
+fn assert(L: *lua.lua_State) anyerror!i32 {
+    if (lua.lua_toboolean(L, 1) != 0) {
+        return lua.lua_gettop(L);
     }
-    return 0;
+    try lauxlib.luaL_checkany(L, 1);
+    lua.lua_remove(L, 1);
+    if (lua.lua_gettop(L) == 0) {
+        _ = lua.lua_pushstring(L, "assertion failed!");
+    }
+    lua.lua_settop(L, 1);
+    return error_fn(L);
 }
 
-fn collectgarbage(L: *lua_State) i32 {
-    const option = luaL_checkoption(L, 1, "", .{ "stop", "restart", "collect", "count", "step", "isrunning", "generational", "incremental", "param" });
-    switch (option) {
-        0 => { // stop
-            // Would stop GC
-        },
-        1 => { // restart
-            // Would restart GC
-        },
-        2 => { // collect
-            // Would collect GC
-        },
-        3 => { // count
-            // Would return GC count
-            lua.lua_pushnumber(L, 0);
+fn collectgarbage(L: *lua.lua_State) anyerror!i32 {
+    var opts_arr = [_][]const u8{ "stop", "restart", "collect", "count", "step", "setpause", "setstepmul", "isrunning", "generational", "incremental" };
+    const optsnum = [_]i32{ lua.LUA_GCSTOP, lua.LUA_GCRESTART, lua.LUA_GCCOLLECT, lua.LUA_GCCOUNT, lua.LUA_GCSTEP, lua.LUA_GCSETPAUSE, lua.LUA_GCSETSTEPMUL, lua.LUA_GCISRUNNING, lua.LUA_GCGEN, lua.LUA_GCINC };
+    const o = try lauxlib.luaL_checkoption(L, 1, "collect", &opts_arr);
+    const ex = @as(i32, @intCast(lauxlib.luaL_optinteger(L, 2, 0)));
+    const res = lua.lua_gc(L, optsnum[@as(usize, @intCast(o))], ex);
+    switch (optsnum[@as(usize, @intCast(o))]) {
+        lua.LUA_GCCOUNT => {
+            const byte = lua.lua_gc(L, lua.LUA_GCCOUNTB, 0);
+            lua.lua_pushnumber(L, @as(f64, @floatFromInt(res)) + (@as(f64, @floatFromInt(byte)) / 1024.0));
             return 1;
         },
-        4 => { // step
-            // Would step GC
-        },
-        5 => { // isrunning
-            lua.lua_pushboolean(L, 0);
+        lua.LUA_GCSTEP, lua.LUA_GCISRUNNING => {
+            lua.lua_pushboolean(L, if (res != 0) @as(i32, 1) else @as(i32, 0));
             return 1;
         },
-        6 => { // generational
-            // Would toggle generational mode
-        },
-        7 => { // incremental
-            // Would toggle incremental mode
-        },
-        8 => { // param
-            // Would set GC parameter
+        else => {
+            lua.lua_pushinteger(L, res);
+            return 1;
         },
     }
-    return 0;
 }
 
-fn dofile(L: *lua_State) i32 {
-    const filename = luaL_checklstring(L, 1, null);
-    const mode = if (lua.lua_gettop(L) >= 2) {
-        const m = luaL_checklstring(L, 2, null);
-        m orelse ""
-    } else "";
-    const status = lua.lua_load(L, null, null, filename, mode);
-    if (status == lua.LUA_OK) {
-        const f = lua.lua_tothread(L, -1);
-        if (f) |thread| {
-            lua.lua_pushvalue(L, -1);
-            lua.lua_pushvalue(L, -2);
-            lua.lua_xmove(L, thread, 2);
-            lua.lua_pcallk(L);
-            lua.lua_pop(L, 1);
-        }
-    }
-    return 0;
-}
+fn dofile(L: *lua.lua_State) anyerror!i32 {
+    const filename = try lauxlib.luaL_checklstring(L, 1, null);
+    lua.lua_settop(L, 1);
+    
+    const io = L.l_G.?.io;
+    const contents = std.Io.Dir.cwd().readFileAlloc(io, filename, L.allocator, .unlimited) catch |err| {
+        const msg = if (err == error.FileNotFound) "cannot open file: No such file or directory" else "error reading file";
+        _ = lua.lua_pushstring(L, msg);
+        return lua.lua_error(L);
+    };
+    defer L.allocator.free(contents);
 
-fn error(L: *lua_State) i32 {
-    const msg = lua.lua_tolstring(L, 1, null);
-    if (msg) |m| {
-        std.debug.print("error: {s}\n", .{m});
-    }
-    return lua.LUA_ERRRUN;
-}
-
-fn getmetatable(L: *lua_State) i32 {
-    if (lua.lua_gettop(L) != 1) {
+    var slice_data = contents;
+    const status = lua.lua_load(L, sliceReader, @as(?*anyopaque, @ptrCast(&slice_data)), filename, "bt");
+    if (status != lua.LUA_OK) {
         return lua.lua_error(L);
     }
+    
+    lua.lua_call(L, 0, lua.LUA_MULTRET);
+    return @as(i32, @intCast(lua.lua_gettop(L) - 1));
+}
+
+fn error_fn(L: *lua.lua_State) anyerror!i32 {
+    lua.lua_settop(L, 1);
+    return lua.lua_error(L);
+}
+
+fn getmetatable(L: *lua.lua_State) anyerror!i32 {
+    try lauxlib.luaL_checkany(L, 1);
     if (lua.lua_getmetatable(L, 1) == 0) {
         lua.lua_pushnil(L);
+        return 1;
     }
+    _ = lauxlib.luaL_getmetafield(L, 1, "__metatable");
     return 1;
 }
 
-fn ipairs(L: *lua_State) i32 {
-    if (!lua.lua_istable(L, 1)) {
+fn ipairsaux(L: *lua.lua_State) anyerror!i32 {
+    const i = (try lauxlib.luaL_checkinteger(L, 2)) + 1;
+    lua.lua_pushinteger(L, i);
+    return if (lua.lua_geti(L, 1, i) == lua.LUA_TNIL) 1 else 2;
+}
+
+fn ipairs(L: *lua.lua_State) anyerror!i32 {
+    try lauxlib.luaL_checkany(L, 1);
+    lua.lua_pushcfunction(L, ipairsaux);
+    lua.lua_pushvalue(L, 1);
+    lua.lua_pushinteger(L, 0);
+    return 3;
+}
+
+fn loadfile(L: *lua.lua_State) anyerror!i32 {
+    const filename = try lauxlib.luaL_checklstring(L, 1, null);
+    const mode = try lauxlib.luaL_optlstring(L, 2, "bt", null) orelse "bt";
+
+    const io = L.l_G.?.io;
+    const contents = std.Io.Dir.cwd().readFileAlloc(io, filename, L.allocator, .unlimited) catch |err| {
+        lua.lua_pushnil(L);
+        const msg = if (err == error.FileNotFound) "cannot open file: No such file or directory" else "error reading file";
+        _ = lua.lua_pushstring(L, msg);
+        return 2;
+    };
+    defer L.allocator.free(contents);
+
+    var slice_data = contents;
+    const status = lua.lua_load(L, sliceReader, @as(?*anyopaque, @ptrCast(&slice_data)), filename, mode);
+    if (status == lua.LUA_OK) {
+        return 1;
+    } else {
+        lua.lua_pushnil(L);
+        lua.lua_insert(L, -2);
+        return 2;
+    }
+}
+
+fn load(L: *lua.lua_State) anyerror!i32 {
+    const chunk = try lauxlib.luaL_checklstring(L, 1, null);
+    const chunkname = try lauxlib.luaL_optlstring(L, 2, "=(load)", null) orelse "=(load)";
+    const mode = try lauxlib.luaL_optlstring(L, 3, "bt", null) orelse "bt";
+
+    var slice_data = chunk;
+    const status = lua.lua_load(L, sliceReader, @as(?*anyopaque, @ptrCast(&slice_data)), chunkname, mode);
+    if (status == lua.LUA_OK) {
+        return 1;
+    } else {
+        lua.lua_pushnil(L);
+        lua.lua_insert(L, -2);
+        return 2;
+    }
+}
+
+fn next_fn(L: *lua.lua_State) anyerror!i32 {
+    try lauxlib.luaL_checkany(L, 1);
+    if (lua.lua_istable(L, 1) == 0) {
+        _ = lua.lua_pushstring(L, "table expected");
         return lua.lua_error(L);
+    }
+    lua.lua_settop(L, 2);
+    if (lua.lua_next(L, 1) != 0) {
+        return 2;
     }
     lua.lua_pushnil(L);
     return 1;
 }
 
-fn loadfile(L: *lua_State) i32 {
-    const filename = luaL_checklstring(L, 1, null);
-    const mode = if (lua.lua_gettop(L) >= 2) {
-        const m = luaL_checklstring(L, 2, null);
-        m orelse ""
-    } else "";
-    const status = lua.lua_load(L, null, null, filename, mode);
-    return status;
-}
-
-fn load(L: *lua_State) i32 {
-    const chunk = luaL_checklstring(L, 1, null);
-    const chunkname = if (lua.lua_gettop(L) >= 2) {
-        luaL_checklstring(L, 2, null) orelse ""
-    } else "";
-    const mode = if (lua.lua_gettop(L) >= 3) {
-        luaL_checklstring(L, 3, null) orelse ""
-    } else "";
-    const env = if (lua.lua_gettop(L) >= 4) {
-        lua.lua_touserdata(L, 4)
-    } else null;
-    const status = lua.lua_load(L, null, env, chunkname, mode);
-    return status;
-}
-
-fn next(L: *lua_State) i32 {
-    if (!lua.lua_istable(L, 1)) {
-        return lua.lua_error(L);
-    }
-    if (lua.lua_gettop(L) < 2) {
+fn pairs(L: *lua.lua_State) anyerror!i32 {
+    try lauxlib.luaL_checkany(L, 1);
+    if (lauxlib.luaL_getmetafield(L, 1, "__pairs") == lua.LUA_TNIL) {
+        lua.lua_pushcfunction(L, next_fn);
+        lua.lua_pushvalue(L, 1);
         lua.lua_pushnil(L);
-    }
-    return lua.lua_next(L, 1);
-}
-
-fn pairs(L: *lua_State) i32 {
-    if (!lua.lua_istable(L, 1)) {
-        return lua.lua_error(L);
-    }
-    if (lua.lua_gettop(L) < 2) {
-        lua.lua_pushnil(L);
-    }
-    return 1;
-}
-
-fn pcall(L: *lua_State) i32 {
-    if (lua.lua_gettop(L) < 1) {
-        return lua.lua_error(L);
-    }
-    const func = lua.lua_tocfunction(L, 1);
-    const nargs = lua.lua_gettop(L) - 1;
-    const status = lua.lua_pcallk(L);
-    return status;
-}
-
-fn print(L: *lua_State) i32 {
-    const io = lua.lua_touserdata(L, 1);
-    if (io) |out| {
-        while (lua.lua_next(L, 2) != 0) {
-            const val = lua.lua_tostring(L, -1);
-            if (val) |v| {
-                io.out.writeAll(v) catch {};
-                io.out.writeAll(" ") catch {};
-            }
-            lua.lua_pop(L, 1);
-        }
     } else {
-        // Use stdout
-        std.io.getStdOut().writer().print("{s}\n", .{}) catch {};
+        lua.lua_pushvalue(L, 1);
+        lua.lua_call(L, 1, 3);
     }
+    return 3;
+}
+
+fn pcall(L: *lua.lua_State) anyerror!i32 {
+    try lauxlib.luaL_checkany(L, 1);
+    const status = lua.lua_pcallk(L, lua.lua_gettop(L) - 1, lua.LUA_MULTRET, 0, 0, null);
+    lua.lua_pushboolean(L, if (status == lua.LUA_OK) @as(i32, 1) else @as(i32, 0));
+    lua.lua_insert(L, 1);
+    return lua.lua_gettop(L);
+}
+
+fn print(L: *lua.lua_State) anyerror!i32 {
+    const n = lua.lua_gettop(L);
+    var i: i32 = 1;
+    const io = L.l_G.?.io;
+    while (i <= n) : (i += 1) {
+        var len: usize = 0;
+        const s = lauxlib.luaL_tolstring(L, i, &len);
+        if (s) |str| {
+            try std.Io.File.stdout().writeStreamingAll(io, str);
+        }
+        if (i < n) {
+            try std.Io.File.stdout().writeStreamingAll(io, "\t");
+        }
+        lua.lua_pop(L, 1);
+    }
+    try std.Io.File.stdout().writeStreamingAll(io, "\n");
     return 0;
 }
 
-fn warn(L: *lua_State) i32 {
-    const msg = lua.lua_tolstring(L, 1, null);
-    if (msg) |m| {
-        std.debug.print("warning: {s}\n", .{m});
+fn warn(L: *lua.lua_State) anyerror!i32 {
+    const n = lua.lua_gettop(L);
+    const io = L.l_G.?.io;
+    var i: i32 = 1;
+    while (i <= n) : (i += 1) {
+        var len: usize = 0;
+        const s = lauxlib.luaL_tolstring(L, i, &len);
+        if (s) |str| {
+            try std.Io.File.stderr().writeStreamingAll(io, str);
+        }
+        lua.lua_pop(L, 1);
     }
+    try std.Io.File.stderr().writeStreamingAll(io, "\n");
     return 0;
 }
 
-fn rawequal(L: *lua_State) i32 {
-    if (lua.lua_gettop(L) != 2) {
-        return lua.lua_error(L);
-    }
+fn rawequal(L: *lua.lua_State) anyerror!i32 {
+    try lauxlib.luaL_checkany(L, 1);
+    try lauxlib.luaL_checkany(L, 2);
     const result = lua.lua_rawequal(L, 1, 2);
-    lua.lua_pushboolean(L, result == 1);
+    lua.lua_pushboolean(L, result);
     return 1;
 }
 
-fn rawlen(L: *lua_State) i32 {
-    if (!lua.lua_istable(L, 1) and !lua.lua_isstring(L, 1)) {
-        return lua.lua_error(L);
+fn rawlen(L: *lua.lua_State) anyerror!i32 {
+    const t = lua.lua_type(L, 1);
+    if (t != lua.LUA_TTABLE and t != lua.LUA_TSTRING) {
+        return lauxlib.luaL_typeerror(L, 1, "table or string");
     }
     const len = lua.lua_rawlen(L, 1);
-    lua.lua_pushinteger(L, @as(i64, @bitCast(len)));
+    lua.lua_pushinteger(L, @as(i64, @intCast(len)));
     return 1;
 }
 
-fn rawget(L: *lua_State) i32 {
-    if (!lua.lua_istable(L, 1)) {
-        return lua.lua_error(L);
-    }
-    return lua.lua_rawget(L, 2);
+fn rawget(L: *lua.lua_State) anyerror!i32 {
+    try lauxlib.luaL_checktype(L, 1, lua.LUA_TTABLE);
+    lua.lua_settop(L, 2);
+    _ = lua.lua_rawget(L, 1);
+    return 1;
 }
 
-fn rawset(L: *lua_State) i32 {
-    if (!lua.lua_istable(L, 1)) {
-        return lua.lua_error(L);
-    }
-    return 0;
+fn rawset(L: *lua.lua_State) anyerror!i32 {
+    try lauxlib.luaL_checktype(L, 1, lua.LUA_TTABLE);
+    try lauxlib.luaL_checkany(L, 2);
+    try lauxlib.luaL_checkany(L, 3);
+    lua.lua_settop(L, 3);
+    lua.lua_rawset(L, 1);
+    return 1;
 }
 
-fn select(L: *lua_State) i32 {
-    const index = luaL_checkoption(L, 1, "", .{ "#", "c", "r", "n", "t" });
-    switch (index) {
-        0 => { // #
-            if (!lua.lua_istable(L, 2)) {
-                return lua.lua_error(L);
-            }
-            const len = lua.lua_rawlen(L, 2);
-            lua.lua_pushinteger(L, @as(i64, @bitCast(len)));
-        },
-        1 => { // c
-            // Would return count of results
-        },
-        2 => { // r
-            // Would return results
-        },
-        3 => { // n
-            // Would return number of results
-        },
-        4 => { // t
-            // Would return tail info
-        },
-    }
-    return 0;
-}
-
-fn setmetatable(L: *lua_State) i32 {
-    if (lua.lua_gettop(L) != 2) {
-        return lua.lua_error(L);
-    }
-    if (!lua.lua_istable(L, 1)) {
-        return lua.lua_error(L);
-    }
-    // Would set metatable
-    return 0;
-}
-
-fn tonumber(L: *lua_State) i32 {
-    const base = if (lua.lua_gettop(L) >= 2) {
-        const b = lua.lua_tointeger(L, 2);
-        if (b) |n| @as(i32, @as(i32,(n))
-        else 10
-    } else 10;
-    const s = luaL_checklstring(L, 1, null);
-    if (s) |str| {
-        const result = std.fmt.parseInt(f64, str, base) catch null;
-        if (result) |r| {
-            lua.lua_pushnumber(L, r);
+fn select(L: *lua.lua_State) anyerror!i32 {
+    const n = lua.lua_gettop(L);
+    if (lua.lua_type(L, 1) == lua.LUA_TSTRING) {
+        const s = lua.lua_tostring(L, 1);
+        if (s != null and s.?.len > 0 and s.?[0] == '#') {
+            lua.lua_pushinteger(L, @as(i64, @intCast(n - 1)));
             return 1;
         }
     }
-    lua.lua_pushnil(L);
-    return 0;
-}
-
-fn tostring(L: *lua_State) i32 {
-    const val = lua.lua_tolstring(L, 1, null);
-    if (val) |v| {
-        lua.lua_pushstring(L, v);
-        return 1;
+    const idx = try lauxlib.luaL_checkinteger(L, 1);
+    var i: i32 = @intCast(idx);
+    if (i < 0) {
+        i = n + i;
+    } else if (i > n) {
+        i = n;
     }
-    return 0;
+    if (i < 1) {
+        return lauxlib.luaL_error(L, "index out of range");
+    }
+    return n - i;
 }
 
-fn type(L: *lua_State) i32 {
+fn setmetatable(L: *lua.lua_State) anyerror!i32 {
+    const t = lua.lua_type(L, 2);
+    try lauxlib.luaL_checktype(L, 1, lua.LUA_TTABLE);
+    if (t != lua.LUA_TNIL and t != lua.LUA_TTABLE) {
+        return lauxlib.luaL_typeerror(L, 2, "nil or table");
+    }
+    if (lauxlib.luaL_getmetafield(L, 1, "__metatable") != lua.LUA_TNIL) {
+        return lauxlib.luaL_error(L, "cannot change a protected metatable");
+    }
+    lua.lua_settop(L, 2);
+    _ = lua.lua_setmetatable(L, 1);
+    return 1;
+}
+
+fn tonumber(L: *lua.lua_State) anyerror!i32 {
+    if (lua.lua_isnoneornil(L, 2)) {
+        if (lua.lua_type(L, 1) == lua.LUA_TNUMBER) {
+            lua.lua_settop(L, 1);
+            return 1;
+        }
+        const s = lua.lua_tostring(L, 1);
+        if (s) |str| {
+            if (std.fmt.parseFloat(f64, str)) |val| {
+                lua.lua_pushnumber(L, val);
+                return 1;
+            } else |_| {}
+            if (std.fmt.parseInt(i64, str, 10)) |val| {
+                lua.lua_pushinteger(L, val);
+                return 1;
+            } else |_| {}
+        }
+    } else {
+        const base = try lauxlib.luaL_checkinteger(L, 2);
+        if (base < 2 or base > 36) {
+            return lauxlib.luaL_error(L, "base out of range");
+        }
+        const s = try lauxlib.luaL_checklstring(L, 1, null);
+        if (std.fmt.parseInt(i64, s, @as(u8, @intCast(base)))) |val| {
+            lua.lua_pushinteger(L, val);
+            return 1;
+        } else |_| {}
+    }
+    lua.lua_pushnil(L);
+    return 1;
+}
+
+fn tostring(L: *lua.lua_State) anyerror!i32 {
+    try lauxlib.luaL_checkany(L, 1);
+    _ = lauxlib.luaL_tolstring(L, 1, null);
+    return 1;
+}
+
+fn type_fn(L: *lua.lua_State) anyerror!i32 {
+    try lauxlib.luaL_checkany(L, 1);
     const t = lua.lua_type(L, 1);
     const name = switch (t) {
         lua.LUA_TNIL => "nil",
@@ -399,17 +451,18 @@ fn type(L: *lua_State) i32 {
         lua.LUA_TTHREAD => "thread",
         else => "unknown",
     };
-    lua.lua_pushstring(L, name);
+    _ = lua.lua_pushstring(L, name);
     return 1;
 }
 
-fn xpcall(L: *lua_State) i32 {
-    if (lua.lua_gettop(L) < 2) {
-        return lua.lua_error(L);
-    }
-    const func = lua.lua_tocfunction(L, 1);
-    const errfunc = lua.lua_tocfunction(L, 2);
-    const nargs = lua.lua_gettop(L) - 2;
-    const status = lua.lua_pcallk(L);
-    return status;
+fn xpcall(L: *lua.lua_State) anyerror!i32 {
+    const n = lua.lua_gettop(L);
+    try lauxlib.luaL_checkany(L, 2);
+    lua.lua_pushvalue(L, 2);
+    lua.lua_insert(L, 1);
+    lua.lua_remove(L, 3);
+    const status = lua.lua_pcallk(L, n - 2, lua.LUA_MULTRET, 1, 0, null);
+    lua.lua_pushboolean(L, if (status == lua.LUA_OK) @as(i32, 1) else @as(i32, 0));
+    lua.lua_insert(L, 1);
+    return lua.lua_gettop(L);
 }

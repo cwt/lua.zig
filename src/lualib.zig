@@ -13,10 +13,10 @@ const lprefix = @import("lprefix.zig");
 // Base Library
 // ===================================================================
 
+const baselib = @import("lib/baselib.zig");
+
 pub fn openbaselib(L: *lua.lua_State) !void {
-    const base = L;
-    _ = base;
-    // Register base library functions
+    try baselib.openbaselib(L);
 }
 
 // ===================================================================

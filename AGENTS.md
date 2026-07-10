@@ -240,10 +240,10 @@ and string interning in `global_State.strt` (`std.array_hash_map.String`) in
 14. ✅ Expand garbage collector (reconcile stale state, build mark/sweep on top of VMGCObject).
 
 
-### Phase F — Standard libraries
-15. Implement library *bodies* in `src/lib/*`. Go module by module
-    (`baselib`, `mathlib`, `stringlib`, `tablelib`, `utf8lib`, `oslib`,
-    `iolib`, `corolib`, `debug`, `loadlib`, `bit32`) and back each with tests.
+### Phase F — Standard libraries (In Progress)
+15. Port library *bodies* in `src/lib/*`. Go module by module and back each with tests.
+    - ✅ `baselib`: Registered standard functions, implemented all helper structures, tested with 5 new integration tests.
+    - ⬜ `mathlib`, `stringlib`, `tablelib`, `utf8lib`, `oslib`, `iolib`, `corolib`, `debug`, `loadlib`, `bit32`.
 16. Wire `iolib`/`oslib` to `std.Io`/`init.io` instead of raw C file APIs.
 
 ---
@@ -263,10 +263,10 @@ and string interning in `global_State.strt` (`std.array_hash_map.String`) in
 | `src/ltable.zig` | ✅ `lua_Table` array+hash, `get`/`set`/`getInt`/`setInt`/`next`/`getn`/`deinit` | `__index`/`__newindex` dispatch now done in `ltm.zig`; keep as raw. |
 | `src/lstring.zig` | ✅ `luaS_new`/`luaS_hash`/`luaS_eqstr`, interning in `global_State.strt` | Add short/long string split with GC. |
 | `src/lvm.zig` | ✅ run execution loop, all table opcodes via metamethods | Phase E — arithmetic metamethods via `luaT_trybinTM`. |
-| `src/lauxlib.zig` | aux helpers, §0.1-clean stubs | Implement real `luaL_check*`/`luaL_error`/`luaL_ref` once core works. |
-| `src/lualib.zig` | inline stubs for all libraries | Phase F — move to `src/lib/*.zig` bodies. |
-| `src/lib/*.zig` | library bodies present but broken | Phase F — rewrite per module with tests. |
-| `tests/test_basic.zig` | ✅ 27 passing tests | Ready for Phase F standard libraries. |
+| `src/lauxlib.zig` | ✅ aux helpers, frame-relative getmetafield, checked option/checklstring | Complete missing helper functions when adding remaining standard libraries. |
+| `src/lualib.zig` | ✅ inline stubs for all libraries | Phase F — move to `src/lib/*.zig` bodies. |
+| `src/lib/*.zig` | ✅ `baselib.zig` implemented; others present as stubs | Phase F — rewrite per module with tests. |
+| `tests/test_basic.zig` | ✅ 32 passing tests | Ready for Phase F standard libraries. |
 | `docs/` | ✅ OKF v0.1 bundle (architecture, log, glossary) | Update after every phase; see `docs/README.md`. |
 | `lua/` | ✅ Git subrepo tracking git@github.com:lua/lua.git | Reference source; update with `git pull` when needed. |
 | `.hgsub` | ✅ defines `lua = [git]git@github.com:lua/lua.git` | Add more subrepos if needed. |
@@ -294,8 +294,6 @@ and string interning in `global_State.strt` (`std.array_hash_map.String`) in
 
 ## 8. What to work on next
 
-Phase D (working VM) is **done**. The immediate next task is
-**Phase E — Error handling, GC, metatables**: implement metatables, metamethod dispatching, error propagation, and full garbage collection.
-This includes implementing metamethod lookups for comparisons, arithmetic operations, and raw table accesses (dispatching to `__index`/`__newindex`/etc.), handling protected/unprotected calls and longjmp-free error continuations, and expanding the heap-allocation sweeper into a real GC.
+Phase E (Error handling, GC, metatables) is **done**. The first library of Phase F (`baselib`) is also **done**.
+The immediate next task is to continue **Phase F — Standard libraries**: porting the remaining library bodies one by one (`mathlib`, `stringlib`, `tablelib`, `utf8lib`, `oslib`, `iolib`, `corolib`, `debug`, `loadlib`, `bit32`) in `src/lib/*.zig` and adding tests for each in `tests/test_basic.zig`.
 
-After Phase E, do **Phase F — Standard libraries** to compile and run standard Lua files.

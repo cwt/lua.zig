@@ -767,6 +767,228 @@ test "garbage collector mark and sweep" {
 }
 
 
+// ===================================================================
+// Phase F — Base Library Tests
+// ===================================================================
 
+test "baselib: type() function" {
+    const gpa = std.testing.allocator;
+    var L: lua.lua_State = undefined;
+    try lua.luaL_newstate(&L, gpa);
+    defer lua.lua_close(&L);
+    try lua.luaL_openlibs(&L);
 
+    const typefn = struct {
+        fn f(Ls: *lua.lua_State) anyerror!i32 {
+            // type(nil) == "nil"
+            lua.lua_pushnil(Ls);
+            _ = lua.lua_getglobal(Ls, "type");
+            lua.lua_pushvalue(Ls, -2);
+            lua.lua_call(Ls, 1, 1);
+            const s = lua.lua_tostring(Ls, -1);
+            if (s == null or !std.mem.eql(u8, s.?, "nil")) return error.TypeMismatchNil;
+            lua.lua_pop(Ls, 2);
 
+            // type(true) == "boolean"
+            lua.lua_pushboolean(Ls, 1);
+            _ = lua.lua_getglobal(Ls, "type");
+            lua.lua_pushvalue(Ls, -2);
+            lua.lua_call(Ls, 1, 1);
+            const s2 = lua.lua_tostring(Ls, -1);
+            if (s2 == null or !std.mem.eql(u8, s2.?, "boolean")) return error.TypeMismatchBool;
+            lua.lua_pop(Ls, 2);
+
+            // type(42) == "number"
+            lua.lua_pushinteger(Ls, 42);
+            _ = lua.lua_getglobal(Ls, "type");
+            lua.lua_pushvalue(Ls, -2);
+            lua.lua_call(Ls, 1, 1);
+            const s3 = lua.lua_tostring(Ls, -1);
+            if (s3 == null or !std.mem.eql(u8, s3.?, "number")) return error.TypeMismatchNum;
+            lua.lua_pop(Ls, 2);
+
+            return 0;
+        }
+    }.f;
+    lua.lua_pushcfunction(&L, typefn);
+    const status = lua.lua_pcallk(&L, 0, 0, 0, 0, null);
+    try std.testing.expectEqual(lua.LUA_OK, status);
+}
+
+test "baselib: rawequal(), rawlen(), rawget(), rawset()" {
+    const gpa = std.testing.allocator;
+    var L: lua.lua_State = undefined;
+    try lua.luaL_newstate(&L, gpa);
+    defer lua.lua_close(&L);
+    try lua.luaL_openlibs(&L);
+
+    const testfn = struct {
+        fn f(Ls: *lua.lua_State) anyerror!i32 {
+            // rawequal(1, 1) == true
+            _ = lua.lua_getglobal(Ls, "rawequal");
+            lua.lua_pushinteger(Ls, 1);
+            lua.lua_pushinteger(Ls, 1);
+            lua.lua_call(Ls, 2, 1);
+            if (lua.lua_toboolean(Ls, -1) == 0) return error.FailedRawEqual;
+            lua.lua_pop(Ls, 1);
+
+            // Create a table and use rawset/rawget
+            lua.lua_newtable(Ls);
+            // rawset(t, "k", 99)
+            _ = lua.lua_getglobal(Ls, "rawset");
+            lua.lua_pushvalue(Ls, -2); // table
+            _ = lua.lua_pushstring(Ls, "k");
+            lua.lua_pushinteger(Ls, 99);
+            lua.lua_call(Ls, 3, 0);
+
+            // rawget(t, "k") == 99
+            _ = lua.lua_getglobal(Ls, "rawget");
+            lua.lua_pushvalue(Ls, -2); // table
+            _ = lua.lua_pushstring(Ls, "k");
+            lua.lua_call(Ls, 2, 1);
+            const r_val = lua.lua_tointeger(Ls, -1);
+            if (r_val orelse 0 != 99) return error.FailedRawGet;
+            lua.lua_pop(Ls, 1);
+
+            // rawlen({}) == 0
+            _ = lua.lua_getglobal(Ls, "rawlen");
+            lua.lua_pushvalue(Ls, -2); // table
+            lua.lua_call(Ls, 1, 1);
+            const r_len = lua.lua_tointeger(Ls, -1);
+            if (r_len orelse -1 != 0) return error.FailedRawLen;
+            lua.lua_pop(Ls, 2);
+
+            return 0;
+        }
+    }.f;
+    lua.lua_pushcfunction(&L, testfn);
+    const status = lua.lua_pcallk(&L, 0, 0, 0, 0, null);
+    try std.testing.expectEqual(lua.LUA_OK, status);
+}
+
+test "baselib: setmetatable() and getmetatable()" {
+    const gpa = std.testing.allocator;
+    var L: lua.lua_State = undefined;
+    try lua.luaL_newstate(&L, gpa);
+    defer lua.lua_close(&L);
+    try lua.luaL_openlibs(&L);
+
+    const testfn = struct {
+        fn f(Ls: *lua.lua_State) anyerror!i32 {
+            // getmetatable(t) before setting — should be nil
+            lua.lua_newtable(Ls); // t at -1
+            _ = lua.lua_getglobal(Ls, "getmetatable");
+            lua.lua_pushvalue(Ls, -2);
+            lua.lua_call(Ls, 1, 1);
+            if (lua.lua_type(Ls, -1) != lua.LUA_TNIL) return error.ShouldBeNil;
+            lua.lua_pop(Ls, 1);
+
+            // setmetatable(t, mt)
+            lua.lua_newtable(Ls); // mt at -1
+            _ = lua.lua_getglobal(Ls, "setmetatable");
+            lua.lua_pushvalue(Ls, -3); // t
+            lua.lua_pushvalue(Ls, -3); // mt
+            lua.lua_call(Ls, 2, 0);
+
+            // getmetatable(t) == mt
+            _ = lua.lua_getglobal(Ls, "getmetatable");
+            lua.lua_pushvalue(Ls, -3); // t
+            lua.lua_call(Ls, 1, 1);
+            if (lua.lua_type(Ls, -1) != lua.LUA_TTABLE) return error.ShouldBeTable;
+            lua.lua_pop(Ls, 3);
+
+            return 0;
+        }
+    }.f;
+    lua.lua_pushcfunction(&L, testfn);
+    const status = lua.lua_pcallk(&L, 0, 0, 0, 0, null);
+    try std.testing.expectEqual(lua.LUA_OK, status);
+}
+
+test "baselib: tonumber() and tostring()" {
+    const gpa = std.testing.allocator;
+    var L: lua.lua_State = undefined;
+    try lua.luaL_newstate(&L, gpa);
+    defer lua.lua_close(&L);
+    try lua.luaL_openlibs(&L);
+
+    const testfn = struct {
+        fn f(Ls: *lua.lua_State) anyerror!i32 {
+            // tonumber("42") == 42
+            _ = lua.lua_getglobal(Ls, "tonumber");
+            _ = lua.lua_pushstring(Ls, "42");
+            lua.lua_call(Ls, 1, 1);
+            if (lua.lua_tointeger(Ls, -1) orelse -1 != 42) return error.FailedToNum1;
+            lua.lua_pop(Ls, 1);
+
+            // tonumber("ff", 16) == 255
+            _ = lua.lua_getglobal(Ls, "tonumber");
+            _ = lua.lua_pushstring(Ls, "ff");
+            lua.lua_pushinteger(Ls, 16);
+            lua.lua_call(Ls, 2, 1);
+            if (lua.lua_tointeger(Ls, -1) orelse -1 != 255) return error.FailedToNum2;
+            lua.lua_pop(Ls, 1);
+
+            // tonumber("hello") == nil
+            _ = lua.lua_getglobal(Ls, "tonumber");
+            _ = lua.lua_pushstring(Ls, "hello");
+            lua.lua_call(Ls, 1, 1);
+            if (lua.lua_type(Ls, -1) != lua.LUA_TNIL) return error.ShouldBeNil;
+            lua.lua_pop(Ls, 1);
+
+            // tostring(42) == "42"
+            _ = lua.lua_getglobal(Ls, "tostring");
+            lua.lua_pushinteger(Ls, 42);
+            lua.lua_call(Ls, 1, 1);
+            const s = lua.lua_tostring(Ls, -1);
+            if (s == null or !std.mem.eql(u8, s.?, "42")) return error.FailedToStr;
+            lua.lua_pop(Ls, 1);
+
+            return 0;
+        }
+    }.f;
+    lua.lua_pushcfunction(&L, testfn);
+    const status = lua.lua_pcallk(&L, 0, 0, 0, 0, null);
+    try std.testing.expectEqual(lua.LUA_OK, status);
+}
+
+test "baselib: select()" {
+    const gpa = std.testing.allocator;
+    var L: lua.lua_State = undefined;
+    try lua.luaL_newstate(&L, gpa);
+    defer lua.lua_close(&L);
+    try lua.luaL_openlibs(&L);
+
+    const testfn = struct {
+        fn f(Ls: *lua.lua_State) anyerror!i32 {
+            // select("#", a, b, c) == 3
+            _ = lua.lua_getglobal(Ls, "select");
+            _ = lua.lua_pushstring(Ls, "#");
+            lua.lua_pushinteger(Ls, 10);
+            lua.lua_pushinteger(Ls, 20);
+            lua.lua_pushinteger(Ls, 30);
+            lua.lua_call(Ls, 4, 1);
+            const r1 = lua.lua_tointeger(Ls, -1);
+            if (r1 orelse -1 != 3) return error.FailedCount;
+            lua.lua_pop(Ls, 1);
+
+            // select(2, 10, 20, 30) returns 20, 30 (2 results)
+            _ = lua.lua_getglobal(Ls, "select");
+            lua.lua_pushinteger(Ls, 2);
+            lua.lua_pushinteger(Ls, 10);
+            lua.lua_pushinteger(Ls, 20);
+            lua.lua_pushinteger(Ls, 30);
+            lua.lua_call(Ls, 4, lua.LUA_MULTRET);
+            const top = lua.lua_gettop(Ls);
+            if (top != 2) return error.WrongCount;
+            if (lua.lua_tointeger(Ls, 1) orelse -1 != 20) return error.FailedVal1;
+            if (lua.lua_tointeger(Ls, 2) orelse -1 != 30) return error.FailedVal2;
+            lua.lua_settop(Ls, 0);
+
+            return 0;
+        }
+    }.f;
+    lua.lua_pushcfunction(&L, testfn);
+    const status = lua.lua_pcallk(&L, 0, 0, 0, 0, null);
+    try std.testing.expectEqual(lua.LUA_OK, status);
+}

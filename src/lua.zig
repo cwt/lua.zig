@@ -452,6 +452,8 @@ pub const global_State = struct {
     allgc: ?*VMGCObject = null,
     mt: [9]?*lua_Table = [_]?*lua_Table{null} ** 9,
     tmname: [25]?*lua_TString = [_]?*lua_TString{null} ** 25,
+    io_backend: ?std.Io.Threaded = null,
+    io: std.Io,
 };
 
 inline fn G(L: *lua_State) *global_State {
@@ -548,18 +550,36 @@ fn idxPtr(L: *lua_State, idx: i32) ?*TValue {
     return null;
 }
 
+fn toAbsoluteIndex(L: *lua_State, idx: i32) usize {
+    if (idx > 0) {
+        const base: usize = if (L.ci) |ci| ci.base else 0;
+        return base + @as(usize, @intCast(idx - 1));
+    } else if (idx < 0) {
+        const abs = @as(usize, @intCast(-idx));
+        if (abs <= L.top) {
+            return L.top - abs;
+        }
+        return 0;
+    }
+    return 0;
+}
+
 pub fn lua_absindex(L: *lua_State, idx: i32) i32 {
-    if (idx >= 1 and @as(usize, @intCast(idx)) <= L.top) return idx;
-    return @as(i32, @intCast(L.top)) + 1 + idx;
+    if (idx > 0) return idx;
+    const base: usize = if (L.ci) |ci| ci.base else 0;
+    const abs_idx = toAbsoluteIndex(L, idx);
+    return @as(i32, @intCast(abs_idx - base)) + 1;
 }
 
 pub fn lua_gettop(L: *lua_State) i32 {
-    return @as(i32, @intCast(L.top));
+    const base: usize = if (L.ci) |ci| ci.base else 0;
+    return @as(i32, @intCast(L.top - base));
 }
 
 pub fn lua_settop(L: *lua_State, idx: i32) void {
+    const base: usize = if (L.ci) |ci| ci.base else 0;
     if (idx >= 0) {
-        const n = @as(usize, @intCast(idx));
+        const n = base + @as(usize, @intCast(idx));
         if (n < L.top) {
             @memset(L.stack[n..L.top], TValue{ .nil = {} });
         } else if (n > L.top) {
@@ -567,7 +587,15 @@ pub fn lua_settop(L: *lua_State, idx: i32) void {
         }
         L.top = n;
     } else {
-        lua_settop(L, @as(i32, @intCast(L.top)) + 1 + idx);
+        const abs_top = @as(i32, @intCast(L.top));
+        const n = abs_top + 1 + idx;
+        if (n >= @as(i32, @intCast(base))) {
+            const un = @as(usize, @intCast(n));
+            if (un < L.top) {
+                @memset(L.stack[un..L.top], TValue{ .nil = {} });
+            }
+            L.top = un;
+        }
     }
 }
 
@@ -578,9 +606,37 @@ pub fn lua_pushvalue(L: *lua_State, idx: i32) void {
 }
 
 pub fn lua_rotate(L: *lua_State, idx: i32, n: i32) void {
-    _ = L;
-    _ = idx;
-    _ = n;
+    const base: usize = if (L.ci) |ci| ci.base else 0;
+    const abs_idx = toAbsoluteIndex(L, idx);
+    if (abs_idx < base or abs_idx >= L.top) return;
+    const len: i32 = @as(i32, @intCast(L.top - abs_idx));
+    if (len <= 0) return;
+    const rot: usize = @intCast(@mod(@mod(n, len) + len, len));
+    if (rot == 0) return;
+    const top_idx: usize = L.top - 1;
+    // Reverse full range
+    var i: usize = abs_idx;
+    var j: usize = top_idx;
+    while (i < j) : ({ i += 1; j -= 1; }) { const t = L.stack[i]; L.stack[i] = L.stack[j]; L.stack[j] = t; }
+    // Reverse first rot elements
+    i = abs_idx; j = abs_idx + rot - 1;
+    while (i < j) : ({ i += 1; j -= 1; }) { const t = L.stack[i]; L.stack[i] = L.stack[j]; L.stack[j] = t; }
+    // Reverse remaining elements
+    i = abs_idx + rot; j = top_idx;
+    while (i < j) : ({ i += 1; j -= 1; }) { const t = L.stack[i]; L.stack[i] = L.stack[j]; L.stack[j] = t; }
+}
+
+pub inline fn lua_insert(L: *lua_State, idx: i32) void {
+    lua_rotate(L, idx, 1);
+}
+
+pub inline fn lua_remove(L: *lua_State, idx: i32) void {
+    lua_rotate(L, idx, -1);
+    L.top -= 1;
+}
+
+pub inline fn lua_newtable(L: *lua_State) void {
+    lua_createtable(L, 0, 0);
 }
 
 pub fn lua_copy(L: *lua_State, fromidx: i32, toidx: i32) void {
@@ -611,6 +667,10 @@ pub fn lua_xmove(L: *lua_State, from: *lua_State, n: i32) void {
 fn stackAt(L: *lua_State, idx: i32) TValue {
     const ptr = idxPtr(L, idx) orelse return TValue{ .nil = {} };
     return ptr.*;
+}
+
+pub inline fn lua_isnoneornil(L: *lua_State, idx: i32) bool {
+    return lua_type(L, idx) <= 0;
 }
 
 pub fn lua_isnil(L: *lua_State, idx: i32) i32 {
@@ -1024,9 +1084,35 @@ pub fn lua_pop(L: *lua_State, n: i32) void {
 }
 
 pub fn lua_getglobal(L: *lua_State, name: []const u8) i32 {
-    _ = name;
-    lua_pushnil(L);
-    return 1;
+    const g = G(L);
+    // Extract the registry table from g.registry (a TValue)
+    const registry: *lua_Table = switch (g.registry) {
+        .table => |t_opt| t_opt orelse {
+            lua_pushnil(L);
+            return LUA_TNIL;
+        },
+        else => {
+            lua_pushnil(L);
+            return LUA_TNIL;
+        },
+    };
+    // LUA_RIDX_GLOBALS == 2: globals table stored at registry[2]
+    const globals_val = ltable.getInt(registry, 2);
+    const globals: *lua_Table = switch (globals_val) {
+        .table => |t_opt| t_opt orelse {
+            lua_pushnil(L);
+            return LUA_TNIL;
+        },
+        else => {
+            lua_pushnil(L);
+            return LUA_TNIL;
+        },
+    };
+    const key = TValue{ .string = lstring.luaS_new(g.allocator, &g.strt, g.seed, name) catch null };
+    const val = ltable.get(globals, key);
+    L.stack[L.top] = val;
+    L.top += 1;
+    return val.typ();
 }
 
 fn getTable(L: *lua_State, idx: i32) ?*lua_Table {
@@ -1039,7 +1125,7 @@ pub fn lua_gettable(L: *lua_State, idx: i32) i32 {
     const obj = stackAt(L, idx);
     if (obj == .nil) {
         lua_pushnil(L);
-        return 1;
+        return LUA_TNIL;
     }
     const key = L.stack[L.top - 1];
     const res = L.top - 1;
@@ -1047,19 +1133,19 @@ pub fn lua_gettable(L: *lua_State, idx: i32) i32 {
     ltm.luaV_gettable(L, obj, key, res) catch {
         L.stack[res] = .{ .nil = {} };
     };
-    return 1;
+    return L.stack[res].typ();
 }
 
 pub fn lua_getfield(L: *lua_State, idx: i32, k: []const u8) i32 {
     const obj = stackAt(L, idx);
     if (obj == .nil) {
         lua_pushnil(L);
-        return 1;
+        return LUA_TNIL;
     }
     const g = G(L);
     const ts = lstring.luaS_new(g.allocator, &g.strt, g.seed, k) catch {
         lua_pushnil(L);
-        return 1;
+        return LUA_TNIL;
     };
     const key = TValue{ .string = ts };
     const res = L.top;
@@ -1068,14 +1154,14 @@ pub fn lua_getfield(L: *lua_State, idx: i32, k: []const u8) i32 {
     ltm.luaV_gettable(L, obj, key, res) catch {
         L.stack[res] = .{ .nil = {} };
     };
-    return 1;
+    return L.stack[res].typ();
 }
 
 pub fn lua_geti(L: *lua_State, idx: i32, n: lua_Integer) i32 {
     const obj = stackAt(L, idx);
     if (obj == .nil) {
         lua_pushnil(L);
-        return 1;
+        return LUA_TNIL;
     }
     const key = TValue{ .number = @floatFromInt(n) };
     const res = L.top;
@@ -1084,44 +1170,44 @@ pub fn lua_geti(L: *lua_State, idx: i32, n: lua_Integer) i32 {
     ltm.luaV_gettable(L, obj, key, res) catch {
         L.stack[res] = .{ .nil = {} };
     };
-    return 1;
+    return L.stack[res].typ();
 }
 
 /// Raw (no metamethod) get — key is on top of stack.
 pub fn lua_rawget(L: *lua_State, idx: i32) i32 {
     const t = getTable(L, idx) orelse {
         lua_pushnil(L);
-        return 1;
+        return LUA_TNIL;
     };
     const key = L.stack[L.top - 1];
     const val = ltable.get(t, key);
     L.top -= 1;
     L.stack[L.top] = val;
     L.top += 1;
-    return 1;
+    return val.typ();
 }
 
 /// Raw (no metamethod) integer-key get.
 pub fn lua_rawgeti(L: *lua_State, idx: i32, n: lua_Integer) i32 {
     const t = getTable(L, idx) orelse {
         lua_pushnil(L);
-        return 1;
+        return LUA_TNIL;
     };
     const val = ltable.getInt(t, n);
     L.stack[L.top] = val;
     L.top += 1;
-    return 1;
+    return val.typ();
 }
 
 pub fn lua_rawgetp(L: *lua_State, idx: i32, p: ?*const anyopaque) i32 {
     const t = getTable(L, idx) orelse {
         lua_pushnil(L);
-        return 1;
+        return LUA_TNIL;
     };
     const val = ltable.get(t, TValue{ .lightud = @constCast(p) });
     L.stack[L.top] = val;
     L.top += 1;
-    return 1;
+    return val.typ();
 }
 
 pub fn lua_createtable(L: *lua_State, narr: i32, nrec: i32) void {
@@ -1144,8 +1230,8 @@ pub fn lua_newuserdatauv(L: *lua_State, sz: usize, nuvalue: i32) ?*anyopaque {
 pub fn lua_getmetatable(L: *lua_State, objindex: i32) i32 {
     const val = idxPtr(L, objindex) orelse return 0;
     const mt: ?*lua_Table = switch (val.*) {
-        .table => |t| t.metatable,
-        .userdata => |u| u.metatable,
+        .table => |t_opt| if (t_opt) |t| t.metatable else null,
+        .userdata => |u_opt| if (u_opt) |u| u.metatable else null,
         else => {
             const t = val.typ();
             if (t >= 0 and t < 9) {
@@ -1174,8 +1260,34 @@ pub fn lua_getiuservalue(L: *lua_State, idx: i32, n: i32) i32 {
 }
 
 pub fn lua_setglobal(L: *lua_State, name: []const u8) void {
-    _ = L;
-    _ = name;
+    const g = G(L);
+    // Extract the registry table from g.registry (a TValue)
+    const registry: *lua_Table = switch (g.registry) {
+        .table => |t_opt| t_opt orelse {
+            L.top -= 1;
+            return;
+        },
+        else => {
+            L.top -= 1;
+            return;
+        },
+    };
+    // LUA_RIDX_GLOBALS == 2
+    const globals_val = ltable.getInt(registry, 2);
+    const globals: *lua_Table = switch (globals_val) {
+        .table => |t_opt| t_opt orelse {
+            L.top -= 1;
+            return;
+        },
+        else => {
+            L.top -= 1;
+            return;
+        },
+    };
+    const val = L.stack[L.top - 1];
+    L.top -= 1;
+    const key = TValue{ .string = lstring.luaS_new(g.allocator, &g.strt, g.seed, name) catch null };
+    ltable.set(globals, key, val) catch {};
 }
 
 pub fn lua_settable(L: *lua_State, idx: i32) void {
@@ -1853,7 +1965,7 @@ pub fn lua_closeslot(L: *lua_State, idx: i32) void {
     _ = idx;
 }
 
-pub fn luaL_newstate(L: *lua_State, gpa: std.mem.Allocator) !void {
+pub fn luaL_newstate_io(L: *lua_State, gpa: std.mem.Allocator, io: std.Io) !void {
     const g = try gpa.create(global_State);
     g.* = .{
         .allocator = gpa,
@@ -1862,6 +1974,8 @@ pub fn luaL_newstate(L: *lua_State, gpa: std.mem.Allocator) !void {
         .registry = TValue{ .nil = {} },
         .mt = [_]?*lua_Table{null} ** 9,
         .tmname = [_]?*lua_TString{null} ** 25,
+        .io_backend = null,
+        .io = io,
     };
     const stack = try gpa.alloc(TValue, LUA_MINSTACK + 1);
     L.* = .{
@@ -1903,6 +2017,13 @@ pub fn luaL_newstate(L: *lua_State, gpa: std.mem.Allocator) !void {
     try registerGC(L, globals_tab);
     try ltable.setInt(registry_tab, 2, TValue{ .table = globals_tab });
     try ltm.luaT_init(L);
+}
+
+pub fn luaL_newstate(L: *lua_State, gpa: std.mem.Allocator) !void {
+    var threaded = std.Io.Threaded.init(gpa, .{});
+    errdefer threaded.deinit();
+    try luaL_newstate_io(L, gpa, threaded.io());
+    L.l_G.?.io_backend = threaded;
 }
 
 pub fn createargtable(L: *lua_State, args: anytype) !void {
@@ -1966,6 +2087,9 @@ pub fn lua_close(L: *lua_State) void {
             g.allocator.destroy(entry.value_ptr.*);
         }
         g.strt.deinit(g.allocator);
+        if (g.io_backend) |*threaded| {
+            threaded.deinit();
+        }
         L.allocator.destroy(g);
     }
     L.allocator.free(L.stack);

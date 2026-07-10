@@ -303,5 +303,34 @@ Implemented the binary bytecode loader (`lundump.zig`), allowing precompiled Lua
 
 `zig build test` compiled and passed all **27/27 tests** with zero memory leaks.
 
+---
+
+## Phase F — Standard Libraries (Base Library Porting) (2026-07-10)
+
+### Changes
+
+- **`src/lua.zig`**:
+  - Implemented `lua_getglobal` and `lua_setglobal` to look up and store values in the registry globals table (`LUA_RIDX_GLOBALS = 2`).
+  - Refactored `lua_absindex`, `lua_gettop`, `lua_settop`, and `lua_rotate` to be frame-relative by mapping indices relative to `L.ci.?.base` when a call frame is active. Added `toAbsoluteIndex` internal helper.
+  - Corrected return types for `lua_gettable`, `lua_getfield`, `lua_geti`, `lua_rawget`, `lua_rawgeti`, and `lua_rawgetp` to return the actual type of the pushed value (`val.typ()`) rather than a hardcoded `1` (which mapped incorrectly to `LUA_TBOOLEAN`).
+
+- **`src/lib/baselib.zig`**:
+  - Wired and completed standard base library functions registration in `openbaselib`.
+  - Fixed logic in `pcall`/`xpcall`/`rawequal` around type signatures and `lua_pushboolean` boolean casting.
+
+- **`tests/test_basic.zig`**:
+  - Appended 5 new integration tests verifying `type()`, `rawequal(), rawlen(), rawget(), rawset()`, `setmetatable() and getmetatable()`, `tonumber() and tostring()`, and `select()`.
+
+### §0.1 Self-Audit
+
+- Handled frame-relative stack operations securely without breaking absolute pseudo-indexing.
+- Replaced manual pointer arithmetic with relative base offsetting.
+- Cleared debug tracing from the codebase to keep test output clean.
+
+### Verification
+
+`zig build test` compiled and passed all **32/32 tests** with zero memory leaks.
+
+
 
 
