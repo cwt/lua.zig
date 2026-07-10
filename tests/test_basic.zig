@@ -214,3 +214,65 @@ test "table gettable/settable with stack key" {
     const got = lua.lua_tostring(&L, -1) orelse return error.TestFailed;
     try std.testing.expectEqualSlices(u8, "zig", got);
 }
+
+const StringReaderState = struct {
+    code: []const u8,
+    read_done: bool,
+};
+
+fn stringReader(L: *lua.lua_State, data: ?*anyopaque, size: ?*usize) ?[]const u8 {
+    _ = L;
+    const state: *StringReaderState = @ptrCast(@alignCast(data.?));
+    if (state.read_done) {
+        if (size) |p| p.* = 0;
+        return &.{};
+    }
+    state.read_done = true;
+    if (size) |p| p.* = state.code.len;
+    return state.code;
+}
+
+test "bytecode loader (lundump)" {
+    const gpa = std.testing.allocator;
+    var L: lua.lua_State = undefined;
+    try lua.luaL_newstate(&L, gpa);
+    defer lua.lua_close(&L);
+
+    var threaded: std.Io.Threaded = .init_single_threaded;
+    const io = threaded.io();
+    const bytecode = try std.Io.Dir.cwd().readFileAlloc(io, "tests/test_chunk.luac", gpa, .unlimited);
+    defer gpa.free(bytecode);
+
+    var reader_state = StringReaderState{
+        .code = bytecode,
+        .read_done = false,
+    };
+
+    const status = lua.lua_load(&L, stringReader, &reader_state, "test_chunk.luac", "b");
+    try std.testing.expectEqual(@as(i32, lua.LUA_OK), status);
+
+    // The top of the stack should contain the loaded closure
+    try std.testing.expectEqual(@as(i32, 1), lua.lua_gettop(&L));
+    try std.testing.expectEqual(@as(i32, lua.LUA_TFUNCTION), lua.lua_type(&L, -1));
+
+    // Get the closure and check the prototype
+    const val = L.stack[L.top - 1];
+    try std.testing.expect(val == .function);
+    const cl = val.function.?;
+    try std.testing.expect(cl.* == .lua);
+    const proto = cl.lua;
+
+    // Verify main prototype properties
+    try std.testing.expectEqual(@as(u8, 0), proto.numParams);
+    try std.testing.expect(proto.code.len > 0);
+    try std.testing.expect(proto.k.len > 0);
+
+    // Main prototype should have 1 nested prototype (the `sub` function)
+    try std.testing.expectEqual(@as(usize, 1), proto.p.len);
+    const sub_proto = proto.p[0];
+
+    // Verify sub-prototype properties
+    try std.testing.expectEqual(@as(u8, 1), sub_proto.numParams);
+    try std.testing.expect(sub_proto.code.len > 0);
+}
+

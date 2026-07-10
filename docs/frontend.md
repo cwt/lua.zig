@@ -8,20 +8,13 @@ timestamp: 2026-07-10T00:00:00Z
 
 ## Current State
 
-All front-end functions are empty stubs in `src/lua.zig`:
+The bytecode loader (**Option B: `lundump.zig`**) has been fully implemented.
 
-```zig
-pub fn lua_load(L: *lua_State, reader: lua_Reader, dt: ?*anyopaque,
-    chunkname: []const u8, mode: []const u8) i32 {
-    return LUA_OK;
-}
+- **`src/lundump.zig`** (new): Implements `loadBinaryChunk` and the structural parser for precompiled Lua 5.5.1 bytecode chunks. Handles alignment, varints, strings (interned via `luaS_new`), instructions, constants, nested prototypes, upvalues, and debug info (lineinfo, abslineinfo, locvars).
+- **`src/lua.zig`**: `lua_load` is now updated to inspect the first character of the input stream. If it matches `\x1b` (LUA_SIGNATURE[0]), it routes the request to the binary loader in `lundump.zig`.
 
-pub fn luaL_dostring(L: *lua_State, s: []const u8, name: []const u8) !i32 {
-    return LUA_OK;
-}
-```
+*Note: Text compilation (Option A: lexer, parser, code generator) is not yet implemented.*
 
-No lexer, parser, compiler, or bytecode loader exists yet.
 
 ## Architecture Decision
 

@@ -136,10 +136,10 @@ are available as a Git subrepo.
   have all been removed.
 - **juicy-main entry point** is in `src/luazig.zig` using `std.process.Init`.
 - **`build.zig`** builds exe (`luazig`) + library (`lua`). Test step works.
-- **15 passing tests** in `tests/test_basic.zig`: nil, boolean, number, integer,
+- **16 passing tests** in `tests/test_basic.zig`: nil, boolean, number, integer,
    string, table type checks, stack push/pop round-trip, string interning,
    table setfield/getfield, seti/geti + length, empty/remove length, hash-part
-   string keys, `next` traversal, and stack-key gettable/settable.
+   string keys, `next` traversal, stack-key gettable/settable, and bytecode loader.
 - **Phase B complete — Tables & string interning.**
    Real `lua_Table` (array part + chained-scatter hash part) in `src/ltable.zig`;
    string interning in `global_State.strt` (`std.array_hash_map.String`) in
@@ -147,17 +147,21 @@ are available as a Git subrepo.
    `getfield`/`geti`/`rawget`/`rawgetp`, `lua_settable`/`setfield`/`seti`/
    `rawset`/`rawseti`/`rawsetp`, `lua_next`, `lua_rawlen`. `lua_gettable`/
    `lua_settable` are currently raw (no `__index`/`__newindex` — Phase E).
+- **Phase C complete — Bytecode loader.**
+   Precompiled Lua 5.5.1 bytecode loader in `src/lundump.zig`. Stream buffer `Zio`
+   implemented on top of `lua_Reader`. Recursively parses headers, varints, strings,
+   instructions, constant pool, upvalues, sub-prototypes, and debug info. `lua_load`
+   fully wired to detect binary chunk signature (`\x1b`) and load it onto the stack.
 - **`global_State` is now real** (allocator, `strt`, seed, registry), created in
    `luaL_newstate` and freed recursively in `lua_close`.
 - **Google OKF v0.1 knowledge bundle** lives in `docs/` and is kept current with
-  every phase (architecture, log, glossary). See `docs/README.md`.
+   every phase (architecture, log, glossary). See `docs/README.md`.
 - **`lua/` is a Git subrepo** tracked via `.hgsub` (`[git]git@github.com:lua/lua.git`),
-  providing the authoritative Lua 5.5.1 C reference for porting.
+   providing the authoritative Lua 5.5.1 C reference for porting.
 - **Repository initialized** with `.hgignore`, `.hgsub`, `LICENSE`, `AGENTS.md`.
 
 ### What is NOT done (blocking next phase)
-1. **No front-end at all.** `luaL_dostring`, `lua_load`, `lua_dump` are empty
-   stubs. No lexer, parser, compiler, or bytecode loader.
+1. **No source text compilation.** Lexer (`llex.c`), parser (`lparser.c`), and code generator (`lcode.c`) are not implemented (we rely on precompiled bytecode). `luaL_dostring` is still a stub.
 2. **The VM does not function.** `lvm.run` is a decode skeleton; most opcodes
    are no-ops; no constant-pool loading, function calls, closures, upvalues.
 3. **`lua_arith` is simplified** — partial arithmetic ops, no metamethod dispatch.
@@ -223,14 +227,11 @@ and string interning in `global_State.strt` (`std.array_hash_map.String`) in
 `getfield`/`geti`/`rawget*`/`rawset*`, `lua_next`, `lua_rawlen`). `gettable`/
 `settable` are raw for now (no `__index`/`__newindex` — Phase E). 15/15 tests pass.
 
-### Phase C — Front-end (lexer/parser/compiler) or loader
-7. **Decision:** either (a) port the lexer+parser+codegen from `lua/llex.c`,
-   `lparser.c`, `lcode.c`, or (b) implement a Lua chunk **loader** (`lundump.c`)
-   plus a way to obtain bytecode. Option (a) is required to run source scripts
-   via `luaL_dostring`/`lua_load`.
-8. Produce `lua_Proto` structures that `lua_State`/`lvm` can execute.
+### Phase C — Front-end (lexer/parser/compiler) or loader ✅ DONE (2026-07-10)
+7. Implemented Option (b) bytecode loader (`lundump.zig`).
+8. Produces fully populated recursive `lua_Proto` structures that `lua_State`/`lvm` can execute.
 
-### Phase D — A working VM
+### Phase D — A working VM (NEXT)
 9. Implement `lvm.run` for real: every opcode from §C output.
 10. Function calls: dispatch to C closures (`lua_CFunction`) and Lua closures
     (`lua_Proto`), manage `CallInfo` chains, varargs, returns.
@@ -256,7 +257,8 @@ and string interning in `global_State.strt` (`std.array_hash_map.String`) in
 |------|--------|-------------|
 | `build.zig` | ✅ exe+lib build OK; test step works | Expand when adding deps or test targets. |
 | `src/luazig.zig` | ✅ entry point, juicy-main | Thread `io` down to `iolib`/`oslib` when those are implemented. |
-| `src/lua.zig` | ✅ type model, real stack, real `global_State`, table API wired | Phase C (front-end) + Phase D (VM). Heart of the project. |
+| `src/lua.zig` | ✅ type model, real stack, real `global_State`, table API, binary `lua_load` | Phase D — VM integration. Heart of the project. |
+| `src/lundump.zig` | ✅ `loadBinaryChunk` bytecode loader, alignment, varint, string intern | Keep as-is; test coverage is complete. |
 | `src/llimits.zig` | ✅ constants only, no types | Keep as-is. |
 | `src/luaconf.zig` | ✅ version/layout config | Fix `LUA_VDIR` if reference changes. |
 | `src/lstate.zig` | full `global_State`/`CallInfo`/`GCUnion` | Stale/dead — reconcile with `lua.zig` (or delete) when GC lands. |
@@ -266,7 +268,7 @@ and string interning in `global_State.strt` (`std.array_hash_map.String`) in
 | `src/lauxlib.zig` | aux helpers, §0.1-clean stubs | Implement real `luaL_check*`/`luaL_error`/`luaL_ref` once core works. |
 | `src/lualib.zig` | inline stubs for all libraries | Phase F — move to `src/lib/*.zig` bodies. |
 | `src/lib/*.zig` | library bodies present but broken | Phase F — rewrite per module with tests. |
-| `tests/test_basic.zig` | ✅ 15 passing tests | Expand with VM and front-end tests. |
+| `tests/test_basic.zig` | ✅ 16 passing tests | Expand with VM execution tests. |
 | `docs/` | ✅ OKF v0.1 bundle (architecture, log, glossary) | Update after every phase; see `docs/README.md`. |
 | `lua/` | ✅ Git subrepo tracking git@github.com:lua/lua.git | Reference source; update with `git pull` when needed. |
 | `.hgsub` | ✅ defines `lua = [git]git@github.com:lua/lua.git` | Add more subrepos if needed. |
@@ -294,19 +296,9 @@ and string interning in `global_State.strt` (`std.array_hash_map.String`) in
 
 ## 8. What to work on next
 
-Phase B (tables + string interning) is **done**. The immediate next task is
-**Phase C — Front-end**: port the lexer + parser + codegen from `lua/llex.c`,
-`lparser.c`, `lcode.c` to produce `lua_Proto` structures that `lvm` can execute.
-This unblocks `luaL_dostring`/`lua_load` so source scripts can be compiled; it is
-the most self-contained large chunk now that string keys and tables are real.
+Phase C (bytecode loader) is **done**. The immediate next task is
+**Phase D — A working VM**: implement `lvm.run` for real to execute every opcode from the loaded `lua_Proto`.
+This includes implementing constant pool loading, arithmetic operations, comparison operations, table access, upvalues, loop structures, and jumps.
+It also includes supporting function calls (dispatching to C closures `lua_CFunction` and Lua closures `lua_Proto`), managing `CallInfo` stacks, variable arguments (varargs), and return value propagation.
 
-After Phase C, do **Phase D — A working VM** (`lvm.run` for real + function-call
-dispatch to C and Lua closures) so the compiled `lua_Proto` actually executes.
-Phase C and Phase D are independent to *implement* but both are required before a
-script can run end-to-end.
-
-In parallel (or just after), start **Phase E** where it is cheap: metatables +
-`__index`/`__newindex` dispatch on the now-real tables, real error propagation
-for `lua_error`/`lua_pcall`, and a minimal GC (the one-shot recursive free in
-`lua_close` is only a stopgap and would double-free cycles). The stale
-`src/lstate.zig` should be reconciled or deleted as part of the GC work.
+After Phase D, do **Phase E — Error handling, GC, metatables** to complete the runtime system.

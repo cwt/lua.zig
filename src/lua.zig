@@ -4,6 +4,7 @@ const llimits = @import("llimits.zig");
 const lvm = @import("lvm.zig");
 const ltable = @import("ltable.zig");
 const lstring = @import("lstring.zig");
+const lundump = @import("lundump.zig");
 
 pub const lua_Number = llimits.lua_Number;
 pub const lua_Integer = llimits.lua_Integer;
@@ -73,6 +74,7 @@ pub const LUA_MASKCOUNT: u32 = llimits.LUA_MASKCOUNT;
 
 pub const LUA_COPYRIGHT = "Lua 5.5  Copyright (C) 1994-2026 Lua.org, PUC-Rio";
 pub const LUA_AUTHORS = "R. Ierusalimschy, L. H. de Figueiredo, W. Celes";
+pub const LUA_SIGNATURE = "\x1bLua";
 
 pub const LUA_VERSION_MAJOR_N: u8 = 5;
 pub const LUA_VERSION_MINOR_N: u8 = 5;
@@ -160,18 +162,73 @@ pub const lua_Closure = union(enum) {
     lua: *lua_Proto,
 };
 
+pub const Upvaldesc = struct {
+    name: ?*lua_TString = null,
+    instack: u8 = 0,
+    idx: u8 = 0,
+    kind: u8 = 0,
+};
+
+pub const LocVar = struct {
+    varname: ?*lua_TString = null,
+    startpc: i32 = 0,
+    endpc: i32 = 0,
+};
+
+pub const AbsLineInfo = struct {
+    pc: i32 = 0,
+    line: i32 = 0,
+};
+
 pub const lua_Proto = struct {
-    source: ?[]const u8,
-    size: usize,
+    source: ?*lua_TString,
     lineDefined: i32,
     lastLineDefined: i32,
-    numParams: i32,
+    numParams: u8,
     isVarArg: bool,
-    maxStackSize: i32,
+    maxStackSize: u8,
     code: []lvm.Instruction,
-    k: ?[]TValue,
-    p: ?*lua_Proto,
+    k: []TValue,
+    p: []*lua_Proto,
+    upvalues: []Upvaldesc,
+    lineinfo: []i8,
+    abslineinfo: []AbsLineInfo,
+    locvars: []LocVar,
 };
+
+pub fn createProto(allocator: std.mem.Allocator) !*lua_Proto {
+    const f = try allocator.create(lua_Proto);
+    f.* = .{
+        .source = null,
+        .lineDefined = 0,
+        .lastLineDefined = 0,
+        .numParams = 0,
+        .isVarArg = false,
+        .maxStackSize = 0,
+        .code = &.{},
+        .k = &.{},
+        .p = &.{},
+        .upvalues = &.{},
+        .lineinfo = &.{},
+        .abslineinfo = &.{},
+        .locvars = &.{},
+    };
+    return f;
+}
+
+pub fn destroyProto(allocator: std.mem.Allocator, f: *lua_Proto) void {
+    allocator.free(f.code);
+    allocator.free(f.k);
+    for (f.p) |sub| {
+        destroyProto(allocator, sub);
+    }
+    allocator.free(f.p);
+    allocator.free(f.upvalues);
+    allocator.free(f.lineinfo);
+    allocator.free(f.abslineinfo);
+    allocator.free(f.locvars);
+    allocator.destroy(f);
+}
 
 pub const UpVal = struct {
     t: TValue,
@@ -800,12 +857,29 @@ pub fn lua_pcallk(L: *lua_State, nargs: i32, nresults: i32, errfunc: i32, ctx: l
 }
 
 pub fn lua_load(L: *lua_State, reader: lua_Reader, dt: ?*anyopaque, chunkname: []const u8, mode: []const u8) i32 {
-    _ = L;
-    _ = reader;
-    _ = dt;
-    _ = chunkname;
     _ = mode;
-    return LUA_OK;
+    var size: usize = 0;
+    const first_slice = reader(L, dt, &size);
+    if (first_slice == null or first_slice.?.len == 0 or size == 0) {
+        return LUA_ERRSYNTAX;
+    }
+    const c = first_slice.?[0];
+    if (c == '\x1b') {
+        const proto = lundump.loadBinaryChunk(L, reader, dt, first_slice.?, chunkname) catch |err| {
+            std.debug.print("Failed to load binary chunk: {any}\n", .{err});
+            return LUA_ERRSYNTAX;
+        };
+        const cl = L.allocator.create(lua_Closure) catch {
+            destroyProto(L.allocator, proto);
+            return LUA_ERRMEM;
+        };
+        cl.* = lua_Closure{ .lua = proto };
+        L.stack[L.top] = TValue{ .function = cl };
+        L.top += 1;
+        return LUA_OK;
+    } else {
+        return LUA_ERRSYNTAX;
+    }
 }
 
 pub fn lua_dump(L: *lua_State, writer: lua_Writer, data: ?*anyopaque, strip: i32) i32 {
@@ -995,6 +1069,14 @@ pub fn lua_tostring(L: *lua_State, idx: i32) ?[]const u8 {
 fn freeValue(L: *lua_State, v: TValue) void {
     if (v == .table) {
         if (v.table) |t| freeTable(L, t);
+    } else if (v == .function) {
+        if (v.function) |cl| {
+            switch (cl.*) {
+                .c => |cc| L.allocator.destroy(cc),
+                .lua => |p| destroyProto(L.allocator, p),
+            }
+            L.allocator.destroy(cl);
+        }
     }
 }
 

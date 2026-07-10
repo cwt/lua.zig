@@ -218,3 +218,50 @@ pub const GCUnion = union(enum) {
 | `LClosure` | (via `lua_Proto` in `.lua` variant) | Lua closures use `lua_Proto` directly |
 | `Closure` | `lua_Closure` | `union(enum) { c: *lua_CClosure, lua: *lua_Proto }` |
 | `UpVal` | `UpVal` | `t: TValue, uv: ?*UpVal` |
+
+## Function Prototypes
+
+Function prototypes (`lua_Proto`) represent compiled functions, containing bytecode instructions, constants, upvalue references, sub-prototypes, and debug metadata.
+
+### Zig Implementation (`src/lua.zig`)
+
+```zig
+pub const Upvaldesc = struct {
+    name: ?*lua_TString = null,
+    instack: u8 = 0,
+    idx: u8 = 0,
+    kind: u8 = 0,
+};
+
+pub const LocVar = struct {
+    varname: ?*lua_TString = null,
+    startpc: i32 = 0,
+    endpc: i32 = 0,
+};
+
+pub const AbsLineInfo = struct {
+    pc: i32 = 0,
+    line: i32 = 0,
+};
+
+pub const lua_Proto = struct {
+    source: ?*lua_TString,
+    lineDefined: i32,
+    lastLineDefined: i32,
+    numParams: u8,
+    isVarArg: bool,
+    maxStackSize: u8,
+    code: []lvm.Instruction,
+    k: []TValue,
+    p: []*lua_Proto,
+    upvalues: []Upvaldesc,
+    lineinfo: []i8,
+    abslineinfo: []AbsLineInfo,
+    locvars: []LocVar,
+};
+```
+
+### Key Differences from C
+- **Slices**: All lists (bytecode `code`, constant pool `k`, sub-prototypes `p`, upvalue descriptors `upvalues`, lineinfo arrays, local variables `locvars`) are mapped to Zig-native slices `[]T` instead of manual size counters and raw C pointers.
+- **Deduplicated strings**: `source` and other debug string names are stored as optional interned `*lua_TString` references.
+

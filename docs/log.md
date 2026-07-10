@@ -88,3 +88,45 @@ Implemented the foundational data structures for tables and deduplicated strings
   double-free (acceptable until Phase E GC).
 - Integer/float keys collapse (the port stores all numbers as `f64`); Lua 5.4's
   distinct int/float keys are not represented.
+
+---
+
+## 2026-07-10 — Phase C: Bytecode Loader (lundump)
+
+Implemented the binary bytecode loader (`lundump.zig`), allowing precompiled Lua 5.5.1 bytecode chunks to be parsed, loaded, and instanced as Lua closures on the stack.
+
+### Changes
+
+- **`src/lundump.zig`** (new):
+  - Struct `Zio`: Stream buffer wrapper around `lua_Reader` that caches the pre-read block and lazily reads next blocks block-by-block.
+  - Struct `LoadState`: Manages parse state, offset tracking, and loaded string cache.
+  - Helpers: `loadBlock`, `loadByte`, `loadVarint`, `loadSize`, `loadInt`, `loadNumber`, `loadInteger`, `loadAlign`, `loadString`, `loadCode`, `loadConstants`, `loadProtos`, `loadUpvalues`, `loadDebug`, `loadFunction`, `checkHeader`, `checkliteral`, `checknum`.
+  - Parses standard variable-length integer encoding (varint), aligns instruction/numeric boundaries, and interns short/long strings into the global state.
+  - Main entry point: `loadBinaryChunk`.
+- **`src/lua.zig`**:
+  - Defined prototype debug structures: `Upvaldesc`, `LocVar`, `AbsLineInfo`.
+  - Refactored `lua_Proto` to use idiomatic native Zig slices (`[]Instruction`, `[]TValue`, `[]*lua_Proto`, `[]Upvaldesc`, `[]i8`, `[]AbsLineInfo`, `[]LocVar`) and deduplicated string references (`?*lua_TString`).
+  - Added recursive prototype allocator/deallocator: `createProto`, `destroyProto`.
+  - Updated `freeValue` to recursively clean up `.function` (instantiated C closures and Lua closures, including the associated prototype tree).
+  - Updated `lua_load` to check the first byte of the stream. If it starts with `\x1b` (`LUA_SIGNATURE[0]`), it delegates chunk loading to `lundump.loadBinaryChunk`.
+  - Defined `LUA_SIGNATURE` version constant matching the C header.
+- **`tests/test_basic.zig`**:
+  - Added `bytecode loader (lundump)` test case.
+  - Generates bytecode dynamically by compiling `tests/test_chunk.lua` with the compiled reference interpreter `lua`, reads the output file using Zig 0.16.0 `std.Io` file system interfaces, loads it via `lua_load`, and validates prototype field properties (params count, stack size, instructions, constants, nested prototypes).
+- **`docs/` OKF Bundle**:
+  - Updated `docs/frontend.md` to note completed bytecode loader.
+  - Updated `docs/type-model.md` to specify new layout of `lua_Proto` and debug structs.
+
+### §0.1 Self-Audit
+
+- Allocator explicitly threaded to `createProto`, `destroyProto`, and throughout `lundump.zig`.
+- Errors propagated via error unions; no `catch unreachable` in loader.
+- Recursive functions `loadProtos` and `loadFunction` return `anyerror!void` explicitly to resolve compile-time error set dependency loop.
+- Decoupled from global I/O: test reads files using explicit `std.Io.Dir` and a single-threaded threaded `Io` instance fallback.
+- Strings interned via global state `strt` (no raw C string sentinels, slices are used).
+- Tagged unions are used throughout.
+
+### Verification
+
+`zig build test` compiled and passed all 16/16 tests successfully.
+
