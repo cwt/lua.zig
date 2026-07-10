@@ -1,0 +1,7 @@
+syntax: glob
+.zig-cache/
+zig-out/
+*.swp
+*.swo
+*~
+.DS_Store
