@@ -136,12 +136,12 @@ are available as a Git subrepo.
   have all been removed.
 - **juicy-main entry point** is in `src/luazig.zig` using `std.process.Init`.
 - **`build.zig`** builds exe (`luazig`) + library (`lua`). Test step works.
-- **20 passing tests** in `tests/test_basic.zig`: nil, boolean, number, integer,
+- **22 passing tests** in `tests/test_basic.zig`: nil, boolean, number, integer,
    string, table type checks, stack push/pop round-trip, string interning,
    table setfield/getfield, seti/geti + length, empty/remove length, hash-part
    string keys, `next` traversal, stack-key gettable/settable, bytecode loader,
-   VM execution, and **3 metamethod tests** (`__index` function, `__index` table
-   chain, `__newindex` function).
+   VM execution, and **5 metamethod tests** (`__index` function, `__index` table
+   chain, `__newindex` function, `__add` via C API, and `__add` via VM execution).
 - **Phase B complete — Tables & string interning.**
    Real `lua_Table` (array part + chained-scatter hash part) in `src/ltable.zig`;
    string interning in `global_State.strt` (`std.array_hash_map.String`) in
@@ -163,22 +163,22 @@ are available as a Git subrepo.
    providing the authoritative Lua 5.5.1 C reference for porting.
 - **Repository initialized** with `.hgignore`, `.hgsub`, `LICENSE`, `AGENTS.md`.
 
-- **Phase E partially complete — Metamethod dispatch for __index/__newindex.**
+- **Phase E partially complete — Metamethod dispatch for __index/__newindex and Arithmetic Metamethods.**
    `luaV_gettable` and `luaV_settable` in `src/ltm.zig` follow `__index`/`__newindex`
    chains (up to MAXTAGLOOP=2000). All table-access opcodes in `src/lvm.zig` and all
    C API table functions (`lua_gettable`, `lua_getfield`, `lua_geti`, `lua_settable`,
    `lua_setfield`, `lua_seti`) now dispatch through these. Raw variants (`lua_rawget*`,
    `lua_rawset*`) remain raw. `idxPtr` now frame-relative for positive indices.
    `lua_pushcfunction`, `lua_upvalueindex`, `lua_getupvalue`, `lua_setupvalue` added.
-   C closures now GC-registered (no memory leaks). **3 metamethod tests pass.**
+   Arithmetic metamethods (`__add`, `__sub`, etc.) fully implemented in `lua_arith` and VM execution with fallback.
+   C closures now GC-registered (no memory leaks). **5 metamethod tests pass.**
 
 ### What is NOT done (blocking next phase)
 1. **No source text compilation.** Lexer (`llex.c`), parser (`lparser.c`), and code generator (`lcode.c`) are not implemented (we rely on precompiled bytecode). `luaL_dostring` is still a stub.
-2. **Arithmetic metamethods (`lua_arith`)** — currently simplified, no full metamethod dispatch for `__add`, `__sub`, etc.
-3. **No `lua_compare`/`lua_rawequal` semantic depth** — type-only comparison.
-4. **No coroutines, no debug API.** Memory allocations are tracked in a flat sweep list `allgc` for leak-free teardowns, but there is no real garbage collector sweep phase yet.
-5. **`src/lib/*.zig` library bodies are stubs.**
-6. **`src/lstate.zig` is stale/dead code** — its `global_State`/`CallInfo`/
+2. **No `lua_compare`/`lua_rawequal` semantic depth** — type-only comparison.
+3. **No coroutines, no debug API.** Memory allocations are tracked in a flat sweep list `allgc` for leak-free teardowns, but there is no real garbage collector sweep phase yet.
+4. **`src/lib/*.zig` library bodies are stubs.**
+5. **`src/lstate.zig` is stale/dead code** — its `global_State`/`CallInfo`/
    `GCUnion` duplicate `lua.zig`'s types and it is NOT in the build graph. It
    must be reconciled (or deleted) when GC lands.
 
@@ -246,7 +246,7 @@ and string interning in `global_State.strt` (`std.array_hash_map.String`) in
 
 ### Phase E — Error handling, GC, metatables (IN PROGRESS)
 11. ✅ `__index`/`__newindex` metamethod dispatch via `luaV_gettable`/`luaV_settable` in `src/ltm.zig`. All table opcodes and C API wired. 3 tests pass.
-12. Arithmetic metamethods (`__add`, `__sub`, etc.) in `lua_arith` — partially started, needs completion.
+12. ✅ Arithmetic metamethods (`__add`, `__sub`, etc.) fully implemented in `lua_arith` and VM execution with fallback.
 13. Error propagation (`lua_error`, `lua_pcall`, longjmp-equivalent via Zig `error`/`try`).
 14. Expand garbage collector (reconcile stale state, build mark/sweep on top of VMGCObject).
 

@@ -205,3 +205,30 @@ Implemented the binary bytecode loader (`lundump.zig`), allowing precompiled Lua
 ### Verification
 
 `zig build test` compiled and passed all **20/20 tests** with zero memory leaks.
+
+---
+
+## Phase E — Arithmetic Metamethods Update (2026-07-10)
+
+### Changes
+
+- **`src/llimits.zig`**:
+  - Defined standard `LUA_OP*` constants for arithmetic, bitwise, and comparison operations, conforming to the Lua 5.5.1 specifications.
+- **`src/lua.zig`**:
+  - Re-exported the new `LUA_OP*` constants from `llimits.zig`.
+  - Rewrote `lua_arith` to use the official symbolic constants and corrected the unary/binary operand checks and arithmetic/bitwise mapping logic.
+  - Ensured correct tag method execution via `ltm.luaT_trybinTM` when operands are not plain numbers.
+- **`tests/test_basic.zig`**:
+  - Added `__add arithmetic metamethod via C API` test to verify that calling `lua_arith(L, LUA_OPADD)` successfully calls custom `__add` functions on non-numbers.
+  - Added `VM execution of arithmetic metamethod` test using a precompiled closure that does `a + b` with two tables to verify that the VM `ADD` opcode correctly triggers the `.MMBIN` fallback and metamethod execution.
+
+### §0.1 Self-Audit
+
+- No `catch unreachable` used in code paths.
+- Proper use of `@floatFromInt` and `@intFromFloat` for all numeric conversions.
+- Tagged unions are exhaustively handled.
+
+### Verification
+
+`zig build test` compiled and passed all **22/22 tests** with zero memory leaks.
+

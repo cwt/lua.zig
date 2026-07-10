@@ -30,9 +30,31 @@ pub const LUA_ERRSYNTAX: i32 = llimits.LUA_ERRSYNTAX;
 pub const LUA_MINSTACK: i32 = llimits.LUA_MINSTACK;
 pub const LUA_NUMTYPES: i32 = llimits.LUA_NUMTYPES;
 
+// Arithmetic and bitwise operators
+pub const LUA_OPADD: i32 = llimits.LUA_OPADD;
+pub const LUA_OPSUB: i32 = llimits.LUA_OPSUB;
+pub const LUA_OPMUL: i32 = llimits.LUA_OPMUL;
+pub const LUA_OPMOD: i32 = llimits.LUA_OPMOD;
+pub const LUA_OPPOW: i32 = llimits.LUA_OPPOW;
+pub const LUA_OPDIV: i32 = llimits.LUA_OPDIV;
+pub const LUA_OPIDIV: i32 = llimits.LUA_OPIDIV;
+pub const LUA_OPBAND: i32 = llimits.LUA_OPBAND;
+pub const LUA_OPBOR: i32 = llimits.LUA_OPBOR;
+pub const LUA_OPBXOR: i32 = llimits.LUA_OPBXOR;
+pub const LUA_OPSHL: i32 = llimits.LUA_OPSHL;
+pub const LUA_OPSHR: i32 = llimits.LUA_OPSHR;
+pub const LUA_OPUNM: i32 = llimits.LUA_OPUNM;
+pub const LUA_OPBNOT: i32 = llimits.LUA_OPBNOT;
+
+// Comparison operators
+pub const LUA_OPEQ: i32 = llimits.LUA_OPEQ;
+pub const LUA_OPLT: i32 = llimits.LUA_OPLT;
+pub const LUA_OPLE: i32 = llimits.LUA_OPLE;
+
 pub const lua_KContext = llimits.lua_KContext;
 pub const lua_Alloc = llimits.lua_Alloc;
 pub const lua_WarnFunction = llimits.lua_WarnFunction;
+
 
 // Forward declarations
 pub const lua_CFunction = *const fn (*lua_State) i32;
@@ -751,21 +773,21 @@ pub fn lua_topointer(L: *lua_State, idx: i32) ?*anyopaque {
 
 pub fn lua_arith(L: *lua_State, op: i32) void {
     if (op < 0 or op > 13) return;
-    const is_unary = (op == 7 or op == 8);
+    const is_unary = (op == LUA_OPUNM or op == LUA_OPBNOT);
     if (is_unary) {
         if (L.top < 1) return;
         const p1 = L.stack[L.top - 1];
         if (p1 == .number) {
             const result = switch (op) {
-                7 => -p1.number,
-                8 => @as(f64, @floatFromInt(~@as(i64, @intFromFloat(p1.number)))),
+                LUA_OPUNM => -p1.number,
+                LUA_OPBNOT => @as(f64, @floatFromInt(~@as(i64, @intFromFloat(p1.number)))),
                 else => unreachable,
             };
             L.stack[L.top - 1] = TValue{ .number = result };
         } else {
             const event: ltm.TMS = switch (op) {
-                7 => .UNM,
-                8 => .BNOT,
+                LUA_OPUNM => .UNM,
+                LUA_OPBNOT => .BNOT,
                 else => unreachable,
             };
             ltm.luaT_trybinTM(L, p1, p1, L.top - 1, event) catch {};
@@ -776,36 +798,36 @@ pub fn lua_arith(L: *lua_State, op: i32) void {
         const p2 = L.stack[L.top - 1];
         if (p1 == .number and p2 == .number) {
             const result = switch (op) {
-                0 => p1.number + p2.number,
-                1 => p1.number - p2.number,
-                2 => p1.number * p2.number,
-                3 => p1.number / p2.number,
-                4 => @floor(p1.number / p2.number),
-                5 => p1.number - @floor(p1.number / p2.number) * p2.number,
-                6 => std.math.pow(f64, p1.number, p2.number),
-                9 => @as(f64, @floatFromInt(@as(i64, @intFromFloat(p1.number)) & @as(i64, @intFromFloat(p2.number)))),
-                10 => @as(f64, @floatFromInt(@as(i64, @intFromFloat(p1.number)) | @as(i64, @intFromFloat(p2.number)))),
-                11 => @as(f64, @floatFromInt(@as(i64, @intFromFloat(p1.number)) ^ @as(i64, @intFromFloat(p2.number)))),
-                12 => @as(f64, @floatFromInt(@as(i64, @intFromFloat(p1.number)) << @intCast(@as(i64, @intFromFloat(p2.number))))),
-                13 => @as(f64, @floatFromInt(@as(i64, @intFromFloat(p1.number)) >> @intCast(@as(i64, @intFromFloat(p2.number))))),
+                LUA_OPADD => p1.number + p2.number,
+                LUA_OPSUB => p1.number - p2.number,
+                LUA_OPMUL => p1.number * p2.number,
+                LUA_OPMOD => p1.number - @floor(p1.number / p2.number) * p2.number,
+                LUA_OPPOW => std.math.pow(f64, p1.number, p2.number),
+                LUA_OPDIV => p1.number / p2.number,
+                LUA_OPIDIV => @floor(p1.number / p2.number),
+                LUA_OPBAND => @as(f64, @floatFromInt(@as(i64, @intFromFloat(p1.number)) & @as(i64, @intFromFloat(p2.number)))),
+                LUA_OPBOR => @as(f64, @floatFromInt(@as(i64, @intFromFloat(p1.number)) | @as(i64, @intFromFloat(p2.number)))),
+                LUA_OPBXOR => @as(f64, @floatFromInt(@as(i64, @intFromFloat(p1.number)) ^ @as(i64, @intFromFloat(p2.number)))),
+                LUA_OPSHL => @as(f64, @floatFromInt(@as(i64, @intFromFloat(p1.number)) << @intCast(@as(i64, @intFromFloat(p2.number))))),
+                LUA_OPSHR => @as(f64, @floatFromInt(@as(i64, @intFromFloat(p1.number)) >> @intCast(@as(i64, @intFromFloat(p2.number))))),
                 else => unreachable,
             };
             L.top -= 1;
             L.stack[L.top - 1] = TValue{ .number = result };
         } else {
             const event: ltm.TMS = switch (op) {
-                0 => .ADD,
-                1 => .SUB,
-                2 => .MUL,
-                3 => .DIV,
-                4 => .IDIV,
-                5 => .MOD,
-                6 => .POW,
-                9 => .BAND,
-                10 => .BOR,
-                11 => .BXOR,
-                12 => .SHL,
-                13 => .SHR,
+                LUA_OPADD => .ADD,
+                LUA_OPSUB => .SUB,
+                LUA_OPMUL => .MUL,
+                LUA_OPMOD => .MOD,
+                LUA_OPPOW => .POW,
+                LUA_OPDIV => .DIV,
+                LUA_OPIDIV => .IDIV,
+                LUA_OPBAND => .BAND,
+                LUA_OPBOR => .BOR,
+                LUA_OPBXOR => .BXOR,
+                LUA_OPSHL => .SHL,
+                LUA_OPSHR => .SHR,
                 else => unreachable,
             };
             ltm.luaT_trybinTM(L, p1, p2, L.top - 2, event) catch {};

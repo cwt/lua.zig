@@ -425,3 +425,118 @@ test "__newindex function metamethod via C API" {
     const v = lua.lua_tonumber(&L, -1) orelse return error.TestFailed;
     try std.testing.expectEqual(@as(f64, 77.0), v);
 }
+
+test "__add arithmetic metamethod via C API" {
+    const gpa = std.testing.allocator;
+    var L: lua.lua_State = undefined;
+    try lua.luaL_newstate(&L, gpa);
+    defer lua.lua_close(&L);
+
+    // Create table t1
+    lua.lua_createtable(&L, 0, 0);
+    const t1_idx = lua.lua_gettop(&L);
+
+    // Create table t2
+    lua.lua_createtable(&L, 0, 0);
+    const t2_idx = lua.lua_gettop(&L);
+
+    // Create metatable mt
+    lua.lua_createtable(&L, 0, 1);
+    const mt_idx = lua.lua_gettop(&L);
+
+    // Push __add function: returns a dummy number, say 123
+    const AddFn = struct {
+        fn add(LS: *lua.lua_State) i32 {
+            // args: operand1(1), operand2(2)
+            lua.lua_pushnumber(LS, 123.0);
+            return 1;
+        }
+    };
+    lua.lua_pushcfunction(&L, AddFn.add);
+    lua.lua_setfield(&L, mt_idx, "__add");
+
+    // Set mt on t1
+    lua.lua_pushvalue(&L, mt_idx);
+    _ = lua.lua_setmetatable(&L, t1_idx);
+
+    // Push t1 and t2 onto the stack
+    lua.lua_pushvalue(&L, t1_idx);
+    lua.lua_pushvalue(&L, t2_idx);
+
+    // Call lua_arith(L, LUA_OPADD)
+    lua.lua_arith(&L, lua.LUA_OPADD);
+
+    // Expect the result to be 123.0 on top of the stack
+    const v = lua.lua_tonumber(&L, -1) orelse return error.TestFailed;
+    try std.testing.expectEqual(@as(f64, 123.0), v);
+}
+
+test "VM execution of arithmetic metamethod" {
+    const gpa = std.testing.allocator;
+    var L: lua.lua_State = undefined;
+    try lua.luaL_newstate(&L, gpa);
+    defer lua.lua_close(&L);
+
+    var threaded: std.Io.Threaded = .init_single_threaded;
+    const io = threaded.io();
+    const bytecode = try std.Io.Dir.cwd().readFileAlloc(io, "tests/test_add.luac", gpa, .unlimited);
+    defer gpa.free(bytecode);
+
+    var reader_state = StringReaderState{
+        .code = bytecode,
+        .read_done = false,
+    };
+
+    const status = lua.lua_load(&L, stringReader, &reader_state, "test_add.luac", "b");
+    try std.testing.expectEqual(@as(i32, lua.LUA_OK), status);
+
+    // Perform a protected call on the loaded chunk (0 arguments, 1 result expected)
+    // This executes the chunk which returns the closure function.
+    const load_pcall = lua.lua_pcallk(&L, 0, 1, 0, 0, null);
+    try std.testing.expectEqual(@as(i32, lua.LUA_OK), load_pcall);
+
+    // Create table t1
+    lua.lua_createtable(&L, 0, 0);
+
+    // Create table t2
+    lua.lua_createtable(&L, 0, 0);
+
+    // Create metatable mt
+    lua.lua_createtable(&L, 0, 1);
+    const mt_idx = lua.lua_gettop(&L);
+
+    // Push __add function: returns 999.0
+    const AddFn = struct {
+        fn add(LS: *lua.lua_State) i32 {
+            lua.lua_pushnumber(LS, 999.0);
+            return 1;
+        }
+    };
+    lua.lua_pushcfunction(&L, AddFn.add);
+    lua.lua_setfield(&L, mt_idx, "__add");
+
+    // Set mt on t1 (t1 is at stack index 2)
+    lua.lua_pushvalue(&L, mt_idx);
+    _ = lua.lua_setmetatable(&L, 2);
+
+    // Pop mt from the stack
+    lua.lua_pop(&L, 1);
+
+    // Stack currently:
+    // 1: Loaded closure function
+    // 2: t1
+    // 3: t2
+    try std.testing.expectEqual(@as(i32, 3), lua.lua_gettop(&L));
+
+    // Call the closure function with t1 and t2
+    const pcall_status = lua.lua_pcallk(&L, 2, 1, 0, 0, null);
+    try std.testing.expectEqual(@as(i32, lua.LUA_OK), pcall_status);
+
+    // The top of the stack should contain the returned number 999.0
+    try std.testing.expectEqual(@as(i32, 1), lua.lua_gettop(&L));
+    try std.testing.expectEqual(@as(i32, lua.LUA_TNUMBER), lua.lua_type(&L, -1));
+    const result = L.stack[L.top - 1].number;
+    try std.testing.expectEqual(@as(f64, 999.0), result);
+}
+
+

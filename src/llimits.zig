@@ -90,3 +90,25 @@ pub const LUA_MASKCALL: u32 = 1 << LUA_HOOKCALL;
 pub const LUA_MASKRET: u32 = 1 << LUA_HOOKRET;
 pub const LUA_MASKLINE: u32 = 1 << LUA_HOOKLINE;
 pub const LUA_MASKCOUNT: u32 = 1 << LUA_HOOKCOUNT;
+
+// Arithmetic and bitwise operators
+pub const LUA_OPADD: i32 = 0;
+pub const LUA_OPSUB: i32 = 1;
+pub const LUA_OPMUL: i32 = 2;
+pub const LUA_OPMOD: i32 = 3;
+pub const LUA_OPPOW: i32 = 4;
+pub const LUA_OPDIV: i32 = 5;
+pub const LUA_OPIDIV: i32 = 6;
+pub const LUA_OPBAND: i32 = 7;
+pub const LUA_OPBOR: i32 = 8;
+pub const LUA_OPBXOR: i32 = 9;
+pub const LUA_OPSHL: i32 = 10;
+pub const LUA_OPSHR: i32 = 11;
+pub const LUA_OPUNM: i32 = 12;
+pub const LUA_OPBNOT: i32 = 13;
+
+// Comparison operators
+pub const LUA_OPEQ: i32 = 0;
+pub const LUA_OPLT: i32 = 1;
+pub const LUA_OPLE: i32 = 2;
+
