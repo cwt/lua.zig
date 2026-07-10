@@ -381,3 +381,33 @@ Implemented the binary bytecode loader (`lundump.zig`), allowing precompiled Lua
 
 `zig build test` compiled and passed all **33/33 tests** with zero memory leaks.
 
+---
+
+## 2026-07-11 — BUG-011: Numeric `for` loop register layout fix
+
+### Changes
+
+- **`src/lvm.zig`**: Restored FORPREP/FORLOOP to match the C reference float-path
+  implementation. FORPREP scrambles `R(a)=limit`, `R(a+1)=step`, `R(a+2)=init`
+  (control var). FORLOOP reads `step=R(a+1)`, `limit=R(a)`, `idx=R(a+2)+step`
+  and writes updated idx to `R(a+2)`. Fixed skip offset: `savedpc += Bx + 1`
+  (was missing the `+1`). Loop-back offset: `savedpc -= Bx`.
+- **`tests/test_basic.zig`**: Added `"numeric for loop register layout"` test:
+  constructs a `lua_Proto` with `LOADI`+`FORPREP`+`FORLOOP`+`RETURN1` for
+  `for i=1,3 do end`, calls it via `precall`+`lvm.run`, and verifies `R(a)`
+  holds limit (`3.0`) after loop exit.
+- **`docs/bugs.md`**: Marked BUG-011 as fixed with corrected description.
+
+### §0.1 Self-Audit
+
+- FORPREP matches C reference float path: register scramble, skip condition,
+  and offset arithmetic (`savedpc += Bx + 1`).
+- FORLOOP matches C reference float path: reads scrambled positions,
+  writes updated idx to control variable `R(a+2)`, loop-back `savedpc -= Bx`.
+- No `catch unreachable`, no `@bitCast` for value conversion.
+- Error propagation: `step == 0` returns `error.RuntimeError`.
+
+### Verification
+
+`zig build test` compiled and passed all **34/34 tests** with zero memory leaks.
+

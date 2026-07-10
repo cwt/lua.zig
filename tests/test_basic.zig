@@ -276,6 +276,102 @@ test "bytecode loader (lundump)" {
     try std.testing.expect(sub_proto.code.len > 0);
 }
 
+test "numeric for loop register layout" {
+    const gpa = std.testing.allocator;
+    var L: lua.lua_State = undefined;
+    try lua.luaL_newstate(&L, gpa);
+    defer lua.lua_close(&L);
+
+    // Craft a proto for: for i=1,3 do end
+    // Register layout: R0=init, R1=limit, R2=step
+    // After PREP (matches C ref float path):
+    //   R0 = limit, R1 = step, R2 = init (control var)
+    // FORLOOP: reads R2 (idx), R1 (step), R0 (limit);
+    //   writes updated idx to R2 and R3; loops back
+    // After loop ends (idx > limit), R0 = limit = 3
+
+    var code = try gpa.alloc(lua.lvm.Instruction, 6);
+
+    var inst: lua.lvm.Instruction = 0;
+    // LOADI R0 1     ; init = 1
+    lua.lvm.SET_OPCODE(&inst, .LOADI);
+    lua.lvm.SETARG_A(&inst, 0);
+    lua.lvm.SETARG_sBx(&inst, 1);
+    code[0] = inst;
+
+    // LOADI R1 3     ; limit = 3
+    inst = 0;
+    lua.lvm.SET_OPCODE(&inst, .LOADI);
+    lua.lvm.SETARG_A(&inst, 1);
+    lua.lvm.SETARG_sBx(&inst, 3);
+    code[1] = inst;
+
+    // LOADI R2 1     ; step = 1
+    inst = 0;
+    lua.lvm.SET_OPCODE(&inst, .LOADI);
+    lua.lvm.SETARG_A(&inst, 2);
+    lua.lvm.SETARG_sBx(&inst, 1);
+    code[2] = inst;
+
+    // FORPREP R0 0   ; skip+1 = PC 5 (RETURN1) if empty loop
+    inst = 0;
+    lua.lvm.SET_OPCODE(&inst, .FORPREP);
+    lua.lvm.SETARG_A(&inst, 0);
+    lua.lvm.SETARG_Bx(&inst, 0);
+    code[3] = inst;
+
+    // FORLOOP R0 1   ; jump back to self (empty body)
+    inst = 0;
+    lua.lvm.SET_OPCODE(&inst, .FORLOOP);
+    lua.lvm.SETARG_A(&inst, 0);
+    lua.lvm.SETARG_Bx(&inst, 1);
+    code[4] = inst;
+
+    // RETURN1 R0     ; returns R0 = limit (3 after FORPREP scramble)
+    inst = 0;
+    lua.lvm.SET_OPCODE(&inst, .RETURN1);
+    lua.lvm.SETARG_A(&inst, 0);
+    code[5] = inst;
+
+    const proto = try lua.createProto(gpa);
+    proto.* = lua.lua_Proto{
+        .source = null,
+        .lineDefined = 0,
+        .lastLineDefined = 0,
+        .numParams = 0,
+        .isVarArg = false,
+        .maxStackSize = 4,
+        .code = code,
+        .k = &.{},
+        .p = &.{},
+        .upvalues = &.{},
+        .lineinfo = &.{},
+        .abslineinfo = &.{},
+        .locvars = &.{},
+    };
+    try lua.registerGC(&L, proto);
+
+    const lc = try gpa.create(lua.lua_LClosure);
+    lc.* = .{
+        .p = proto,
+        .upvals = try gpa.alloc(?*lua.UpVal, 0),
+    };
+    const closure = try gpa.create(lua.lua_Closure);
+    closure.* = .{ .lua = lc };
+    try lua.registerGC(&L, closure);
+
+    L.stack[L.top] = lua.TValue{ .function = closure };
+    L.top += 1;
+
+    const func_idx = L.top - 1;
+    const new_ci = (try lua.precall(&L, func_idx, 1)) orelse return error.NoFrame;
+    try lua.lvm.run(&L, new_ci);
+
+    try std.testing.expectEqual(@as(i32, 1), lua.lua_gettop(&L));
+    const result = lua.lua_tonumber(&L, -1) orelse return error.TestFailed;
+    try std.testing.expectEqual(@as(f64, 3.0), result);
+}
+
 test "VM execution" {
     const gpa = std.testing.allocator;
     var L: lua.lua_State = undefined;

@@ -966,8 +966,8 @@ pub fn run(L: *lua.lua_State, active_ci: *lua.CallInfo) anyerror!void {
                 const limit = L.stack[ra_idx + 1].number;
                 const step = L.stack[ra_idx + 2].number;
                 if (step == 0) return error.RuntimeError;
-                if (if (step > 0) limit < init else init < limit) {
-                    ci.savedpc = @intCast(@as(i64, @intCast(ci.savedpc)) + GETARG_Bx(instruction) + 1);
+                if ((step > 0 and limit < init) or (step < 0 and init < limit)) {
+                    ci.savedpc += @as(usize, @intCast(GETARG_Bx(instruction) + 1));
                 } else {
                     L.stack[ra_idx] = .{ .number = limit };
                     L.stack[ra_idx + 1] = .{ .number = step };
@@ -978,11 +978,10 @@ pub fn run(L: *lua.lua_State, active_ci: *lua.CallInfo) anyerror!void {
                 const ra_idx = ci.base + @as(usize, @intCast(GETARG_A(instruction)));
                 const step = L.stack[ra_idx + 1].number;
                 const limit = L.stack[ra_idx].number;
-                var idx = L.stack[ra_idx + 2].number;
-                idx += step;
-                if (if (step > 0) idx <= limit else limit <= idx) {
+                const idx = L.stack[ra_idx + 2].number + step;
+                if ((step > 0 and idx <= limit) or (step < 0 and limit <= idx)) {
                     L.stack[ra_idx + 2] = .{ .number = idx };
-                    ci.savedpc = @intCast(@as(i64, @intCast(ci.savedpc)) - GETARG_Bx(instruction));
+                    ci.savedpc -= @as(usize, @intCast(GETARG_Bx(instruction)));
                 }
             },
             .TFORPREP => {

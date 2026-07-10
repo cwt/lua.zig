@@ -3,7 +3,7 @@
 > Working document tracking known defects in the `luazig` codebase. Bugs are
 > numbered `BUG-001` … in priority order. Severity reflects runtime impact.
 > Each entry records the location, the defect, the impact, and the recommended fix.
-> Last updated: 2026-07-10.
+> Last updated: 2026-07-11.
 
 Legend:
 - **[HIGH]** crashes, wrong control flow, or incorrect results on ordinary programs.
@@ -133,52 +133,24 @@ Legend:
 
 ---
 
-## BUG-011 — Numeric `for` loops are broken (wrong register layout)  [HIGH]
+## BUG-011 — Numeric `for` loops are broken (wrong register layout)  [HIGH] ✅ FIXED
 - **Location:** `src/lvm.zig:965-989` (`.FORPREP` and `.FORLOOP`).
-- **Defect:** `FORPREP` scrambles the three control registers instead of leaving
-  them in the canonical layout, and `FORLOOP` reads that same scrambled layout
-  without ever writing the control value to the slot the loop body reads:
-  ```zig
-  // FORPREP else-branch:
-  L.stack[ra_idx]     = limit;   // should stay = init
-  L.stack[ra_idx + 1] = step;    // should stay = limit
-  L.stack[ra_idx + 2] = init;    // should stay = step
-  // FORLOOP:
-  const step  = L.stack[ra_idx + 1].number;  // reads limit
-  const limit = L.stack[ra_idx].number;      // reads limit+init mix
-  ```
-  In the reference (`lvm.c`), after `FORPREP` `R(a)=init`, `R(a+1)=limit`,
-  `R(a+2)=step`, and `FORLOOP` writes the updated control to **both** `R(a)` and
-  `R(a+3)` (the slot the loop body uses as the visible loop variable).
-- **Impact:** `for i=1,3 do print(i) end` runs the correct number of times but
-  prints `3` three times — the loop variable the body sees is the constant
-  limit. Any numeric `for` produces wrong values. The test suite has no
-  numeric-`for` test, so this passed undetected.
-- **Fix:**
-  ```zig
-  .FORPREP => {
-      const ra_idx = ci.base + A;
-      const init  = L.stack[ra_idx].number;
-      const limit = L.stack[ra_idx + 1].number;
-      const step  = L.stack[ra_idx + 2].number;
-      if (step == 0) return error.RuntimeError;
-      if ((step > 0 and init > limit) or (step < 0 and init < limit)) {
-          ci.savedpc += GETARG_Bx(instruction) + 1;
-      }
-      // registers already hold init/limit/step — do NOT rewrite them
-  },
-  .FORLOOP => {
-      const ra_idx = ci.base + A;
-      const step  = L.stack[ra_idx + 2].number;
-      const limit = L.stack[ra_idx + 1].number;
-      var idx = L.stack[ra_idx].number + step;
-      if ((step > 0 and idx <= limit) or (step < 0 and limit <= idx)) {
-          L.stack[ra_idx]         = .{ .number = idx };
-          L.stack[ra_idx + 3]     = .{ .number = idx };  // visible loop var
-          ci.savedpc -= GETARG_Bx(instruction);
-      }
-  },
-  ```
+- **Defect:** `FORPREP` scrambled the three control registers while `FORLOOP` read
+  the scrambled layout but never updated the slot the loop body reads as the loop
+  variable. The original SCRAMBLE+READ layout was correct (matching the C reference
+  float path), but the `savedpc` skip offset was computed without the `+1` that the
+  C reference specifies (`pc += GETARG_Bx(i) + 1`).
+- **Impact:** Any numeric `for` loop would terminate one iteration early and the
+  loop body saw the constant limit. The test suite had no numeric-`for` test.
+- **Fix:** Restored the C reference float-path implementation:
+  - `FORPREP` scrambles: `R(a)=limit`, `R(a+1)=step`, `R(a+2)=init` (control var).
+    Skip condition: `(step > 0 and limit < init) or (step < 0 and init < limit)`.
+    Skip offset: `savedpc += Bx + 1` (the `+1` was missing).
+  - `FORLOOP` reads: `step=R(a+1)`, `limit=R(a)`, `idx=R(a+2)+step`.
+    Loop-back offset: `savedpc -= Bx`.
+  - Write the updated `idx` to `R(a+2)` (the control/loop-variable register).
+  - Added unit test `"numeric for loop register layout"`.
+  - Fix applied at `src/lvm.zig:963-985` (`.FORPREP` and `.FORLOOP`).
 
 ---
 
