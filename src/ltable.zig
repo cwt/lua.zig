@@ -218,6 +218,8 @@ pub fn createTable(allocator: std.mem.Allocator, narr: usize, nrec: usize) !*Tab
         .node = node,
         .lastfree = nhash,
         .lenhint = narr / 2,
+        .metatable = null,
+        .flags = 0,
     };
     return t;
 }

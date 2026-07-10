@@ -306,3 +306,122 @@ test "VM execution" {
     try std.testing.expectEqual(@as(f64, 52.0), result);
 }
 
+test "__index function metamethod via C API" {
+    const gpa = std.testing.allocator;
+    var L: lua.lua_State = undefined;
+    try lua.luaL_newstate(&L, gpa);
+    defer lua.lua_close(&L);
+
+    // t is an empty table
+    lua.lua_createtable(&L, 0, 0);
+    const t_idx: i32 = lua.lua_gettop(&L);
+
+    // mt with __index = function that always returns 42
+    lua.lua_createtable(&L, 0, 1);
+    const mt_idx: i32 = lua.lua_gettop(&L);
+
+    const IndexFn = struct {
+        fn index(LS: *lua.lua_State) i32 {
+            lua.lua_pushnumber(LS, 42.0);
+            return 1;
+        }
+    };
+    lua.lua_pushcfunction(&L, IndexFn.index);
+    lua.lua_setfield(&L, mt_idx, "__index");
+
+    // setmetatable(t, mt)
+    try std.testing.expectEqual(@as(i32, 1), lua.lua_setmetatable(&L, t_idx));
+
+    // t["missing"] should invoke __index and return 42
+    _ = lua.lua_getfield(&L, t_idx, "missing");
+    const v = lua.lua_tonumber(&L, -1) orelse return error.TestFailed;
+    try std.testing.expectEqual(@as(f64, 42.0), v);
+}
+
+test "__index table chain metamethod via C API" {
+    const gpa = std.testing.allocator;
+    var L: lua.lua_State = undefined;
+    try lua.luaL_newstate(&L, gpa);
+    defer lua.lua_close(&L);
+
+    // parent["x"] = 99
+    lua.lua_createtable(&L, 0, 1);
+    const parent_idx: i32 = lua.lua_gettop(&L);
+    lua.lua_pushnumber(&L, 99.0);
+    lua.lua_setfield(&L, parent_idx, "x");
+
+    // child is empty; mt.__index = parent
+    lua.lua_createtable(&L, 0, 0);
+    const child_idx: i32 = lua.lua_gettop(&L);
+
+    lua.lua_createtable(&L, 0, 1);
+    const child_mt_idx: i32 = lua.lua_gettop(&L);
+    lua.lua_pushvalue(&L, parent_idx);
+    lua.lua_setfield(&L, child_mt_idx, "__index");
+    try std.testing.expectEqual(@as(i32, 1), lua.lua_setmetatable(&L, child_idx));
+
+    // child["x"] should follow chain -> parent -> 99
+    _ = lua.lua_getfield(&L, child_idx, "x");
+    const v = lua.lua_tonumber(&L, -1) orelse return error.TestFailed;
+    try std.testing.expectEqual(@as(f64, 99.0), v);
+}
+
+test "__newindex function metamethod via C API" {
+    const gpa = std.testing.allocator;
+    var L: lua.lua_State = undefined;
+    try lua.luaL_newstate(&L, gpa);
+    defer lua.lua_close(&L);
+
+    // shadow table to capture writes
+    lua.lua_createtable(&L, 0, 0);
+    const shadow_idx: i32 = lua.lua_gettop(&L); // absolute index 1 in clean state
+
+    // proxy table (empty) with __newindex that forwards to shadow
+    lua.lua_createtable(&L, 0, 0);
+    const proxy_idx: i32 = lua.lua_gettop(&L);
+
+    lua.lua_createtable(&L, 0, 1);
+    const proxy_mt_idx: i32 = lua.lua_gettop(&L);
+
+    // __newindex function: writes value to shadow["written"]
+    // shadow is at absolute stack index shadow_idx (captured by value in the closure)
+    const NewIdxFn = struct {
+        fn newindex(LS: *lua.lua_State) i32 {
+            // LS: stack[1]=proxy, stack[2]=key, stack[3]=value
+            // shadow is absolute slot 1 of the outer Lua state — we use the
+            // upvalue closure trick here for simplicity: just push to stack[1].
+            // Since C functions get a fresh base, we use lua_pushvalue to shadow.
+            lua.lua_pushvalue(LS, 3); // value
+            // write to the upvalue table at slot 1 (shadow in the outer test)
+            // — we can't easily reference the outer L here, so instead we
+            // capture shadow via a C closure upvalue.
+            lua.lua_setupvalue(LS, 1); // shadow["written"] = value
+            return 0;
+        }
+    };
+    _ = NewIdxFn.newindex; // referenced below via a simpler approach
+
+    // Simpler approach: use a CClosure with shadow as upvalue index 1
+    const NewIdxSimple = struct {
+        fn newindex(LS: *lua.lua_State) i32 {
+            // upvalue 1 = shadow table (set via lua_pushcclosure below)
+            // args: t(1), key(2), val(3)
+            lua.lua_pushvalue(LS, 3); // val
+            lua.lua_setfield(LS, lua.lua_upvalueindex(1), "written");
+            return 0;
+        }
+    };
+    lua.lua_pushvalue(&L, shadow_idx); // upvalue 1 = shadow
+    lua.lua_pushcclosure(&L, NewIdxSimple.newindex, 1);
+    lua.lua_setfield(&L, proxy_mt_idx, "__newindex");
+    try std.testing.expectEqual(@as(i32, 1), lua.lua_setmetatable(&L, proxy_idx));
+
+    // proxy["key"] = 77 — triggers __newindex
+    lua.lua_pushnumber(&L, 77.0);
+    lua.lua_setfield(&L, proxy_idx, "key");
+
+    // shadow["written"] should now be 77
+    _ = lua.lua_getfield(&L, shadow_idx, "written");
+    const v = lua.lua_tonumber(&L, -1) orelse return error.TestFailed;
+    try std.testing.expectEqual(@as(f64, 77.0), v);
+}

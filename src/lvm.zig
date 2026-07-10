@@ -6,6 +6,7 @@ const std = @import("std");
 const lua = @import("lua.zig");
 const lprefix = @import("lprefix.zig");
 const llimits = @import("llimits.zig");
+const ltm = @import("ltm.zig");
 
 // ===================================================================
 // Opcodes
@@ -293,11 +294,7 @@ pub fn run(L: *lua.lua_State, active_ci: *lua.CallInfo) anyerror!void {
                 const uv = cl.upvals[b].?;
                 const table_val = if (uv.index) |idx| L.stack[idx] else uv.value;
                 const key = proto.k[c];
-                if (table_val == .table) {
-                    L.stack[a] = ltable.get(table_val.table.?, key);
-                } else {
-                    L.stack[a] = .{ .nil = {} };
-                }
+                try ltm.luaV_gettable(L, table_val, key, a);
             },
             .GETTABLE => {
                 const a = ci.base + @as(usize, @intCast(GETARG_A(instruction)));
@@ -305,22 +302,15 @@ pub fn run(L: *lua.lua_State, active_ci: *lua.CallInfo) anyerror!void {
                 const c = ci.base + @as(usize, @intCast(GETARG_C(instruction)));
                 const table_val = L.stack[b];
                 const key = L.stack[c];
-                if (table_val == .table) {
-                    L.stack[a] = ltable.get(table_val.table.?, key);
-                } else {
-                    L.stack[a] = .{ .nil = {} };
-                }
+                try ltm.luaV_gettable(L, table_val, key, a);
             },
             .GETI => {
                 const a = ci.base + @as(usize, @intCast(GETARG_A(instruction)));
                 const b = ci.base + @as(usize, @intCast(GETARG_B(instruction)));
                 const c = GETARG_C(instruction);
                 const table_val = L.stack[b];
-                if (table_val == .table) {
-                    L.stack[a] = ltable.getInt(table_val.table.?, c);
-                } else {
-                    L.stack[a] = .{ .nil = {} };
-                }
+                const int_key = lua.TValue{ .number = @floatFromInt(c) };
+                try ltm.luaV_gettable(L, table_val, int_key, a);
             },
             .GETFIELD => {
                 const a = ci.base + @as(usize, @intCast(GETARG_A(instruction)));
@@ -328,11 +318,7 @@ pub fn run(L: *lua.lua_State, active_ci: *lua.CallInfo) anyerror!void {
                 const c = @as(usize, @intCast(GETARG_C(instruction)));
                 const table_val = L.stack[b];
                 const key = proto.k[c];
-                if (table_val == .table) {
-                    L.stack[a] = ltable.get(table_val.table.?, key);
-                } else {
-                    L.stack[a] = .{ .nil = {} };
-                }
+                try ltm.luaV_gettable(L, table_val, key, a);
             },
             .SETTABUP => {
                 const a = @as(usize, @intCast(GETARG_A(instruction)));
@@ -342,9 +328,7 @@ pub fn run(L: *lua.lua_State, active_ci: *lua.CallInfo) anyerror!void {
                 const table_val = if (uv.index) |idx| L.stack[idx] else uv.value;
                 const key = proto.k[b];
                 const val = if (GETARG_k(instruction) != 0) proto.k[c] else L.stack[ci.base + c];
-                if (table_val == .table) {
-                    try ltable.set(table_val.table.?, key, val);
-                }
+                try ltm.luaV_settable(L, table_val, key, val);
             },
             .SETTABLE => {
                 const a = ci.base + @as(usize, @intCast(GETARG_A(instruction)));
@@ -353,9 +337,7 @@ pub fn run(L: *lua.lua_State, active_ci: *lua.CallInfo) anyerror!void {
                 const table_val = L.stack[a];
                 const key = L.stack[b];
                 const val = if (GETARG_k(instruction) != 0) proto.k[c] else L.stack[ci.base + c];
-                if (table_val == .table) {
-                    try ltable.set(table_val.table.?, key, val);
-                }
+                try ltm.luaV_settable(L, table_val, key, val);
             },
             .SETI => {
                 const a = ci.base + @as(usize, @intCast(GETARG_A(instruction)));
@@ -363,9 +345,8 @@ pub fn run(L: *lua.lua_State, active_ci: *lua.CallInfo) anyerror!void {
                 const c = @as(usize, @intCast(GETARG_C(instruction)));
                 const table_val = L.stack[a];
                 const val = if (GETARG_k(instruction) != 0) proto.k[c] else L.stack[ci.base + c];
-                if (table_val == .table) {
-                    try ltable.setInt(table_val.table.?, b, val);
-                }
+                const int_key = lua.TValue{ .number = @floatFromInt(b) };
+                try ltm.luaV_settable(L, table_val, int_key, val);
             },
             .SETFIELD => {
                 const a = ci.base + @as(usize, @intCast(GETARG_A(instruction)));
@@ -374,9 +355,7 @@ pub fn run(L: *lua.lua_State, active_ci: *lua.CallInfo) anyerror!void {
                 const table_val = L.stack[a];
                 const key = proto.k[b];
                 const val = if (GETARG_k(instruction) != 0) proto.k[c] else L.stack[ci.base + c];
-                if (table_val == .table) {
-                    try ltable.set(table_val.table.?, key, val);
-                }
+                try ltm.luaV_settable(L, table_val, key, val);
             },
             .NEWTABLE => {
                 const ra_idx = ci.base + @as(usize, @intCast(GETARG_A(instruction)));
@@ -398,203 +377,304 @@ pub fn run(L: *lua.lua_State, active_ci: *lua.CallInfo) anyerror!void {
                 const rb = L.stack[ci.base + @as(usize, @intCast(GETARG_B(instruction)))];
                 const key = proto.k[@as(usize, @intCast(GETARG_C(instruction)))];
                 L.stack[ra_idx + 1] = rb;
-                if (rb == .table) {
-                    L.stack[ra_idx] = ltable.get(rb.table.?, key);
-                } else {
-                    L.stack[ra_idx] = .{ .nil = {} };
-                }
+                try ltm.luaV_gettable(L, rb, key, ra_idx);
             },
             .ADDI => {
                 const ra = ci.base + @as(usize, @intCast(GETARG_A(instruction)));
-                const rb = L.stack[ci.base + @as(usize, @intCast(GETARG_B(instruction)))].number;
+                const rb = L.stack[ci.base + @as(usize, @intCast(GETARG_B(instruction)))];
                 const sc = GETARG_sC(instruction);
-                L.stack[ra] = .{ .number = rb + @as(f64, @floatFromInt(sc)) };
-                if (GET_OPCODE(code[ci.savedpc]) == .MMBINI) ci.savedpc += 1;
+                if (rb == .number) {
+                    L.stack[ra] = .{ .number = rb.number + @as(f64, @floatFromInt(sc)) };
+                    if (GET_OPCODE(code[ci.savedpc]) == .MMBINI) ci.savedpc += 1;
+                }
             },
             .ADDK => {
                 const ra = ci.base + @as(usize, @intCast(GETARG_A(instruction)));
-                const rb = L.stack[ci.base + @as(usize, @intCast(GETARG_B(instruction)))].number;
-                const rc = proto.k[@as(usize, @intCast(GETARG_C(instruction)))].number;
-                L.stack[ra] = .{ .number = rb + rc };
-                if (GET_OPCODE(code[ci.savedpc]) == .MMBINK) ci.savedpc += 1;
+                const rb = L.stack[ci.base + @as(usize, @intCast(GETARG_B(instruction)))];
+                const rc = proto.k[@as(usize, @intCast(GETARG_C(instruction)))];
+                if (rb == .number and rc == .number) {
+                    L.stack[ra] = .{ .number = rb.number + rc.number };
+                    if (GET_OPCODE(code[ci.savedpc]) == .MMBINK) ci.savedpc += 1;
+                }
             },
             .SUBK => {
                 const ra = ci.base + @as(usize, @intCast(GETARG_A(instruction)));
-                const rb = L.stack[ci.base + @as(usize, @intCast(GETARG_B(instruction)))].number;
-                const rc = proto.k[@as(usize, @intCast(GETARG_C(instruction)))].number;
-                L.stack[ra] = .{ .number = rb - rc };
-                if (GET_OPCODE(code[ci.savedpc]) == .MMBINK) ci.savedpc += 1;
+                const rb = L.stack[ci.base + @as(usize, @intCast(GETARG_B(instruction)))];
+                const rc = proto.k[@as(usize, @intCast(GETARG_C(instruction)))];
+                if (rb == .number and rc == .number) {
+                    L.stack[ra] = .{ .number = rb.number - rc.number };
+                    if (GET_OPCODE(code[ci.savedpc]) == .MMBINK) ci.savedpc += 1;
+                }
             },
             .MULK => {
                 const ra = ci.base + @as(usize, @intCast(GETARG_A(instruction)));
-                const rb = L.stack[ci.base + @as(usize, @intCast(GETARG_B(instruction)))].number;
-                const rc = proto.k[@as(usize, @intCast(GETARG_C(instruction)))].number;
-                L.stack[ra] = .{ .number = rb * rc };
-                if (GET_OPCODE(code[ci.savedpc]) == .MMBINK) ci.savedpc += 1;
+                const rb = L.stack[ci.base + @as(usize, @intCast(GETARG_B(instruction)))];
+                const rc = proto.k[@as(usize, @intCast(GETARG_C(instruction)))];
+                if (rb == .number and rc == .number) {
+                    L.stack[ra] = .{ .number = rb.number * rc.number };
+                    if (GET_OPCODE(code[ci.savedpc]) == .MMBINK) ci.savedpc += 1;
+                }
             },
             .MODK => {
                 const ra = ci.base + @as(usize, @intCast(GETARG_A(instruction)));
-                const rb = L.stack[ci.base + @as(usize, @intCast(GETARG_B(instruction)))].number;
-                const rc = proto.k[@as(usize, @intCast(GETARG_C(instruction)))].number;
-                L.stack[ra] = .{ .number = rb - @floor(rb / rc) * rc };
-                if (GET_OPCODE(code[ci.savedpc]) == .MMBINK) ci.savedpc += 1;
+                const rb = L.stack[ci.base + @as(usize, @intCast(GETARG_B(instruction)))];
+                const rc = proto.k[@as(usize, @intCast(GETARG_C(instruction)))];
+                if (rb == .number and rc == .number) {
+                    L.stack[ra] = .{ .number = rb.number - @floor(rb.number / rc.number) * rc.number };
+                    if (GET_OPCODE(code[ci.savedpc]) == .MMBINK) ci.savedpc += 1;
+                }
             },
             .POWK => {
                 const ra = ci.base + @as(usize, @intCast(GETARG_A(instruction)));
-                const rb = L.stack[ci.base + @as(usize, @intCast(GETARG_B(instruction)))].number;
-                const rc = proto.k[@as(usize, @intCast(GETARG_C(instruction)))].number;
-                L.stack[ra] = .{ .number = std.math.pow(f64, rb, rc) };
-                if (GET_OPCODE(code[ci.savedpc]) == .MMBINK) ci.savedpc += 1;
+                const rb = L.stack[ci.base + @as(usize, @intCast(GETARG_B(instruction)))];
+                const rc = proto.k[@as(usize, @intCast(GETARG_C(instruction)))];
+                if (rb == .number and rc == .number) {
+                    L.stack[ra] = .{ .number = std.math.pow(f64, rb.number, rc.number) };
+                    if (GET_OPCODE(code[ci.savedpc]) == .MMBINK) ci.savedpc += 1;
+                }
             },
             .DIVK => {
                 const ra = ci.base + @as(usize, @intCast(GETARG_A(instruction)));
-                const rb = L.stack[ci.base + @as(usize, @intCast(GETARG_B(instruction)))].number;
-                const rc = proto.k[@as(usize, @intCast(GETARG_C(instruction)))].number;
-                L.stack[ra] = .{ .number = rb / rc };
-                if (GET_OPCODE(code[ci.savedpc]) == .MMBINK) ci.savedpc += 1;
+                const rb = L.stack[ci.base + @as(usize, @intCast(GETARG_B(instruction)))];
+                const rc = proto.k[@as(usize, @intCast(GETARG_C(instruction)))];
+                if (rb == .number and rc == .number) {
+                    L.stack[ra] = .{ .number = rb.number / rc.number };
+                    if (GET_OPCODE(code[ci.savedpc]) == .MMBINK) ci.savedpc += 1;
+                }
             },
             .IDIVK => {
                 const ra = ci.base + @as(usize, @intCast(GETARG_A(instruction)));
-                const rb = L.stack[ci.base + @as(usize, @intCast(GETARG_B(instruction)))].number;
-                const rc = proto.k[@as(usize, @intCast(GETARG_C(instruction)))].number;
-                L.stack[ra] = .{ .number = @floor(rb / rc) };
-                if (GET_OPCODE(code[ci.savedpc]) == .MMBINK) ci.savedpc += 1;
+                const rb = L.stack[ci.base + @as(usize, @intCast(GETARG_B(instruction)))];
+                const rc = proto.k[@as(usize, @intCast(GETARG_C(instruction)))];
+                if (rb == .number and rc == .number) {
+                    L.stack[ra] = .{ .number = @floor(rb.number / rc.number) };
+                    if (GET_OPCODE(code[ci.savedpc]) == .MMBINK) ci.savedpc += 1;
+                }
             },
             .BANDK => {
                 const ra = ci.base + @as(usize, @intCast(GETARG_A(instruction)));
-                const rb = @as(i64, @intFromFloat(L.stack[ci.base + @as(usize, @intCast(GETARG_B(instruction)))].number));
-                const rc = @as(i64, @intFromFloat(proto.k[@as(usize, @intCast(GETARG_C(instruction)))].number));
-                L.stack[ra] = .{ .number = @floatFromInt(rb & rc) };
-                if (GET_OPCODE(code[ci.savedpc]) == .MMBINK) ci.savedpc += 1;
+                const rb = L.stack[ci.base + @as(usize, @intCast(GETARG_B(instruction)))];
+                const rc = proto.k[@as(usize, @intCast(GETARG_C(instruction)))];
+                if (rb == .number and rc == .number) {
+                    const ib = @as(i64, @intFromFloat(rb.number));
+                    const ic = @as(i64, @intFromFloat(rc.number));
+                    L.stack[ra] = .{ .number = @floatFromInt(ib & ic) };
+                    if (GET_OPCODE(code[ci.savedpc]) == .MMBINK) ci.savedpc += 1;
+                }
             },
             .BORK => {
                 const ra = ci.base + @as(usize, @intCast(GETARG_A(instruction)));
-                const rb = @as(i64, @intFromFloat(L.stack[ci.base + @as(usize, @intCast(GETARG_B(instruction)))].number));
-                const rc = @as(i64, @intFromFloat(proto.k[@as(usize, @intCast(GETARG_C(instruction)))].number));
-                L.stack[ra] = .{ .number = @floatFromInt(rb | rc) };
-                if (GET_OPCODE(code[ci.savedpc]) == .MMBINK) ci.savedpc += 1;
+                const rb = L.stack[ci.base + @as(usize, @intCast(GETARG_B(instruction)))];
+                const rc = proto.k[@as(usize, @intCast(GETARG_C(instruction)))];
+                if (rb == .number and rc == .number) {
+                    const ib = @as(i64, @intFromFloat(rb.number));
+                    const ic = @as(i64, @intFromFloat(rc.number));
+                    L.stack[ra] = .{ .number = @floatFromInt(ib | ic) };
+                    if (GET_OPCODE(code[ci.savedpc]) == .MMBINK) ci.savedpc += 1;
+                }
             },
             .BXORK => {
                 const ra = ci.base + @as(usize, @intCast(GETARG_A(instruction)));
-                const rb = @as(i64, @intFromFloat(L.stack[ci.base + @as(usize, @intCast(GETARG_B(instruction)))].number));
-                const rc = @as(i64, @intFromFloat(proto.k[@as(usize, @intCast(GETARG_C(instruction)))].number));
-                L.stack[ra] = .{ .number = @floatFromInt(rb ^ rc) };
-                if (GET_OPCODE(code[ci.savedpc]) == .MMBINK) ci.savedpc += 1;
+                const rb = L.stack[ci.base + @as(usize, @intCast(GETARG_B(instruction)))];
+                const rc = proto.k[@as(usize, @intCast(GETARG_C(instruction)))];
+                if (rb == .number and rc == .number) {
+                    const ib = @as(i64, @intFromFloat(rb.number));
+                    const ic = @as(i64, @intFromFloat(rc.number));
+                    L.stack[ra] = .{ .number = @floatFromInt(ib ^ ic) };
+                    if (GET_OPCODE(code[ci.savedpc]) == .MMBINK) ci.savedpc += 1;
+                }
             },
             .SHLI => {
                 const ra = ci.base + @as(usize, @intCast(GETARG_A(instruction)));
-                const rb = @as(i64, @intFromFloat(L.stack[ci.base + @as(usize, @intCast(GETARG_B(instruction)))].number));
+                const rb = L.stack[ci.base + @as(usize, @intCast(GETARG_B(instruction)))];
                 const sc = GETARG_sC(instruction);
                 const shift: u6 = @intCast(sc);
-                L.stack[ra] = .{ .number = @floatFromInt(rb << shift) };
-                if (GET_OPCODE(code[ci.savedpc]) == .MMBINI) ci.savedpc += 1;
+                if (rb == .number) {
+                    const ib = @as(i64, @intFromFloat(rb.number));
+                    L.stack[ra] = .{ .number = @floatFromInt(ib << shift) };
+                    if (GET_OPCODE(code[ci.savedpc]) == .MMBINI) ci.savedpc += 1;
+                }
             },
             .SHRI => {
                 const ra = ci.base + @as(usize, @intCast(GETARG_A(instruction)));
-                const rb = @as(i64, @intFromFloat(L.stack[ci.base + @as(usize, @intCast(GETARG_B(instruction)))].number));
+                const rb = L.stack[ci.base + @as(usize, @intCast(GETARG_B(instruction)))];
                 const sc = GETARG_sC(instruction);
                 const shift: u6 = @intCast(sc);
-                L.stack[ra] = .{ .number = @floatFromInt(rb >> shift) };
-                if (GET_OPCODE(code[ci.savedpc]) == .MMBINI) ci.savedpc += 1;
+                if (rb == .number) {
+                    const ib = @as(i64, @intFromFloat(rb.number));
+                    L.stack[ra] = .{ .number = @floatFromInt(ib >> shift) };
+                    if (GET_OPCODE(code[ci.savedpc]) == .MMBINI) ci.savedpc += 1;
+                }
             },
             .ADD => {
                 const ra = ci.base + @as(usize, @intCast(GETARG_A(instruction)));
-                const rb = L.stack[ci.base + @as(usize, @intCast(GETARG_B(instruction)))].number;
-                const rc = L.stack[ci.base + @as(usize, @intCast(GETARG_C(instruction)))].number;
-                L.stack[ra] = .{ .number = rb + rc };
-                if (GET_OPCODE(code[ci.savedpc]) == .MMBIN) ci.savedpc += 1;
+                const rb = L.stack[ci.base + @as(usize, @intCast(GETARG_B(instruction)))];
+                const rc = L.stack[ci.base + @as(usize, @intCast(GETARG_C(instruction)))];
+                if (rb == .number and rc == .number) {
+                    L.stack[ra] = .{ .number = rb.number + rc.number };
+                    if (GET_OPCODE(code[ci.savedpc]) == .MMBIN) ci.savedpc += 1;
+                }
             },
             .SUB => {
                 const ra = ci.base + @as(usize, @intCast(GETARG_A(instruction)));
-                const rb = L.stack[ci.base + @as(usize, @intCast(GETARG_B(instruction)))].number;
-                const rc = L.stack[ci.base + @as(usize, @intCast(GETARG_C(instruction)))].number;
-                L.stack[ra] = .{ .number = rb - rc };
-                if (GET_OPCODE(code[ci.savedpc]) == .MMBIN) ci.savedpc += 1;
+                const rb = L.stack[ci.base + @as(usize, @intCast(GETARG_B(instruction)))];
+                const rc = L.stack[ci.base + @as(usize, @intCast(GETARG_C(instruction)))];
+                if (rb == .number and rc == .number) {
+                    L.stack[ra] = .{ .number = rb.number - rc.number };
+                    if (GET_OPCODE(code[ci.savedpc]) == .MMBIN) ci.savedpc += 1;
+                }
             },
             .MUL => {
                 const ra = ci.base + @as(usize, @intCast(GETARG_A(instruction)));
-                const rb = L.stack[ci.base + @as(usize, @intCast(GETARG_B(instruction)))].number;
-                const rc = L.stack[ci.base + @as(usize, @intCast(GETARG_C(instruction)))].number;
-                L.stack[ra] = .{ .number = rb * rc };
-                if (GET_OPCODE(code[ci.savedpc]) == .MMBIN) ci.savedpc += 1;
+                const rb = L.stack[ci.base + @as(usize, @intCast(GETARG_B(instruction)))];
+                const rc = L.stack[ci.base + @as(usize, @intCast(GETARG_C(instruction)))];
+                if (rb == .number and rc == .number) {
+                    L.stack[ra] = .{ .number = rb.number * rc.number };
+                    if (GET_OPCODE(code[ci.savedpc]) == .MMBIN) ci.savedpc += 1;
+                }
             },
             .MOD => {
                 const ra = ci.base + @as(usize, @intCast(GETARG_A(instruction)));
-                const rb = L.stack[ci.base + @as(usize, @intCast(GETARG_B(instruction)))].number;
-                const rc = L.stack[ci.base + @as(usize, @intCast(GETARG_C(instruction)))].number;
-                L.stack[ra] = .{ .number = rb - @floor(rb / rc) * rc };
-                if (GET_OPCODE(code[ci.savedpc]) == .MMBIN) ci.savedpc += 1;
+                const rb = L.stack[ci.base + @as(usize, @intCast(GETARG_B(instruction)))];
+                const rc = L.stack[ci.base + @as(usize, @intCast(GETARG_C(instruction)))];
+                if (rb == .number and rc == .number) {
+                    L.stack[ra] = .{ .number = rb.number - @floor(rb.number / rc.number) * rc.number };
+                    if (GET_OPCODE(code[ci.savedpc]) == .MMBIN) ci.savedpc += 1;
+                }
             },
             .POW => {
                 const ra = ci.base + @as(usize, @intCast(GETARG_A(instruction)));
-                const rb = L.stack[ci.base + @as(usize, @intCast(GETARG_B(instruction)))].number;
-                const rc = L.stack[ci.base + @as(usize, @intCast(GETARG_C(instruction)))].number;
-                L.stack[ra] = .{ .number = std.math.pow(f64, rb, rc) };
-                if (GET_OPCODE(code[ci.savedpc]) == .MMBIN) ci.savedpc += 1;
+                const rb = L.stack[ci.base + @as(usize, @intCast(GETARG_B(instruction)))];
+                const rc = L.stack[ci.base + @as(usize, @intCast(GETARG_C(instruction)))];
+                if (rb == .number and rc == .number) {
+                    L.stack[ra] = .{ .number = std.math.pow(f64, rb.number, rc.number) };
+                    if (GET_OPCODE(code[ci.savedpc]) == .MMBIN) ci.savedpc += 1;
+                }
             },
             .DIV => {
                 const ra = ci.base + @as(usize, @intCast(GETARG_A(instruction)));
-                const rb = L.stack[ci.base + @as(usize, @intCast(GETARG_B(instruction)))].number;
-                const rc = L.stack[ci.base + @as(usize, @intCast(GETARG_C(instruction)))].number;
-                L.stack[ra] = .{ .number = rb / rc };
-                if (GET_OPCODE(code[ci.savedpc]) == .MMBIN) ci.savedpc += 1;
+                const rb = L.stack[ci.base + @as(usize, @intCast(GETARG_B(instruction)))];
+                const rc = L.stack[ci.base + @as(usize, @intCast(GETARG_C(instruction)))];
+                if (rb == .number and rc == .number) {
+                    L.stack[ra] = .{ .number = rb.number / rc.number };
+                    if (GET_OPCODE(code[ci.savedpc]) == .MMBIN) ci.savedpc += 1;
+                }
             },
             .IDIV => {
                 const ra = ci.base + @as(usize, @intCast(GETARG_A(instruction)));
-                const rb = L.stack[ci.base + @as(usize, @intCast(GETARG_B(instruction)))].number;
-                const rc = L.stack[ci.base + @as(usize, @intCast(GETARG_C(instruction)))].number;
-                L.stack[ra] = .{ .number = @floor(rb / rc) };
-                if (GET_OPCODE(code[ci.savedpc]) == .MMBIN) ci.savedpc += 1;
+                const rb = L.stack[ci.base + @as(usize, @intCast(GETARG_B(instruction)))];
+                const rc = L.stack[ci.base + @as(usize, @intCast(GETARG_C(instruction)))];
+                if (rb == .number and rc == .number) {
+                    L.stack[ra] = .{ .number = @floor(rb.number / rc.number) };
+                    if (GET_OPCODE(code[ci.savedpc]) == .MMBIN) ci.savedpc += 1;
+                }
             },
             .BAND => {
                 const ra = ci.base + @as(usize, @intCast(GETARG_A(instruction)));
-                const rb = @as(i64, @intFromFloat(L.stack[ci.base + @as(usize, @intCast(GETARG_B(instruction)))].number));
-                const rc = @as(i64, @intFromFloat(L.stack[ci.base + @as(usize, @intCast(GETARG_C(instruction)))].number));
-                L.stack[ra] = .{ .number = @floatFromInt(rb & rc) };
-                if (GET_OPCODE(code[ci.savedpc]) == .MMBIN) ci.savedpc += 1;
+                const rb = L.stack[ci.base + @as(usize, @intCast(GETARG_B(instruction)))];
+                const rc = L.stack[ci.base + @as(usize, @intCast(GETARG_C(instruction)))];
+                if (rb == .number and rc == .number) {
+                    const ib = @as(i64, @intFromFloat(rb.number));
+                    const ic = @as(i64, @intFromFloat(rc.number));
+                    L.stack[ra] = .{ .number = @floatFromInt(ib & ic) };
+                    if (GET_OPCODE(code[ci.savedpc]) == .MMBIN) ci.savedpc += 1;
+                }
             },
             .BOR => {
                 const ra = ci.base + @as(usize, @intCast(GETARG_A(instruction)));
-                const rb = @as(i64, @intFromFloat(L.stack[ci.base + @as(usize, @intCast(GETARG_B(instruction)))].number));
-                const rc = @as(i64, @intFromFloat(L.stack[ci.base + @as(usize, @intCast(GETARG_C(instruction)))].number));
-                L.stack[ra] = .{ .number = @floatFromInt(rb | rc) };
-                if (GET_OPCODE(code[ci.savedpc]) == .MMBIN) ci.savedpc += 1;
+                const rb = L.stack[ci.base + @as(usize, @intCast(GETARG_B(instruction)))];
+                const rc = L.stack[ci.base + @as(usize, @intCast(GETARG_C(instruction)))];
+                if (rb == .number and rc == .number) {
+                    const ib = @as(i64, @intFromFloat(rb.number));
+                    const ic = @as(i64, @intFromFloat(rc.number));
+                    L.stack[ra] = .{ .number = @floatFromInt(ib | ic) };
+                    if (GET_OPCODE(code[ci.savedpc]) == .MMBIN) ci.savedpc += 1;
+                }
             },
             .BXOR => {
                 const ra = ci.base + @as(usize, @intCast(GETARG_A(instruction)));
-                const rb = @as(i64, @intFromFloat(L.stack[ci.base + @as(usize, @intCast(GETARG_B(instruction)))].number));
-                const rc = @as(i64, @intFromFloat(L.stack[ci.base + @as(usize, @intCast(GETARG_C(instruction)))].number));
-                L.stack[ra] = .{ .number = @floatFromInt(rb ^ rc) };
-                if (GET_OPCODE(code[ci.savedpc]) == .MMBIN) ci.savedpc += 1;
+                const rb = L.stack[ci.base + @as(usize, @intCast(GETARG_B(instruction)))];
+                const rc = L.stack[ci.base + @as(usize, @intCast(GETARG_C(instruction)))];
+                if (rb == .number and rc == .number) {
+                    const ib = @as(i64, @intFromFloat(rb.number));
+                    const ic = @as(i64, @intFromFloat(rc.number));
+                    L.stack[ra] = .{ .number = @floatFromInt(ib ^ ic) };
+                    if (GET_OPCODE(code[ci.savedpc]) == .MMBIN) ci.savedpc += 1;
+                }
             },
             .SHL => {
                 const ra = ci.base + @as(usize, @intCast(GETARG_A(instruction)));
-                const rb = @as(i64, @intFromFloat(L.stack[ci.base + @as(usize, @intCast(GETARG_B(instruction)))].number));
-                const rc = @as(i64, @intFromFloat(L.stack[ci.base + @as(usize, @intCast(GETARG_C(instruction)))].number));
-                const shift: u6 = @intCast(rc);
-                L.stack[ra] = .{ .number = @floatFromInt(rb << shift) };
-                if (GET_OPCODE(code[ci.savedpc]) == .MMBIN) ci.savedpc += 1;
+                const rb = L.stack[ci.base + @as(usize, @intCast(GETARG_B(instruction)))];
+                const rc = L.stack[ci.base + @as(usize, @intCast(GETARG_C(instruction)))];
+                if (rb == .number and rc == .number) {
+                    const ib = @as(i64, @intFromFloat(rb.number));
+                    const ic = @as(i64, @intFromFloat(rc.number));
+                    const shift: u6 = @intCast(ic);
+                    L.stack[ra] = .{ .number = @floatFromInt(ib << shift) };
+                    if (GET_OPCODE(code[ci.savedpc]) == .MMBIN) ci.savedpc += 1;
+                }
             },
             .SHR => {
                 const ra = ci.base + @as(usize, @intCast(GETARG_A(instruction)));
-                const rb = @as(i64, @intFromFloat(L.stack[ci.base + @as(usize, @intCast(GETARG_B(instruction)))].number));
-                const rc = @as(i64, @intFromFloat(L.stack[ci.base + @as(usize, @intCast(GETARG_C(instruction)))].number));
-                const shift: u6 = @intCast(rc);
-                L.stack[ra] = .{ .number = @floatFromInt(rb >> shift) };
-                if (GET_OPCODE(code[ci.savedpc]) == .MMBIN) ci.savedpc += 1;
+                const rb = L.stack[ci.base + @as(usize, @intCast(GETARG_B(instruction)))];
+                const rc = L.stack[ci.base + @as(usize, @intCast(GETARG_C(instruction)))];
+                if (rb == .number and rc == .number) {
+                    const ib = @as(i64, @intFromFloat(rb.number));
+                    const ic = @as(i64, @intFromFloat(rc.number));
+                    const shift: u6 = @intCast(ic);
+                    L.stack[ra] = .{ .number = @floatFromInt(ib >> shift) };
+                    if (GET_OPCODE(code[ci.savedpc]) == .MMBIN) ci.savedpc += 1;
+                }
             },
-            .MMBIN => {},
-            .MMBINI => {},
-            .MMBINK => {},
+            .MMBIN => {
+                const ra_idx = ci.base + @as(usize, @intCast(GETARG_A(instruction)));
+                const rb_idx = ci.base + @as(usize, @intCast(GETARG_B(instruction)));
+                const tm = @as(ltm.TMS, @enumFromInt(GETARG_C(instruction)));
+                const prev_inst = code[ci.savedpc - 2];
+                const dest_idx = ci.base + @as(usize, @intCast(GETARG_A(prev_inst)));
+                try ltm.luaT_trybinTM(L, L.stack[ra_idx], L.stack[rb_idx], dest_idx, tm);
+            },
+            .MMBINI => {
+                const ra_idx = ci.base + @as(usize, @intCast(GETARG_A(instruction)));
+                const imm = GETARG_sB(instruction);
+                const tm = @as(ltm.TMS, @enumFromInt(GETARG_C(instruction)));
+                const flip = GETARG_k(instruction) != 0;
+                const prev_inst = code[ci.savedpc - 2];
+                const dest_idx = ci.base + @as(usize, @intCast(GETARG_A(prev_inst)));
+                const aux_val = lua.TValue{ .number = @floatFromInt(imm) };
+                const p1 = if (flip) aux_val else L.stack[ra_idx];
+                const p2 = if (flip) L.stack[ra_idx] else aux_val;
+                try ltm.luaT_trybinTM(L, p1, p2, dest_idx, tm);
+            },
+            .MMBINK => {
+                const ra_idx = ci.base + @as(usize, @intCast(GETARG_A(instruction)));
+                const imm = proto.k[@as(usize, @intCast(GETARG_B(instruction)))];
+                const tm = @as(ltm.TMS, @enumFromInt(GETARG_C(instruction)));
+                const flip = GETARG_k(instruction) != 0;
+                const prev_inst = code[ci.savedpc - 2];
+                const dest_idx = ci.base + @as(usize, @intCast(GETARG_A(prev_inst)));
+                const p1 = if (flip) imm else L.stack[ra_idx];
+                const p2 = if (flip) L.stack[ra_idx] else imm;
+                try ltm.luaT_trybinTM(L, p1, p2, dest_idx, tm);
+            },
             .UNM => {
                 const ra = ci.base + @as(usize, @intCast(GETARG_A(instruction)));
-                const rb = L.stack[ci.base + @as(usize, @intCast(GETARG_B(instruction)))].number;
-                L.stack[ra] = .{ .number = -rb };
+                const rb = L.stack[ci.base + @as(usize, @intCast(GETARG_B(instruction)))];
+                if (rb == .number) {
+                    L.stack[ra] = .{ .number = -rb.number };
+                } else {
+                    try ltm.luaT_trybinTM(L, rb, rb, ra, .UNM);
+                }
             },
             .BNOT => {
                 const ra = ci.base + @as(usize, @intCast(GETARG_A(instruction)));
-                const rb = @as(i64, @intFromFloat(L.stack[ci.base + @as(usize, @intCast(GETARG_B(instruction)))].number));
-                L.stack[ra] = .{ .number = @floatFromInt(~rb) };
+                const rb = L.stack[ci.base + @as(usize, @intCast(GETARG_B(instruction)))];
+                if (rb == .number) {
+                    const ib = @as(i64, @intFromFloat(rb.number));
+                    L.stack[ra] = .{ .number = @floatFromInt(~ib) };
+                } else {
+                    try ltm.luaT_trybinTM(L, rb, rb, ra, .BNOT);
+                }
             },
             .NOT => {
                 const ra = ci.base + @as(usize, @intCast(GETARG_A(instruction)));
@@ -604,12 +684,22 @@ pub fn run(L: *lua.lua_State, active_ci: *lua.CallInfo) anyerror!void {
             .LEN => {
                 const ra = ci.base + @as(usize, @intCast(GETARG_A(instruction)));
                 const rb = L.stack[ci.base + @as(usize, @intCast(GETARG_B(instruction)))];
-                const len = switch (rb) {
-                    .table => |t| ltable.getn(t.?),
-                    .string => |s| s.?.s.len,
-                    else => 0,
-                };
-                L.stack[ra] = .{ .number = @floatFromInt(len) };
+                switch (rb) {
+                    .table => |t| {
+                        const tm = if (t.?.metatable) |mt| ltm.luaT_gettm(mt, .LEN, L.l_G.?.tmname[@intFromEnum(ltm.TMS.LEN)].?) else null;
+                        if (tm) |tm_val| {
+                            _ = try ltm.luaT_callTMres(L, tm_val, rb, rb, ra);
+                        } else {
+                            L.stack[ra] = .{ .number = @floatFromInt(ltable.getn(t.?)) };
+                        }
+                    },
+                    .string => |s| {
+                        L.stack[ra] = .{ .number = @floatFromInt(s.?.s.len) };
+                    },
+                    else => {
+                        try ltm.luaT_trybinTM(L, rb, rb, ra, .LEN);
+                    },
+                }
             },
             .CONCAT => {
                 const ra_idx = ci.base + @as(usize, @intCast(GETARG_A(instruction)));
@@ -645,50 +735,61 @@ pub fn run(L: *lua.lua_State, active_ci: *lua.CallInfo) anyerror!void {
             .EQ => {
                 const ra = L.stack[ci.base + @as(usize, @intCast(GETARG_A(instruction)))];
                 const rb = L.stack[ci.base + @as(usize, @intCast(GETARG_B(instruction)))];
-                const cond = ra == .number and rb == .number and ra.number == rb.number;
+                const cond = try ltm.luaT_equalobj(L, ra, rb);
                 docondjump(L, ci, cond, code);
             },
             .LT => {
-                const ra = L.stack[ci.base + @as(usize, @intCast(GETARG_A(instruction)))].number;
-                const rb = L.stack[ci.base + @as(usize, @intCast(GETARG_B(instruction)))].number;
-                docondjump(L, ci, ra < rb, code);
+                const ra = L.stack[ci.base + @as(usize, @intCast(GETARG_A(instruction)))];
+                const rb = L.stack[ci.base + @as(usize, @intCast(GETARG_B(instruction)))];
+                const cond = try ltm.luaT_lt(L, ra, rb);
+                docondjump(L, ci, cond, code);
             },
             .LE => {
-                const ra = L.stack[ci.base + @as(usize, @intCast(GETARG_A(instruction)))].number;
-                const rb = L.stack[ci.base + @as(usize, @intCast(GETARG_B(instruction)))].number;
-                docondjump(L, ci, ra <= rb, code);
+                const ra = L.stack[ci.base + @as(usize, @intCast(GETARG_A(instruction)))];
+                const rb = L.stack[ci.base + @as(usize, @intCast(GETARG_B(instruction)))];
+                const cond = try ltm.luaT_le(L, ra, rb);
+                docondjump(L, ci, cond, code);
             },
             .EQK => {
                 const ra = L.stack[ci.base + @as(usize, @intCast(GETARG_A(instruction)))];
                 const rb = proto.k[@as(usize, @intCast(GETARG_B(instruction)))];
-                const cond = ra == .number and rb == .number and ra.number == rb.number;
+                const cond = try ltm.luaT_equalobj(L, ra, rb);
                 docondjump(L, ci, cond, code);
             },
             .EQI => {
-                const ra = L.stack[ci.base + @as(usize, @intCast(GETARG_A(instruction)))].number;
+                const ra = L.stack[ci.base + @as(usize, @intCast(GETARG_A(instruction)))];
                 const sb = GETARG_sB(instruction);
-                const cond = ra == @as(f64, @floatFromInt(sb));
+                const aux_val = lua.TValue{ .number = @floatFromInt(sb) };
+                const cond = try ltm.luaT_equalobj(L, ra, aux_val);
                 docondjump(L, ci, cond, code);
             },
             .LTI => {
-                const ra = L.stack[ci.base + @as(usize, @intCast(GETARG_A(instruction)))].number;
+                const ra = L.stack[ci.base + @as(usize, @intCast(GETARG_A(instruction)))];
                 const sb = GETARG_sB(instruction);
-                docondjump(L, ci, ra < @as(f64, @floatFromInt(sb)), code);
+                const aux_val = lua.TValue{ .number = @floatFromInt(sb) };
+                const cond = try ltm.luaT_lt(L, ra, aux_val);
+                docondjump(L, ci, cond, code);
             },
             .LEI => {
-                const ra = L.stack[ci.base + @as(usize, @intCast(GETARG_A(instruction)))].number;
+                const ra = L.stack[ci.base + @as(usize, @intCast(GETARG_A(instruction)))];
                 const sb = GETARG_sB(instruction);
-                docondjump(L, ci, ra <= @as(f64, @floatFromInt(sb)), code);
+                const aux_val = lua.TValue{ .number = @floatFromInt(sb) };
+                const cond = try ltm.luaT_le(L, ra, aux_val);
+                docondjump(L, ci, cond, code);
             },
             .GTI => {
-                const ra = L.stack[ci.base + @as(usize, @intCast(GETARG_A(instruction)))].number;
+                const ra = L.stack[ci.base + @as(usize, @intCast(GETARG_A(instruction)))];
                 const sb = GETARG_sB(instruction);
-                docondjump(L, ci, ra > @as(f64, @floatFromInt(sb)), code);
+                const aux_val = lua.TValue{ .number = @floatFromInt(sb) };
+                const cond = try ltm.luaT_lt(L, aux_val, ra);
+                docondjump(L, ci, cond, code);
             },
             .GEI => {
-                const ra = L.stack[ci.base + @as(usize, @intCast(GETARG_A(instruction)))].number;
+                const ra = L.stack[ci.base + @as(usize, @intCast(GETARG_A(instruction)))];
                 const sb = GETARG_sB(instruction);
-                docondjump(L, ci, ra >= @as(f64, @floatFromInt(sb)), code);
+                const aux_val = lua.TValue{ .number = @floatFromInt(sb) };
+                const cond = try ltm.luaT_le(L, aux_val, ra);
+                docondjump(L, ci, cond, code);
             },
             .TEST => {
                 const ra = L.stack[ci.base + @as(usize, @intCast(GETARG_A(instruction)))];

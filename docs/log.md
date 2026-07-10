@@ -162,3 +162,46 @@ Implemented the binary bytecode loader (`lundump.zig`), allowing precompiled Lua
 
 `zig build test` compiled and passed all 17/17 tests successfully with zero memory leaks.
 
+---
+
+## Phase E — Metamethod Dispatch: __index / __newindex (2026-07-10)
+
+### Changes
+
+- **`src/ltm.zig`**:
+  - Added `MAXTAGLOOP = 2000` constant matching the C reference.
+  - Implemented `luaV_gettable(L, t, key, res)`: metamethod-aware table read following the full `__index` chain (table→function→table recursion, up to MAXTAGLOOP).
+  - Implemented `luaV_settable(L, t, key, val)`: metamethod-aware table write following the full `__newindex` chain, with "key already present → skip `__newindex`" semantics matching the C reference.
+  - Both functions dispatch metamethods via existing `luaT_gettmbyobj`, `luaT_callTMres`, and `luaT_callTM` helpers.
+
+- **`src/lvm.zig`**:
+  - Rewired all table-read opcodes (`GETTABLE`, `GETI`, `GETFIELD`, `GETTABUP`) to call `ltm.luaV_gettable`.
+  - Rewired all table-write opcodes (`SETTABLE`, `SETI`, `SETFIELD`, `SETTABUP`) to call `ltm.luaV_settable`.
+  - Updated `SELF` to use `ltm.luaV_gettable` for method lookup.
+  - `GETI`/`SETI` now wrap the integer key as `TValue{ .number = @floatFromInt(c) }` before passing to `luaV_gettable`/`luaV_settable`.
+
+- **`src/lua.zig`**:
+  - Updated `lua_gettable`, `lua_getfield`, `lua_geti` to call `ltm.luaV_gettable`.
+  - Updated `lua_settable`, `lua_setfield`, `lua_seti` to call `ltm.luaV_settable`.
+  - Made `lua_rawget`, `lua_rawgeti`, `lua_rawset`, `lua_rawseti` truly raw (no metamethod dispatch).
+  - Fixed `lua_setmetatable`: properly unwrap `?*lua_Table` and `?*lua_Udata` optionals before setting `.metatable`.
+  - Fixed `idxPtr` to decode positive indices as **frame-relative** (`L.stack[ci.base + idx - 1]`) when inside a call frame — correct Lua C API contract. Upvalue pseudo-indices (`lua_upvalueindex(n)`) resolve to the current C closure's `upvals[n-1]`.
+  - Added `lua_pushcfunction(L, f)`: shorthand for `lua_pushcclosure(L, f, 0)`.
+  - Added `lua_upvalueindex(n)`: converts 1-based upvalue index to pseudo-index.
+  - Added `lua_getupvalue(L, _, n)` / `lua_setupvalue(L, _, n)`: get/set C closure upvalues.
+  - Fixed memory leak: `lua_pushcclosure` now calls `registerGC(L, cl)` so C closures are freed by `lua_close`.
+
+- **`tests/test_basic.zig`**:
+  - Added 3 new tests: `__index function metamethod via C API`, `__index table chain metamethod via C API`, `__newindex function metamethod via C API`.
+
+### §0.1 Self-Audit
+
+- No `catch unreachable`, no `@bitCast` for value conversion.
+- All metamethod chains bounded by `MAXTAGLOOP = 2000` (matching C reference safety limit).
+- Error unions propagated cleanly; metamethod errors surface as `error.RuntimeError`.
+- Frame-relative index decoding matches the real Lua C API contract.
+- C closures now GC-registered, eliminating memory leaks.
+
+### Verification
+
+`zig build test` compiled and passed all **20/20 tests** with zero memory leaks.
