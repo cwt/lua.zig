@@ -77,6 +77,11 @@ justification in your commit message, and even then prefer the Zig way.
 - Before writing any function, ask: *"What would a native Zig programmer write
   here?"* — then write that. Diff against `lua/` only for **semantics** (opcode
   behavior, algorithm), never for **structure**.
+- **OKF documentation mandate.** The project uses a Google OKF v0.1 knowledge
+  bundle at `docs/`. Every time you complete a phase, add a feature, or change
+  architecture, update the relevant `docs/*.md` files and append an entry to
+  `docs/log.md`. The bundle must reflect the current state of the project at
+  all times.
 - Prefer `defer`/`errdefer` for cleanup over manual `free`.
 - Prefer `anytype` + `comptime` for generic helpers (skill §4.4) over void
   pointers or `@ptrCast`.
@@ -109,9 +114,10 @@ Always diff against `lua/` when implementing a module.
 
 ## 2. Current status — honest assessment
 
-**The project is at the INITIAL COMMIT stage.** The foundational §0.1 rules are
-enforced throughout the codebase. The executable and library compile, tests pass,
-and the repo is initialized with bookmark `main` at commit `1922e263e618`.
+**The project is past initial setup.** The foundational §0.1 rules are enforced
+throughout the codebase. The executable and library compile, tests pass, and the
+repo is initialized with bookmark `main`. The upstream Lua reference C sources
+are available as a Git subrepo.
 
 ### What is genuinely done
 - **Module layout exists.** Files mirror the C modules: `lua.zig` (core API),
@@ -132,7 +138,11 @@ and the repo is initialized with bookmark `main` at commit `1922e263e618`.
 - **`build.zig`** builds exe (`luazig`) + library (`lua`). Test step works.
 - **7 passing tests** in `tests/test_basic.zig`: nil, boolean, number, integer,
   string, table type checks and stack push/pop round-trip.
-- **Repository initialized** with `.hgignore`, `LICENSE`, `AGENTS.md`.
+- **Google OKF v0.1 knowledge bundle** lives in `docs/` and is kept current with
+  every phase (architecture, log, glossary). See `docs/README.md`.
+- **`lua/` is a Git subrepo** tracked via `.hgsub` (`[git]git@github.com:lua/lua.git`),
+  providing the authoritative Lua 5.5.1 C reference for porting.
+- **Repository initialized** with `.hgignore`, `.hgsub`, `LICENSE`, `AGENTS.md`.
 
 ### What is NOT done (blocking next phase)
 1. **No front-end at all.** `luaL_dostring`, `lua_load`, `lua_dump` are empty
@@ -244,6 +254,9 @@ before moving on. Do not parallelize layers that depend on each other.
 | `src/lualib.zig` | inline stubs for all libraries | Phase F — move to `src/lib/*.zig` bodies. |
 | `src/lib/*.zig` | library bodies present but broken | Phase F — rewrite per module with tests. |
 | `tests/test_basic.zig` | ✅ 7 passing tests | Expand with table, VM, and front-end tests. |
+| `docs/` | ✅ OKF v0.1 bundle (architecture, log, glossary) | Update after every phase; see `docs/README.md`. |
+| `lua/` | ✅ Git subrepo tracking git@github.com:lua/lua.git | Reference source; update with `git pull` when needed. |
+| `.hgsub` | ✅ defines `lua = [git]git@github.com:lua/lua.git` | Add more subrepos if needed. |
 
 ---
 
@@ -260,6 +273,8 @@ before moving on. Do not parallelize layers that depend on each other.
   slice.
 - Run `zig build test` with `--test-timeout-scale=X` if a test is slow (the
   default is 1s); do not disable tests to make the build green.
+- After every phase or significant change, update the OKF bundle in `docs/`
+  before reporting completion. Run `docs/check_readiness.py` if it exists.
 - Commit messages must include the §0.1 self-audit result.
 
 ---
