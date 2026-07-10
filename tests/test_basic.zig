@@ -690,6 +690,83 @@ test "pcall with errfunc error handler" {
     try std.testing.expectEqualStrings("custom error handled", err_msg);
 }
 
+test "garbage collector mark and sweep" {
+    const gpa = std.testing.allocator;
+    var L: lua.lua_State = undefined;
+    try lua.luaL_newstate(&L, gpa);
+    defer lua.lua_close(&L);
+
+    const g = L.l_G.?;
+
+    // Count initial objects
+    var init_count: usize = 0;
+    var curr = g.allgc;
+    while (curr) |gc| {
+        init_count += 1;
+        curr = gc.next;
+    }
+
+    // 1. Create a table and push it on the stack (referenced!)
+    lua.lua_createtable(&L, 0, 0);
+
+    // 2. Create another table and push it, then pop it (unreferenced!)
+    lua.lua_createtable(&L, 0, 0);
+    lua.lua_pop(&L, 1);
+
+    // 3. Create a string and push it on the stack (referenced!)
+    _ = lua.lua_pushstring(&L, "referenced_string");
+
+    // 4. Create another string, push it, then pop it (unreferenced!)
+    _ = lua.lua_pushstring(&L, "unreferenced_string");
+    lua.lua_pop(&L, 1);
+
+    // Verify that the string table contains both strings
+    try std.testing.expect(g.strt.contains("referenced_string"));
+    try std.testing.expect(g.strt.contains("unreferenced_string"));
+
+    // Run Garbage Collection
+    const status = lua.lua_gc(&L, lua.LUA_GCCOLLECT, 0);
+    try std.testing.expectEqual(@as(i32, 0), status);
+
+    // Verify that:
+    // - The referenced table is NOT collected.
+    // - The unreferenced table IS collected.
+    // - The referenced string is NOT collected.
+    // - The unreferenced string IS collected (removed from strt).
+    try std.testing.expect(g.strt.contains("referenced_string"));
+    try std.testing.expect(!g.strt.contains("unreferenced_string"));
+
+    // Count remaining GC objects
+    var end_count: usize = 0;
+    curr = g.allgc;
+    while (curr) |gc| {
+        end_count += 1;
+        curr = gc.next;
+    }
+
+    // We added 2 tables, 1 should be swept.
+    // So end_count should be init_count + 1.
+    try std.testing.expectEqual(init_count + 1, end_count);
+
+    // Pop the remaining table and string
+    lua.lua_pop(&L, 2);
+
+    // Run GC again — now everything we created should be collected!
+    _ = lua.lua_gc(&L, lua.LUA_GCCOLLECT, 0);
+
+    // Verify both are gone
+    try std.testing.expect(!g.strt.contains("referenced_string"));
+
+    var final_count: usize = 0;
+    curr = g.allgc;
+    while (curr) |gc| {
+        final_count += 1;
+        curr = gc.next;
+    }
+    try std.testing.expectEqual(init_count, final_count);
+}
+
+
 
 
 

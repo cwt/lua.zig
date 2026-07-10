@@ -117,6 +117,7 @@ pub const lua_TString = struct {
     s: []const u8,
     len: usize,
     hash: u32,
+    marked: bool = false,
 };
 
 pub const lua_Udata = struct {
@@ -423,9 +424,16 @@ pub const CallInfo = struct {
     next: ?*CallInfo,
 };
 
+pub const GCColor = enum(u2) {
+    white = 0,
+    gray = 1,
+    black = 2,
+};
+
 pub const VMGCObject = struct {
     next: ?*VMGCObject,
     val: ValUnion,
+    color: GCColor = .white,
 
     pub const ValUnion = union(enum) {
         table: *lua_Table,
@@ -1508,11 +1516,277 @@ pub fn lua_warning(L: *lua_State, msg: []const u8, tocont: i32) void {
     _ = tocont;
 }
 
+fn getGCObject(g: *global_State, ptr: anytype) ?*VMGCObject {
+    var curr = g.allgc;
+    while (curr) |gc| {
+        switch (gc.val) {
+            .table => |t| if (@intFromPtr(t) == @intFromPtr(ptr)) return gc,
+            .closure => |cl| if (@intFromPtr(cl) == @intFromPtr(ptr)) return gc,
+            .upval => |uv| if (@intFromPtr(uv) == @intFromPtr(ptr)) return gc,
+            .proto => |p| if (@intFromPtr(p) == @intFromPtr(ptr)) return gc,
+            .userdata => |ud| if (@intFromPtr(ud) == @intFromPtr(ptr)) return gc,
+        }
+        curr = gc.next;
+    }
+    return null;
+}
+
+fn markObject(L: *lua_State, gc: *VMGCObject, gray_list: *std.ArrayList(*VMGCObject)) !void {
+    if (gc.color == .white) {
+        gc.color = .gray;
+        try gray_list.append(L.allocator, gc);
+    }
+}
+
+fn markValue(L: *lua_State, gray_list: *std.ArrayList(*VMGCObject), val: TValue) !void {
+    const g = G(L);
+    switch (val) {
+        .string => |s| if (s) |str| {
+            str.marked = true;
+        },
+        .table => |t| if (t) |tbl| if (getGCObject(g, tbl)) |gc| try markObject(L, gc, gray_list),
+        .function => |f| if (f) |cl| if (getGCObject(g, cl)) |gc| try markObject(L, gc, gray_list),
+        .upval => |u| if (u) |uv| if (getGCObject(g, uv)) |gc| try markObject(L, gc, gray_list),
+        .proto => |p| if (p) |pr| if (getGCObject(g, pr)) |gc| try markObject(L, gc, gray_list),
+        .userdata => |u| if (u) |ud| if (getGCObject(g, ud)) |gc| try markObject(L, gc, gray_list),
+        else => {},
+    }
+}
+
+fn freeGCObject(L: *lua_State, gc: *VMGCObject) void {
+    switch (gc.val) {
+        .table => |t| {
+            ltable.deinit(t);
+        },
+        .closure => |cl| {
+            switch (cl.*) {
+                .c => |cc| {
+                    L.allocator.free(cc.upvals);
+                    L.allocator.destroy(cc);
+                },
+                .lua => |lc| {
+                    L.allocator.free(lc.upvals);
+                    L.allocator.destroy(lc);
+                },
+            }
+            L.allocator.destroy(cl);
+        },
+        .upval => |uv| {
+            L.allocator.destroy(uv);
+        },
+        .proto => |f| {
+            L.allocator.free(f.code);
+            L.allocator.free(f.k);
+            L.allocator.free(f.p);
+            L.allocator.free(f.upvalues);
+            L.allocator.free(f.lineinfo);
+            L.allocator.free(f.abslineinfo);
+            L.allocator.free(f.locvars);
+            L.allocator.destroy(f);
+        },
+        .userdata => |u| {
+            L.allocator.destroy(u);
+        },
+    }
+    L.allocator.destroy(gc);
+}
+
+pub fn luaC_collectgarbage(L: *lua_State) !void {
+    const g = G(L);
+    
+    // 1. Reset/Clear gray list
+    var gray_list = std.ArrayList(*VMGCObject).empty;
+    defer gray_list.deinit(L.allocator);
+
+    // 2. Set all objects to white
+    var curr = g.allgc;
+    while (curr) |gc| {
+        gc.color = .white;
+        curr = gc.next;
+    }
+
+    // 3. Mark roots
+    // Root 1: Registry table
+    try markValue(L, &gray_list, g.registry);
+
+    // Root 2: Global metatables
+    for (g.mt) |opt_mt| {
+        if (opt_mt) |mt| {
+            if (getGCObject(g, mt)) |gc| {
+                try markObject(L, gc, &gray_list);
+            }
+        }
+    }
+
+    // Root 3: Metamethod names
+    for (g.tmname) |opt_name| {
+        if (opt_name) |name| {
+            name.marked = true;
+        }
+    }
+
+    // Root 4: The stack of all active states
+    var i: usize = 0;
+    while (i < L.top) : (i += 1) {
+        try markValue(L, &gray_list, L.stack[i]);
+    }
+
+    // Root 5: Open upvalues
+    var curr_uv = L.openupval;
+    while (curr_uv) |uv| {
+        if (getGCObject(g, uv)) |gc| {
+            try markObject(L, gc, &gray_list);
+        }
+        curr_uv = uv.next;
+    }
+
+    // 4. Traverse gray list until empty
+    while (gray_list.pop()) |gc| {
+        if (gc.color == .black) continue;
+        gc.color = .black;
+
+        // Traverse fields of the object and mark them
+        switch (gc.val) {
+            .table => |t| {
+                // Mark array part
+                for (t.array.items) |val| {
+                    try markValue(L, &gray_list, val);
+                }
+                // Mark hash part
+                for (t.node.items) |nd| {
+                    try markValue(L, &gray_list, nd.key);
+                    try markValue(L, &gray_list, nd.val);
+                }
+                // Mark metatable
+                if (t.metatable) |mt| {
+                    if (getGCObject(g, mt)) |mt_gc| {
+                        try markObject(L, mt_gc, &gray_list);
+                    }
+                }
+            },
+            .closure => |cl| {
+                switch (cl.*) {
+                    .c => |cc| {
+                        for (cc.upvals) |uv| {
+                            try markValue(L, &gray_list, uv);
+                        }
+                    },
+                    .lua => |lc| {
+                        // Mark prototype
+                        if (getGCObject(g, lc.p)) |proto_gc| {
+                            try markObject(L, proto_gc, &gray_list);
+                        }
+                        // Mark upvalues
+                        for (lc.upvals) |opt_uv| {
+                            if (opt_uv) |uv| {
+                                if (getGCObject(g, uv)) |uv_gc| {
+                                    try markObject(L, uv_gc, &gray_list);
+                                }
+                            }
+                        }
+                    },
+                }
+            },
+            .upval => |uv| {
+                try markValue(L, &gray_list, uv.value);
+            },
+            .proto => |p| {
+                if (p.source) |src| src.marked = true;
+                // Mark upvalue names
+                for (p.upvalues) |uvd| {
+                    if (uvd.name) |name| name.marked = true;
+                }
+                // Mark local variable names
+                for (p.locvars) |lv| {
+                    if (lv.varname) |name| name.marked = true;
+                }
+                // Mark constants
+                for (p.k) |val| {
+                    try markValue(L, &gray_list, val);
+                }
+                // Mark nested prototypes
+                for (p.p) |sub_p| {
+                    if (getGCObject(g, sub_p)) |sub_gc| {
+                        try markObject(L, sub_gc, &gray_list);
+                    }
+                }
+            },
+            .userdata => |ud| {
+                if (ud.metatable) |mt| {
+                    if (getGCObject(g, mt)) |mt_gc| {
+                        try markObject(L, mt_gc, &gray_list);
+                    }
+                }
+            },
+        }
+    }
+
+    // 5. Sweep phase: free white objects
+    var prev_gc: ?*VMGCObject = null;
+    var sweep_curr = g.allgc;
+    while (sweep_curr) |gc| {
+        const next_gc = gc.next;
+        if (gc.color == .white) {
+            // Unlink from allgc
+            if (prev_gc) |prev| {
+                prev.next = next_gc;
+            } else {
+                g.allgc = next_gc;
+            }
+
+            // Free the object's resources
+            freeGCObject(L, gc);
+        } else {
+            gc.color = .white; // Reset to white for next cycle
+            prev_gc = gc;
+        }
+        sweep_curr = next_gc;
+    }
+
+    // Sweep strings:
+    // First, find all unmarked strings
+    var dead_strings = std.ArrayList([]const u8).empty;
+    defer dead_strings.deinit(L.allocator);
+    
+    var str_it = g.strt.iterator();
+    while (str_it.next()) |entry| {
+        const ts = entry.value_ptr.*;
+        if (!ts.marked) {
+            try dead_strings.append(L.allocator, entry.key_ptr.*);
+        } else {
+            ts.marked = false; // Reset for next GC cycle
+        }
+    }
+
+    // Now remove and free them
+    for (dead_strings.items) |key| {
+        const ts = g.strt.get(key).?;
+        _ = g.strt.swapRemove(key);
+        g.allocator.destroy(ts);
+    }
+}
+
+pub const LUA_GCSTOP: i32 = 0;
+pub const LUA_GCRESTART: i32 = 1;
+pub const LUA_GCCOLLECT: i32 = 2;
+pub const LUA_GCCOUNT: i32 = 3;
+pub const LUA_GCCOUNTB: i32 = 4;
+pub const LUA_GCSTEP: i32 = 5;
+pub const LUA_GCSETPAUSE: i32 = 6;
+pub const LUA_GCSETSTEPMUL: i32 = 7;
+pub const LUA_GCISRUNNING: i32 = 9;
+pub const LUA_GCGEN: i32 = 10;
+pub const LUA_GCINC: i32 = 11;
+
 pub fn lua_gc(L: *lua_State, what: i32, arg: i32) i32 {
-    _ = L;
-    _ = what;
     _ = arg;
-    return 0;
+    switch (what) {
+        LUA_GCCOLLECT => {
+            luaC_collectgarbage(L) catch return -1;
+            return 0;
+        },
+        else => return 0,
+    }
 }
 
 pub fn lua_error(L: *lua_State) anyerror {
@@ -1681,41 +1955,7 @@ pub fn lua_close(L: *lua_State) void {
         var curr_gc = g.allgc;
         while (curr_gc) |gc| {
             const next_gc = gc.next;
-            switch (gc.val) {
-                .table => |t| {
-                    ltable.deinit(t);
-                },
-                .closure => |cl| {
-                    switch (cl.*) {
-                        .c => |cc| {
-                            L.allocator.free(cc.upvals);
-                            L.allocator.destroy(cc);
-                        },
-                        .lua => |lc| {
-                            L.allocator.free(lc.upvals);
-                            L.allocator.destroy(lc);
-                        },
-                    }
-                    L.allocator.destroy(cl);
-                },
-                .upval => |uv| {
-                    L.allocator.destroy(uv);
-                },
-                .proto => |f| {
-                    L.allocator.free(f.code);
-                    L.allocator.free(f.k);
-                    L.allocator.free(f.p);
-                    L.allocator.free(f.upvalues);
-                    L.allocator.free(f.lineinfo);
-                    L.allocator.free(f.abslineinfo);
-                    L.allocator.free(f.locvars);
-                    L.allocator.destroy(f);
-                },
-                .userdata => |u| {
-                    L.allocator.destroy(u);
-                },
-            }
-            L.allocator.destroy(gc);
+            freeGCObject(L, gc);
             curr_gc = next_gc;
         }
         g.allgc = null;

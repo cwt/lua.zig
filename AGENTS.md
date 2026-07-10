@@ -163,23 +163,13 @@ are available as a Git subrepo.
    providing the authoritative Lua 5.5.1 C reference for porting.
 - **Repository initialized** with `.hgignore`, `.hgsub`, `LICENSE`, `AGENTS.md`.
 
-- **Phase E partially complete — Metamethod dispatch for __index/__newindex, Arithmetic, and Comparison Metamethods.**
-   `luaV_gettable` and `luaV_settable` in `src/ltm.zig` follow `__index`/`__newindex`
-   chains (up to MAXTAGLOOP=2000). All table-access opcodes in `src/lvm.zig` and all
-   C API table functions (`lua_gettable`, `lua_getfield`, `lua_geti`, `lua_settable`,
-   `lua_setfield`, `lua_seti`) now dispatch through these. Raw variants (`lua_rawget*`,
-   `lua_rawset*`) remain raw. `idxPtr` now frame-relative for positive indices.
-   `lua_pushcfunction`, `lua_upvalueindex`, `lua_getupvalue`, `lua_setupvalue` added.
-   Arithmetic and comparison metamethods (`__add`, `__eq`, `__lt`, `__le`, etc.) fully implemented in C API and VM execution with fallback.
-   C closures now GC-registered (no memory leaks). **8 metamethod tests pass.**
+- **Phase E complete — Metamethods, Error handling, and GC.**
+   All Phase E items fully implemented: `__index`/`__newindex` chains (up to MAXTAGLOOP=2000), arithmetic and comparison metamethods, native error propagation (longjmp-free `anyerror`/`try` continuation path), protected calls with custom `errfunc` handlers on active stack frames, and a complete mark-and-sweep garbage collection engine for unreferenced tables and interned strings. Stale duplicated `src/lstate.zig` has been removed. Verified by 27 passing tests with zero memory leaks.
 
 ### What is NOT done (blocking next phase)
 1. **No source text compilation.** Lexer (`llex.c`), parser (`lparser.c`), and code generator (`lcode.c`) are not implemented (we rely on precompiled bytecode). `luaL_dostring` is still a stub.
-2. **No coroutines, no debug API.** Memory allocations are tracked in a flat sweep list `allgc` for leak-free teardowns, but there is no real garbage collector sweep phase yet.
+2. **No coroutines, no debug API.**
 3. **`src/lib/*.zig` library bodies are stubs.**
-4. **`src/lstate.zig` is stale/dead code** — its `global_State`/`CallInfo`/
-   `GCUnion` duplicate `lua.zig`'s types and it is NOT in the build graph. It
-   must be reconciled (or deleted) when GC lands.
 
 ---
 
@@ -243,11 +233,12 @@ and string interning in `global_State.strt` (`std.array_hash_map.String`) in
 9. Implemented VM execution loop `lvm.run` supporting all core opcodes, closure capture, upvalue resolution.
 10. Supported function calls, tail calls, managing `CallInfo` stack frames, and returns.
 
-### Phase E — Error handling, GC, metatables (IN PROGRESS)
+### Phase E — Error handling, GC, metatables ✅ DONE (2026-07-10)
 11. ✅ `__index`/`__newindex` metamethod dispatch via `luaV_gettable`/`luaV_settable` in `src/ltm.zig`. All table opcodes and C API wired. 3 tests pass.
 12. ✅ Arithmetic metamethods (`__add`, `__sub`, etc.) fully implemented in `lua_arith` and VM execution with fallback.
 13. ✅ Error propagation (`lua_error`, `lua_pcall`/`lua_pcallk` with custom error handler `errfunc`, longjmp-free Zig `error`/`try` continuations).
-14. Expand garbage collector (reconcile stale state, build mark/sweep on top of VMGCObject).
+14. ✅ Expand garbage collector (reconcile stale state, build mark/sweep on top of VMGCObject).
+
 
 ### Phase F — Standard libraries
 15. Implement library *bodies* in `src/lib/*`. Go module by module
@@ -263,11 +254,11 @@ and string interning in `global_State.strt` (`std.array_hash_map.String`) in
 |------|--------|-------------|
 | `build.zig` | ✅ exe+lib build OK; test step works | Expand when adding deps or test targets. |
 | `src/luazig.zig` | ✅ entry point, juicy-main | Thread `io` down to `iolib`/`oslib` when those are implemented. |
-| `src/lua.zig` | ✅ type model, real stack, real `global_State`, table API, binary `lua_load`, VMGCObject sweep | Phase E — error handling, metatable support. |
+| `src/lua.zig` | ✅ type model, stack, global_State, table API, binary loader, error propagation, GC | Phase F — standard libraries. |
 | `src/lundump.zig` | ✅ `loadBinaryChunk` bytecode loader, alignment, varint, string intern | Keep as-is; test coverage is complete. |
 | `src/llimits.zig` | ✅ constants only, no types | Keep as-is. |
 | `src/luaconf.zig` | ✅ version/layout config | Fix `LUA_VDIR` if reference changes. |
-| `src/lstate.zig` | full `global_State`/`CallInfo`/`GCUnion` | Stale/dead — reconcile with `lua.zig` (or delete) when GC lands. |
+| `src/lstate.zig` | ❌ Deleted | Stale/dead code removed from the repository. |
 | `src/ltm.zig` | ✅ `luaV_gettable`/`luaV_settable`, `luaT_trybinTM`, comparison helpers | Complete arithmetic metamethods; add `__len`/`__concat`/`__call` tests. |
 | `src/ltable.zig` | ✅ `lua_Table` array+hash, `get`/`set`/`getInt`/`setInt`/`next`/`getn`/`deinit` | `__index`/`__newindex` dispatch now done in `ltm.zig`; keep as raw. |
 | `src/lstring.zig` | ✅ `luaS_new`/`luaS_hash`/`luaS_eqstr`, interning in `global_State.strt` | Add short/long string split with GC. |
@@ -275,7 +266,7 @@ and string interning in `global_State.strt` (`std.array_hash_map.String`) in
 | `src/lauxlib.zig` | aux helpers, §0.1-clean stubs | Implement real `luaL_check*`/`luaL_error`/`luaL_ref` once core works. |
 | `src/lualib.zig` | inline stubs for all libraries | Phase F — move to `src/lib/*.zig` bodies. |
 | `src/lib/*.zig` | library bodies present but broken | Phase F — rewrite per module with tests. |
-| `tests/test_basic.zig` | ✅ 24 passing tests | Expand with more metamethod tests (arithmetic, __len, error handling). |
+| `tests/test_basic.zig` | ✅ 27 passing tests | Ready for Phase F standard libraries. |
 | `docs/` | ✅ OKF v0.1 bundle (architecture, log, glossary) | Update after every phase; see `docs/README.md`. |
 | `lua/` | ✅ Git subrepo tracking git@github.com:lua/lua.git | Reference source; update with `git pull` when needed. |
 | `.hgsub` | ✅ defines `lua = [git]git@github.com:lua/lua.git` | Add more subrepos if needed. |

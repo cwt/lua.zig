@@ -266,4 +266,42 @@ Implemented the binary bytecode loader (`lundump.zig`), allowing precompiled Lua
 
 `zig build test` compiled and passed all **26/26 tests** with zero memory leaks.
 
+---
+
+## Phase E — Garbage Collection Expansion (2026-07-10)
+
+### Changes
+
+- **Repository Cleanup**:
+  - Deleted stale/dead code file `src/lstate.zig` (types duplicate `src/lua.zig`).
+
+- **`src/lua.zig`**:
+  - Added `marked` boolean flag to `lua_TString` for tracking during GC mark phase.
+  - Added `GCColor` enum (`white`, `gray`, `black`) and `color` field to `VMGCObject`.
+  - Added GC constants `LUA_GC*` (e.g. `LUA_GCCOLLECT`=2).
+  - Implemented `getGCObject` helper using type-safe `@intFromPtr` comparison.
+  - Implemented `markObject` and `markValue` to color and append roots/fields to the gray list.
+  - Extracted resource-freeing logic into `freeGCObject`.
+  - Implemented `luaC_collectgarbage` which runs a full mark-and-sweep cycle:
+    - Root marking (registry, stack, metatables, open upvalues, metamethod names).
+    - Traversing gray objects (tables, closures, upvalues, prototypes, userdata).
+    - Sweeping white objects.
+    - Sweeping unmarked strings from `global_State.strt`.
+  - Updated `lua_gc` to support `LUA_GCCOLLECT` and trigger `luaC_collectgarbage`.
+  - Updated `lua_close` to use `freeGCObject`.
+
+- **`tests/test_basic.zig`**:
+  - Added `garbage collector mark and sweep` test. Verifies that unreferenced tables and strings are successfully swept, referenced tables and strings are kept, and everything gets reclaimed once popped and swept again.
+
+### §0.1 Self-Audit
+
+- Removed stale/duplicated file `src/lstate.zig`.
+- Standardized `ArrayList` usage to comply with Zig 0.16.0 unmanaged array lists (initialized with `.empty`, passing allocator explicitly to mutations).
+- Handled multi-type pointer comparison safely using `@intFromPtr`.
+
+### Verification
+
+`zig build test` compiled and passed all **27/27 tests** with zero memory leaks.
+
+
 
