@@ -1408,21 +1408,16 @@ pub fn lua_setiuservalue(L: *lua_State, idx: i32, n: i32) i32 {
     return 1;
 }
 
-pub inline fn lua_call(L: *lua_State, nargs: i32, nresults: i32) void {
-    lua_callk(L, nargs, nresults, 0, null);
+pub inline fn lua_call(L: *lua_State, nargs: i32, nresults: i32) !void {
+    try lua_callk(L, nargs, nresults, 0, null);
 }
 
-pub fn lua_callk(L: *lua_State, nargs: i32, nresults: i32, ctx: lua_KContext, k: ?lua_KFunction) void {
+pub fn lua_callk(L: *lua_State, nargs: i32, nresults: i32, ctx: lua_KContext, k: ?lua_KFunction) !void {
     _ = ctx;
     _ = k;
     const func_idx = L.top - @as(usize, @intCast(nargs)) - 1;
-    if (precall(L, func_idx, nresults) catch |err| {
-        std.debug.print("Runtime error in precall: {any}\n", .{err});
-        return;
-    }) |new_ci| {
-        lvm.run(L, new_ci) catch |err| {
-            std.debug.print("Runtime error in VM: {any}\n", .{err});
-        };
+    if (try precall(L, func_idx, nresults)) |new_ci| {
+        try lvm.run(L, new_ci);
     }
 }
 

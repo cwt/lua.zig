@@ -185,7 +185,7 @@ fn dofile(L: *lua.lua_State) anyerror!i32 {
         return lua.lua_error(L);
     }
     
-    lua.lua_call(L, 0, lua.LUA_MULTRET);
+    try lua.lua_call(L, 0, lua.LUA_MULTRET);
     return @as(i32, @intCast(lua.lua_gettop(L) - 1));
 }
 
@@ -280,7 +280,7 @@ fn pairs(L: *lua.lua_State) anyerror!i32 {
         lua.lua_pushnil(L);
     } else {
         lua.lua_pushvalue(L, 1);
-        lua.lua_call(L, 1, 3);
+        try lua.lua_call(L, 1, 3);
     }
     return 3;
 }

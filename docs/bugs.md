@@ -27,20 +27,14 @@ Legend:
 
 ---
 
-## BUG-002 — `lua_callk` / `lua_call` swallow runtime errors  [HIGH]
-- **Location:** `src/lua.zig:1413-1420`.
-- **Defect:** `precall` / `lvm.run` errors are only passed to `std.debug.print`
-  and swallowed, but `lua_callk` has a `void` return:
-  ```zig
-  try precall(...) catch |e| { print_error(...); return; };
-  lvm.run(...) catch |e| { print_error(...); return; };
-  ```
-- **Impact:** In the C reference, `lua_call` performs a non-local jump on error.
-  Here execution continues with the C function's stack inconsistent. Any library
-  calling a function that can error is left in a corrupted state.
-- **Fix:** Propagate the error. Either make `lua_callk` return `!void` (preferred,
-  matches the §0.1 single-error-path rule) or store the error in the state and
-  let the next API call surface it. Do **not** print-and-continue.
+## BUG-002 — `lua_callk` / `lua_call` swallow runtime errors  [HIGH] ✅ FIXED
+- **Location:** `src/lua.zig:1415-1427` (`lua_callk`/`lua_call`).
+- **Defect:** `precall` / `lvm.run` errors were swallowed with `catch { print(); return; }`
+  instead of propagating, leaving the stack in an inconsistent state.
+- **Impact:** Any library calling a function that can error would be left corrupted.
+- **Fix:** Changed `lua_callk` and `lua_call` return type from `void` to `!void`.
+  Errors now propagate via `try` instead of being caught and silently discarded.
+  Added `try` to all call sites in tests and base library.
 
 ---
 

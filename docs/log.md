@@ -358,3 +358,26 @@ Implemented the binary bytecode loader (`lundump.zig`), allowing precompiled Lua
 
 `zig build test` compiled and passed all **33/33 tests** with zero memory leaks.
 
+---
+
+## 2026-07-11 — BUG-002: lua_callk/lua_call error propagation fix
+
+### Changes
+
+- **`src/lua.zig`**: Changed `lua_callk` and `lua_call` return type from `void` to
+  `!void`. Errors from `precall` and `lvm.run` now propagate via `try` instead of
+  being caught with `catch { print(); return; }`.
+- **`src/lib/baselib.zig`**: Added `try` to `lua_call` call sites.
+- **`tests/test_basic.zig`**: Added `try` to all `lua_call` call sites.
+- **`docs/bugs.md`**: Marked BUG-002 as fixed.
+
+### §0.1 Self-Audit
+
+- Errors now propagate via `!T` + `try` as required by §0.1 rule 2.
+- No `catch unreachable`, no swallowed errors.
+- All call sites updated to propagate the error.
+
+### Verification
+
+`zig build test` compiled and passed all **33/33 tests** with zero memory leaks.
+
