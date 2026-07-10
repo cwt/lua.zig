@@ -9,11 +9,9 @@ Lua's reference *semantics* while adopting idiomatic Zig for the *structure*.
 
 ## Status
 
-Phases A–E (partial) are complete: a working VM executes precompiled Lua 5.5.1
-bytecode, with tables, string interning, metamethod dispatch for
-`__index`/`__newindex`, and a flat GC sweep list for leak-free teardown.
-Source-text compilation (lexer/parser) and the standard library bodies are
-**not yet** finished.
+Phases A–E are fully complete, and Phase F is in progress. The working VM executes precompiled Lua 5.5.1 bytecode, supports tables, string interning, metamethod dispatch (index, arithmetic, comparison), longjmp-free error propagation with continuations, and has a mark-and-sweep garbage collection engine.
+
+The standard library base module (`baselib`) is implemented and verified. The remaining standard libraries are in progress.
 
 | Phase | Area | State |
 |-------|------|-------|
@@ -21,14 +19,14 @@ Source-text compilation (lexer/parser) and the standard library bodies are
 | B | Tables & string interning | ✅ |
 | C | Bytecode loader (`lundump`) | ✅ |
 | D | Working VM | ✅ |
-| E | Metatables / error handling / GC | 🚧 partial |
-| F | Standard libraries | ⬜ |
+| E | Metatables / error handling / GC | ✅ |
+| F | Standard libraries | 🚧 partial |
 
 ## Build & test
 
 ```sh
 zig build        # build the `luazig` executable and `lua` library
-zig build test   # run the unit tests (20 passing)
+zig build test   # run the unit tests (32 passing)
 ```
 
 ## Layout
