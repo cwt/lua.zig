@@ -12,29 +12,18 @@ Legend:
 
 ---
 
-## BUG-001 — Bitwise shifts panic on negative / large second operand  [HIGH]
-- **Location:** `src/lua.zig:880-881` (`lua_arith`, `LUA_OPSHL`/`LUA_OPSHR`);
-  `src/lvm.zig:612` (`.SHL`), `src/lvm.zig:624` (`.SHR`).
-- **Defect:** The shift amount is produced by `@intCast` of a `lua_Number`-derived
-  `i64` into an unsigned shift operand:
-  ```zig
-  @as(i64, @intFromFloat(p1.number)) << @intCast(@as(i64, @intFromFloat(p2.number)))
-  // VM: const shift: u6 = @intCast(ic);
-  ```
-  - `@intCast` of a **negative** `p2` (e.g. `1 << -1`) into an unsigned type
-    **panics at runtime**.
-  - **Large** positive shifts (`1 << 70`) are undefined behavior.
+## BUG-001 — Bitwise shifts panic on negative / large second operand  [HIGH] ✅ FIXED
+- **Location:** `src/lua.zig:843-849` (`luaV_shift` helper); used in `lua_arith`
+  and `src/lvm.zig` `.SHL`/`.SHR`.
+- **Defect:** The shift amount was `@intCast` of a negative or large `i64` into
+  `u6`, which panics at runtime or produces undefined behavior.
 - **Impact:** Any program using `<<`/`>>` with a non-small non-negative operand
-  crashes. This is a common operator; the bug is trivially reachable.
-- **Fix:** Add a `luaV_shift`-style helper matching the reference `lvm.c`:
-  ```zig
-  fn shift(i: i64, s: i64) i64 {
-      if (s < 0) return @bitCast(@as(u64, @bitCast(i)) >> @intCast(-s & 0x3F));
-      return @bitCast(@as(u64, @bitCast(i)) << @intCast(s & 0x3F));
-  }
-  ```
-  Use it in both `lua_arith` and the `.SHL`/`.SHR` VM opcodes (operand masked to
-  6 bits; negative means opposite direction).
+  would crash.
+- **Fix:** Added `luaV_shift` helper that uses `@bitCast` to treat the operand as
+  `u64` for the shift operation, masking the shift amount to 6 bits. Negative
+  shift amounts shift in the opposite direction (matching Lua `lvm.c` reference).
+  Applied in both `lua_arith` and the VM `.SHL`/`.SHR` opcodes. Added unit test
+  `"bitwise shift operations with negative and large shift"`.
 
 ---
 

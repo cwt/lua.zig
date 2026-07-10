@@ -331,6 +331,30 @@ Implemented the binary bytecode loader (`lundump.zig`), allowing precompiled Lua
 
 `zig build test` compiled and passed all **32/32 tests** with zero memory leaks.
 
+---
 
+## 2026-07-11 — BUG-001: Bitwise shift panic fix
 
+### Changes
+
+- **`src/lua.zig`**: Added `luaV_shift(i64, i64) i64` helper that uses `@bitCast` to
+  `u64` for safe bitwise shifting. `@intCast` of negative shift amounts was causing
+  runtime panics. The helper masks the shift amount to 6 bits and shifts in the
+  opposite direction for negative amounts (matching Lua `lvm.c` reference).
+  Fixed `LUA_OPSHL`/`LUA_OPSHR` cases in `lua_arith` to use the helper.
+- **`src/lvm.zig`**: Fixed `.SHL`/`.SHR` opcodes to use `lua.luaV_shift` instead of
+  raw `@intCast` to `u6`.
+- **`tests/test_basic.zig`**: Added `"bitwise shift operations with negative and large shift"`
+  test, verifying both the `luaV_shift` helper and `lua_arith` C API paths.
+- **`docs/bugs.md`**: Marked BUG-001 as fixed.
+
+### §0.1 Self-Audit
+
+- `@bitCast` used between `i64` ↔ `u64` (same bit width, bit-identical reinterpretation) — valid.
+- `@intCast` into `u6` is safe because the shift amount is masked to `0x3F` first.
+- No `catch unreachable`, no runtime panics on negative shift amounts.
+
+### Verification
+
+`zig build test` compiled and passed all **33/33 tests** with zero memory leaks.
 

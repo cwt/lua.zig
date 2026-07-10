@@ -609,8 +609,7 @@ pub fn run(L: *lua.lua_State, active_ci: *lua.CallInfo) anyerror!void {
                 if (rb == .number and rc == .number) {
                     const ib = @as(i64, @intFromFloat(rb.number));
                     const ic = @as(i64, @intFromFloat(rc.number));
-                    const shift: u6 = @intCast(ic);
-                    L.stack[ra] = .{ .number = @floatFromInt(ib << shift) };
+                    L.stack[ra] = .{ .number = @floatFromInt(lua.luaV_shift(ib, ic)) };
                     if (GET_OPCODE(code[ci.savedpc]) == .MMBIN) ci.savedpc += 1;
                 }
             },
@@ -621,8 +620,7 @@ pub fn run(L: *lua.lua_State, active_ci: *lua.CallInfo) anyerror!void {
                 if (rb == .number and rc == .number) {
                     const ib = @as(i64, @intFromFloat(rb.number));
                     const ic = @as(i64, @intFromFloat(rc.number));
-                    const shift: u6 = @intCast(ic);
-                    L.stack[ra] = .{ .number = @floatFromInt(ib >> shift) };
+                    L.stack[ra] = .{ .number = @floatFromInt(lua.luaV_shift(ib, -ic)) };
                     if (GET_OPCODE(code[ci.savedpc]) == .MMBIN) ci.savedpc += 1;
                 }
             },

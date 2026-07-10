@@ -840,6 +840,12 @@ pub fn lua_topointer(L: *lua_State, idx: i32) ?*anyopaque {
     };
 }
 
+pub fn luaV_shift(x: i64, s: i64) i64 {
+    const ux = @as(u64, @bitCast(x));
+    if (s < 0) return @as(i64, @bitCast(ux >> @as(u6, @intCast(-s & 0x3F))));
+    return @as(i64, @bitCast(ux << @as(u6, @intCast(s & 0x3F))));
+}
+
 pub fn lua_arith(L: *lua_State, op: i32) void {
     if (op < 0 or op > 13) return;
     const is_unary = (op == LUA_OPUNM or op == LUA_OPBNOT);
@@ -877,8 +883,8 @@ pub fn lua_arith(L: *lua_State, op: i32) void {
                 LUA_OPBAND => @as(f64, @floatFromInt(@as(i64, @intFromFloat(p1.number)) & @as(i64, @intFromFloat(p2.number)))),
                 LUA_OPBOR => @as(f64, @floatFromInt(@as(i64, @intFromFloat(p1.number)) | @as(i64, @intFromFloat(p2.number)))),
                 LUA_OPBXOR => @as(f64, @floatFromInt(@as(i64, @intFromFloat(p1.number)) ^ @as(i64, @intFromFloat(p2.number)))),
-                LUA_OPSHL => @as(f64, @floatFromInt(@as(i64, @intFromFloat(p1.number)) << @intCast(@as(i64, @intFromFloat(p2.number))))),
-                LUA_OPSHR => @as(f64, @floatFromInt(@as(i64, @intFromFloat(p1.number)) >> @intCast(@as(i64, @intFromFloat(p2.number))))),
+                LUA_OPSHL => @as(f64, @floatFromInt(luaV_shift(@as(i64, @intFromFloat(p1.number)), @as(i64, @intFromFloat(p2.number))))),
+                LUA_OPSHR => @as(f64, @floatFromInt(luaV_shift(@as(i64, @intFromFloat(p1.number)), -@as(i64, @intFromFloat(p2.number))))),
                 else => unreachable,
             };
             L.top -= 1;

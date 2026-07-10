@@ -426,6 +426,54 @@ test "__newindex function metamethod via C API" {
     try std.testing.expectEqual(@as(f64, 77.0), v);
 }
 
+test "bitwise shift operations with negative and large shift" {
+    const gpa = std.testing.allocator;
+    var L: lua.lua_State = undefined;
+    try lua.luaL_newstate(&L, gpa);
+    defer lua.lua_close(&L);
+
+    // Test luaV_shift helper directly (i64 shifts with u64 semantics)
+    // 1 << 1 = 2
+    try std.testing.expectEqual(@as(i64, 2), lua.luaV_shift(1, 1));
+    // 1 >> 1 = 0  (via negative shift)
+    try std.testing.expectEqual(@as(i64, 0), lua.luaV_shift(1, -1));
+    // 2 << 2 = 8
+    try std.testing.expectEqual(@as(i64, 8), lua.luaV_shift(2, 2));
+    // 16 >> 2 = 4
+    try std.testing.expectEqual(@as(i64, 4), lua.luaV_shift(16, -2));
+    // -8 << 1 = -16
+    try std.testing.expectEqual(@as(i64, -16), lua.luaV_shift(-8, 1));
+    // Large shift: 1 << 70 = 1 << (70 & 0x3F) = 1 << 6 = 64
+    try std.testing.expectEqual(@as(i64, 64), lua.luaV_shift(1, 70));
+    // Negative large: 1 << -70 = 1 >> (70 & 0x3F) = 1 >> 6 = 0
+    try std.testing.expectEqual(@as(i64, 0), lua.luaV_shift(1, -70));
+
+    // Test via C API lua_arith
+    // 8 << 2
+    lua.lua_pushnumber(&L, 8.0);
+    lua.lua_pushnumber(&L, 2.0);
+    lua.lua_arith(&L, lua.LUA_OPSHL);
+    const r1 = lua.lua_tonumber(&L, -1) orelse return error.TestFailed;
+    try std.testing.expectEqual(@as(f64, 32.0), r1);
+    lua.lua_pop(&L, 1);
+
+    // 8 >> 2 = 2
+    lua.lua_pushnumber(&L, 8.0);
+    lua.lua_pushnumber(&L, 2.0);
+    lua.lua_arith(&L, lua.LUA_OPSHR);
+    const r2 = lua.lua_tonumber(&L, -1) orelse return error.TestFailed;
+    try std.testing.expectEqual(@as(f64, 2.0), r2);
+    lua.lua_pop(&L, 1);
+
+    // Negative shift: 1 << -1 => 1 >> 1 = 0
+    lua.lua_pushnumber(&L, 1.0);
+    lua.lua_pushnumber(&L, -1.0);
+    lua.lua_arith(&L, lua.LUA_OPSHL);
+    const r3 = lua.lua_tonumber(&L, -1) orelse return error.TestFailed;
+    try std.testing.expectEqual(@as(f64, 0.0), r3);
+    lua.lua_pop(&L, 1);
+}
+
 test "__add arithmetic metamethod via C API" {
     const gpa = std.testing.allocator;
     var L: lua.lua_State = undefined;
