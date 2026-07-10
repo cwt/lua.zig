@@ -321,7 +321,7 @@ test "__index function metamethod via C API" {
     const mt_idx: i32 = lua.lua_gettop(&L);
 
     const IndexFn = struct {
-        fn index(LS: *lua.lua_State) i32 {
+        fn index(LS: *lua.lua_State) anyerror!i32 {
             lua.lua_pushnumber(LS, 42.0);
             return 1;
         }
@@ -386,7 +386,7 @@ test "__newindex function metamethod via C API" {
     // __newindex function: writes value to shadow["written"]
     // shadow is at absolute stack index shadow_idx (captured by value in the closure)
     const NewIdxFn = struct {
-        fn newindex(LS: *lua.lua_State) i32 {
+        fn newindex(LS: *lua.lua_State) anyerror!i32 {
             // LS: stack[1]=proxy, stack[2]=key, stack[3]=value
             // shadow is absolute slot 1 of the outer Lua state — we use the
             // upvalue closure trick here for simplicity: just push to stack[1].
@@ -403,7 +403,7 @@ test "__newindex function metamethod via C API" {
 
     // Simpler approach: use a CClosure with shadow as upvalue index 1
     const NewIdxSimple = struct {
-        fn newindex(LS: *lua.lua_State) i32 {
+        fn newindex(LS: *lua.lua_State) anyerror!i32 {
             // upvalue 1 = shadow table (set via lua_pushcclosure below)
             // args: t(1), key(2), val(3)
             lua.lua_pushvalue(LS, 3); // val
@@ -446,7 +446,7 @@ test "__add arithmetic metamethod via C API" {
 
     // Push __add function: returns a dummy number, say 123
     const AddFn = struct {
-        fn add(LS: *lua.lua_State) i32 {
+        fn add(LS: *lua.lua_State) anyerror!i32 {
             // args: operand1(1), operand2(2)
             lua.lua_pushnumber(LS, 123.0);
             return 1;
@@ -507,7 +507,7 @@ test "VM execution of arithmetic metamethod" {
 
     // Push __add function: returns 999.0
     const AddFn = struct {
-        fn add(LS: *lua.lua_State) i32 {
+        fn add(LS: *lua.lua_State) anyerror!i32 {
             lua.lua_pushnumber(LS, 999.0);
             return 1;
         }
@@ -555,7 +555,7 @@ test "__eq metamethod via C API" {
     const mt_idx = lua.lua_gettop(&L);
 
     const EqFn = struct {
-        fn eq(LS: *lua.lua_State) i32 {
+        fn eq(LS: *lua.lua_State) anyerror!i32 {
             lua.lua_pushboolean(LS, 1);
             return 1;
         }
@@ -593,7 +593,7 @@ test "__lt and __le metamethods via C API" {
     const mt_idx = lua.lua_gettop(&L);
 
     const LtFn = struct {
-        fn lt(LS: *lua.lua_State) i32 {
+        fn lt(LS: *lua.lua_State) anyerror!i32 {
             lua.lua_pushboolean(LS, 1);
             return 1;
         }
@@ -602,7 +602,7 @@ test "__lt and __le metamethods via C API" {
     lua.lua_setfield(&L, mt_idx, "__lt");
 
     const LeFn = struct {
-        fn le(LS: *lua.lua_State) i32 {
+        fn le(LS: *lua.lua_State) anyerror!i32 {
             lua.lua_pushboolean(LS, 1);
             return 1;
         }
@@ -626,6 +626,70 @@ test "__lt and __le metamethods via C API" {
     const cond_le = lua.lua_compare(&L, t1_idx, t2_idx, lua.LUA_OPLE);
     try std.testing.expectEqual(@as(i32, 1), cond_le);
 }
+
+test "error propagation and pcall" {
+    const gpa = std.testing.allocator;
+    var L: lua.lua_State = undefined;
+    try lua.luaL_newstate(&L, gpa);
+    defer lua.lua_close(&L);
+
+    // Push a C function that throws an error
+    const ErrorFn = struct {
+        fn run(LS: *lua.lua_State) anyerror!i32 {
+            _ = lua.lua_pushstring(LS, "my custom error");
+            return lua.lua_error(LS);
+        }
+    };
+    lua.lua_pushcfunction(&L, ErrorFn.run);
+
+    // Call it protected
+    const status = lua.lua_pcallk(&L, 0, 0, 0, 0, null);
+    try std.testing.expectEqual(@as(i32, lua.LUA_ERRRUN), status);
+
+    // The top of the stack should contain the error object "my custom error"
+    try std.testing.expectEqual(@as(i32, 1), lua.lua_gettop(&L));
+    const err_msg = lua.lua_tolstring(&L, -1, null) orelse return error.TestFailed;
+    try std.testing.expectEqualStrings("my custom error", err_msg);
+}
+
+test "pcall with errfunc error handler" {
+    const gpa = std.testing.allocator;
+    var L: lua.lua_State = undefined;
+    try lua.luaL_newstate(&L, gpa);
+    defer lua.lua_close(&L);
+
+    // Push error handler function: appends " handled" to the message
+    const HandlerFn = struct {
+        fn handle(LS: *lua.lua_State) anyerror!i32 {
+            const msg = lua.lua_tolstring(LS, 1, null) orelse "no msg";
+            _ = msg;
+            _ = lua.lua_pushstring(LS, "custom error handled");
+            return 1;
+        }
+    };
+    lua.lua_pushcfunction(&L, HandlerFn.handle);
+    const handler_idx = lua.lua_gettop(&L);
+
+    // Push the function that throws an error
+    const ErrorFn = struct {
+        fn run(LS: *lua.lua_State) anyerror!i32 {
+            _ = lua.lua_pushstring(LS, "original error");
+            return lua.lua_error(LS);
+        }
+    };
+    lua.lua_pushcfunction(&L, ErrorFn.run);
+
+
+    // Call it protected with the error handler at handler_idx
+    const status = lua.lua_pcallk(&L, 0, 0, handler_idx, 0, null);
+    try std.testing.expectEqual(@as(i32, lua.LUA_ERRRUN), status);
+
+    // The top of the stack should contain the handled error object "custom error handled"
+    try std.testing.expectEqual(@as(i32, 2), lua.lua_gettop(&L));
+    const err_msg = lua.lua_tolstring(&L, -1, null) orelse return error.TestFailed;
+    try std.testing.expectEqualStrings("custom error handled", err_msg);
+}
+
 
 
 

@@ -835,8 +835,7 @@ pub fn run(L: *lua.lua_State, active_ci: *lua.CallInfo) anyerror!void {
                 const cl_call = val.function.?;
                 switch (cl_call.*) {
                     .c => |cc| {
-                        const n = cc.f(L);
-                        if (n < 0) return error.RuntimeError;
+                        const n = try cc.f(L);
                         const num_returned = @as(usize, @intCast(n));
                         const first_result = L.top - num_returned;
                         lua.poscall(L, ci, first_result, num_returned);

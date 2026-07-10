@@ -232,3 +232,38 @@ Implemented the binary bytecode loader (`lundump.zig`), allowing precompiled Lua
 
 `zig build test` compiled and passed all **22/22 tests** with zero memory leaks.
 
+---
+
+## Phase E — Comparison Metamethods & Error Propagation (2026-07-10)
+
+### Changes
+
+- **`src/lua.zig`**:
+  - Updated `lua_compare` to use the metamethod-aware comparison helpers (`luaT_equalobj`, `luaT_lt`, `luaT_le`) from `src/ltm.zig` instead of simple type-only comparisons.
+  - Changed `lua_CFunction` and `lua_KFunction` to return `anyerror!i32` to allow native Zig error propagation from C/host functions without longjmp.
+  - Rewrote `precall` to use `try` when invoking C closures, correctly cleaning up and restoring stack frames on failure.
+  - Rewrote `lua_error` to return `anyerror` and throw `error.RuntimeError`, converting a nil error object to a `<no error object>` string on the stack.
+  - Updated `lua_pcallk` to intercept errors, execute `errfunc` error handler function with full stack/CallInfo frames preserved, safely restore stack/CallInfo to pre-call boundaries, and leave the final error object at the stack top.
+  - Added inline wrapper functions `lua_call` and `lua_pcall` for convenience.
+
+- **`src/lvm.zig`**:
+  - Updated `TAILCALL` opcode execution of C functions to use `try` for invoking C closures since they can now return `anyerror!i32`.
+
+- **`tests/test_basic.zig`**:
+  - Updated all C closure test functions to return `anyerror!i32` to conform to the updated `lua_CFunction` type.
+  - Added `__eq metamethod via C API` test.
+  - Added `__lt and __le metamethods via C API` test.
+  - Added `error propagation and pcall` test to verify that errors from C functions propagate and leave the correct error object on the stack.
+  - Added `pcall with errfunc error handler` test to verify that custom error handlers execute and successfully format/replace the propagated error object.
+
+### §0.1 Self-Audit
+
+- Handled optional pointer unwrapping safely using `if (ptr) |p|`.
+- Replaced block statements with block expressions returning correct typed values.
+- Discarded unused return values explicitly using `_ =`.
+
+### Verification
+
+`zig build test` compiled and passed all **26/26 tests** with zero memory leaks.
+
+

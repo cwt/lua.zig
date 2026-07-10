@@ -246,7 +246,7 @@ and string interning in `global_State.strt` (`std.array_hash_map.String`) in
 ### Phase E — Error handling, GC, metatables (IN PROGRESS)
 11. ✅ `__index`/`__newindex` metamethod dispatch via `luaV_gettable`/`luaV_settable` in `src/ltm.zig`. All table opcodes and C API wired. 3 tests pass.
 12. ✅ Arithmetic metamethods (`__add`, `__sub`, etc.) fully implemented in `lua_arith` and VM execution with fallback.
-13. Error propagation (`lua_error`, `lua_pcall`, longjmp-equivalent via Zig `error`/`try`).
+13. ✅ Error propagation (`lua_error`, `lua_pcall`/`lua_pcallk` with custom error handler `errfunc`, longjmp-free Zig `error`/`try` continuations).
 14. Expand garbage collector (reconcile stale state, build mark/sweep on top of VMGCObject).
 
 ### Phase F — Standard libraries

@@ -57,8 +57,9 @@ pub const lua_WarnFunction = llimits.lua_WarnFunction;
 
 
 // Forward declarations
-pub const lua_CFunction = *const fn (*lua_State) i32;
-pub const lua_KFunction = *const fn (*lua_State, i32, lua_KContext) i32;
+pub const lua_CFunction = *const fn (*lua_State) anyerror!i32;
+pub const lua_KFunction = *const fn (*lua_State, i32, lua_KContext) anyerror!i32;
+
 pub const lua_Reader = *const fn (*lua_State, ?*anyopaque, ?*usize) ?[]const u8;
 pub const lua_Writer = *const fn (*lua_State, ?*anyopaque, usize, ?*anyopaque) i32;
 pub const lua_Hook = *const fn (*lua_State, ?*lua_Debug) void;
@@ -359,7 +360,7 @@ pub fn precall(L: *lua_State, func_idx: usize, nresults: i32) !?*CallInfo {
                     prev.next = null;
                 }
             }
-            const n = cc.f(L);
+            const n = try cc.f(L);
             if (n < 0) return error.RuntimeError;
             const num_returned = @as(usize, @intCast(n));
             const first_result = L.top - num_returned;
@@ -1281,6 +1282,10 @@ pub fn lua_setiuservalue(L: *lua_State, idx: i32, n: i32) i32 {
     return 1;
 }
 
+pub inline fn lua_call(L: *lua_State, nargs: i32, nresults: i32) void {
+    lua_callk(L, nargs, nresults, 0, null);
+}
+
 pub fn lua_callk(L: *lua_State, nargs: i32, nresults: i32, ctx: lua_KContext, k: ?lua_KFunction) void {
     _ = ctx;
     _ = k;
@@ -1296,41 +1301,91 @@ pub fn lua_callk(L: *lua_State, nargs: i32, nresults: i32, ctx: lua_KContext, k:
 }
 
 pub fn lua_pcallk(L: *lua_State, nargs: i32, nresults: i32, errfunc: i32, ctx: lua_KContext, k: ?lua_KFunction) i32 {
-    _ = errfunc;
     _ = ctx;
     _ = k;
-    const old_top = L.top;
     const old_ci = L.ci;
 
     const func_idx = L.top - @as(usize, @intCast(nargs)) - 1;
-    const new_ci = precall(L, func_idx, nresults) catch |err| {
-        std.debug.print("Runtime error in precall: {any}\n", .{err});
-        L.top = old_top;
-        L.ci = old_ci;
-        return LUA_ERRRUN;
+    
+    var err_occurred = false;
+    const new_ci = precall(L, func_idx, nresults) catch |err| b: {
+        err_occurred = true;
+        if (err == error.NotAFunction) {
+            const msg = "attempt to call a non-function value";
+            const g = G(L);
+            if (lstring.luaS_new(g.allocator, &g.strt, g.seed, msg)) |ts| {
+                L.stack[L.top] = TValue{ .string = ts };
+                L.top += 1;
+            } else |_| {
+                L.stack[L.top] = TValue{ .nil = {} };
+                L.top += 1;
+            }
+        }
+        break :b @as(?*CallInfo, null);
     };
 
-    if (new_ci) |ci| {
-        lvm.run(L, ci) catch |err| {
-            std.debug.print("Runtime error in VM: {any}\n", .{err});
-            // Restore CallInfo chain and stack
-            var curr = L.ci;
-            while (curr) |c| {
-                if (c == old_ci) break;
-                const prev = c.previous;
-                if (c != &L.base_ci) {
-                    L.allocator.destroy(c);
+    if (!err_occurred) {
+        if (new_ci) |ci| {
+            lvm.run(L, ci) catch {
+                err_occurred = true;
+            };
+        }
+    }
+
+    if (err_occurred) {
+        // Run error function if errfunc is not zero
+        if (errfunc != 0) {
+            // Find error function
+            if (idxPtr(L, errfunc)) |err_fn_ptr| {
+                if (err_fn_ptr.* == .function) {
+                    const err_obj = L.stack[L.top - 1];
+                    // Push error handler function
+                    L.stack[L.top] = err_fn_ptr.*;
+                    L.top += 1;
+                    // Push error object
+                    L.stack[L.top] = err_obj;
+                    L.top += 1;
+                    // Call it (1 arg, 1 result)
+                    const err_ci = precall(L, L.top - 2, 1) catch null;
+                    if (err_ci) |eci| {
+                        lvm.run(L, eci) catch {};
+                    }
                 }
-                curr = prev;
             }
-            L.ci = old_ci;
-            L.top = old_top;
-            return LUA_ERRRUN;
+        }
+
+        // Get the final error object
+        const final_err_obj = if (L.top > func_idx + @as(usize, @intCast(nargs)) + 1)
+            L.stack[L.top - 1]
+        else b: {
+            const g = G(L);
+            const ts = lstring.luaS_new(g.allocator, &g.strt, g.seed, "error during execution") catch null;
+            break :b if (ts) |t| TValue{ .string = t } else TValue{ .nil = {} };
         };
+
+        // Restore CallInfo chain and stack
+        var curr = L.ci;
+        while (curr) |c| {
+            if (c == old_ci) break;
+            const prev = c.previous;
+            if (c != &L.base_ci) {
+                L.allocator.destroy(c);
+            }
+            curr = prev;
+        }
+        L.ci = old_ci;
+        L.top = func_idx + 1;
+        L.stack[func_idx] = final_err_obj;
+        return LUA_ERRRUN;
     }
 
     return LUA_OK;
 }
+
+pub inline fn lua_pcall(L: *lua_State, nargs: i32, nresults: i32, errfunc: i32) i32 {
+    return lua_pcallk(L, nargs, nresults, errfunc, 0, null);
+}
+
 
 pub fn lua_load(L: *lua_State, reader: lua_Reader, dt: ?*anyopaque, chunkname: []const u8, mode: []const u8) i32 {
     _ = mode;
@@ -1460,13 +1515,16 @@ pub fn lua_gc(L: *lua_State, what: i32, arg: i32) i32 {
     return 0;
 }
 
-pub fn lua_error(L: *lua_State) i32 {
-    const msg = lua_tolstring(L, 1, null);
-    if (msg) |m| {
-        std.debug.print("error: {s}\n", .{m});
+pub fn lua_error(L: *lua_State) anyerror {
+    const err_obj = L.stack[L.top - 1];
+    if (err_obj == .nil) {
+        const g = G(L);
+        const ts = try lstring.luaS_new(g.allocator, &g.strt, g.seed, "<no error object>");
+        L.stack[L.top - 1] = TValue{ .string = ts };
     }
-    return LUA_ERRRUN;
+    return error.RuntimeError;
 }
+
 
 pub fn lua_next(L: *lua_State, idx: i32) i32 {
     const t = getTable(L, idx) orelse return 0;
