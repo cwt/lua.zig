@@ -50,7 +50,7 @@ Key dependencies: working tables, working calls, working metatables, working err
 
 `dofile`/`loadfile` need the front-end (Phase C) to work.
 
-Current `src/lib/baselib.zig` status: function stubs exist but many are broken (incorrect Zig syntax, uses of undefined types like `lua_State`, uses of `@bitCast` where `@intCast` needed).
+Current `src/lib/baselib.zig` status: **fully implemented** — `type`, `rawequal`, `rawlen`, `rawget`, `rawset`, `setmetatable`, `getmetatable`, `tonumber`, `tostring`, `select`, `pcall`, `xpcall`, `print`, `assert`, `error`, `next`, `pairs`, `ipairs`, `collectgarbage` all wired. Verified by 5 integration tests (32 total).
 
 ### mathlib (`lua/lmathlib.c`)
 

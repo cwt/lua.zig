@@ -45,7 +45,7 @@ timestamp: 2026-07-10T00:00:00Z
 | State | `src/lstate.zig` | `lua/lstate.c` + `lua/lstate.h` | ✅ Full, needs merging with `lua.zig` placeholder |
 | VM | `src/lvm.zig` | `lua/lvm.c` + `lua/lvm.h` | ⚠️ Opcodes defined, `run` is a skeleton |
 | Auxlib | `src/lauxlib.zig` | `lua/lauxlib.c` + `lua/lauxlib.h` | ⚠️ Stubs |
-| Libs | `src/lualib.zig` + `src/lib/*` | `lua/lbaselib.c` etc. | ❌ Stubs, bodies broken |
+| Libs | `src/lualib.zig` + `src/lib/*` | `lua/lbaselib.c` etc. | ⚠️ `baselib` ✅, 9 others ⬜ |
 | Entry | `src/luazig.zig` | `lua/lua.c` | ✅ juicy-main |
 
 ## External References
