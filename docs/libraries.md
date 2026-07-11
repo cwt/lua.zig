@@ -75,7 +75,12 @@ exposed as constants).
 
 Functions: `byte`, `char`, `dump`, `find`, `format`, `gmatch`, `gsub`, `len`, `lower`, `match`, `pack`, `packsize`, `rep`, `reverse`, `sub`, `unpack`, `upper`
 
-Current `src/lib/stringlib.zig` status: **fully implemented** — all 17 functions, including string interning memory fixes, pattern matching try-propagation (longjmp-free), and a complete pure-Zig C-compatible formatting engine. Verified by 40 passing tests.
+Current `src/lib/stringlib.zig` status: **fully implemented** — all 17 functions. Refactored into a modular sub-module layout for improved readability:
+  - `src/lib/string/format.zig`: The C-compatible pure-Zig formatting engine (`str_format`).
+  - `src/lib/string/pattern.zig`: The regex pattern matching engine (`str_find`, `str_match`, `str_gsub`, `gmatch`).
+  - `src/lib/string/pack.zig`: The binary pack/unpack engine (`str_pack`, `str_unpack`, `str_packsize`).
+  - `src/lib/stringlib.zig`: Entrypoint routing and registration table definition.
+  Verified by 40 passing tests.
 
 ### tablelib (`lua/ltablib.c`)
 

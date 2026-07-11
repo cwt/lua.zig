@@ -602,13 +602,11 @@ Implemented the binary bytecode loader (`lundump.zig`), allowing precompiled Lua
 ## 2026-07-12 — Phase F: String Standard Library (string) port
 
 ### Changes
-- **`src/lib/stringlib.zig`** (rewritten): Ported all remaining string library functions from `lua/lstrlib.c` (`byte`, `char`, `dump`, `find`, `format`, `gmatch`, `gsub`, `len`, `lower`, `match`, `pack`, `packsize`, `rep`, `reverse`, `sub`, `unpack`, `upper`).
-  - Added a complete, C-compatible, pure-Zig formatting engine in `str_format` supporting all modifiers (flags `+`, `-`, ` `, `#`, `0`, width, precision) for integer (`%d`, `%i`, `%o`, `%u`, `%x`, `%X`), floating-point (`%f`, `%e`, `%E`, `%g`, `%G`, `%a`, `%A`), character (`%c`), literal (`%q`), pointer (`%p`), and string (`%s`) conversions.
-  - Refactored the pattern matcher (`match`, `classend`, `matchbalance`, `start_capture`, `end_capture`, `capture_to_close`, `match_capture`) to return error unions and propagate errors cleanly instead of using `catch unreachable` panics.
-  - Safeguarded pattern modifier checks in `match` to avoid out-of-bounds panics when matching patterns that end with non-modifier characters.
-  - Ensured C-compatible string representation for `%q` with correct escaping of control characters and newlines.
-  - Fixed `%p` to support any value (via `lua_topointer`) and format as hexadecimal/`(null)`.
-  - Added overflow and slice size limits check for `str_rep` and `str_byte`.
+- **`src/lib/stringlib.zig`** (rewritten & refactored): Ported all remaining string library functions from `lua/lstrlib.c` and split them into modular sub-modules:
+  - `src/lib/string/format.zig`: Built a complete, C-compatible, pure-Zig formatting engine in `str_format` supporting all modifiers (flags `+`, `-`, ` `, `#`, `0`, width, precision) for integer (`%d`, `%i`, `%o`, `%u`, `%x`, `%X`), floating-point (`%f`, `%e`, `%E`, `%g`, `%G`, `%a`, `%A`), character (`%c`), literal (`%q`), pointer (`%p`), and string (`%s`) conversions.
+  - `src/lib/string/pattern.zig`: Ported the regex pattern matcher (`match`, `classend`, `matchbalance`, `start_capture`, `end_capture`, `capture_to_close`, `match_capture`, `str_find`, `str_match`, `str_gsub`, `gmatch`), returning error unions and propagating errors cleanly instead of using `catch unreachable` panics, with index guards in `match` to avoid panics.
+  - `src/lib/string/pack.zig`: Ported the binary pack/unpack engine (`str_pack`, `str_unpack`, `str_packsize`).
+  - `src/lib/stringlib.zig`: Acts as entrypoint routing and defines simple functions (`byte`, `char`, `dump`, `len`, `lower`, `rep`, `reverse`, `sub`, `upper`).
 - **`src/lstring.zig`**: Duplicated hash map key memory inside `luaS_new` using `allocator.dupe` to guarantee stable memory backing for all short/long interned strings, preventing use-after-free bugs on temporary string buffers.
 - **`src/lua.zig`**: Freed duplicated string key memory using `allocator.free` inside GC sweeps and `lua_close` cleanup. Fixed `createmetatable` in `stringlib` to copy and set the metatable of a dummy string, properly registering string metatables globally.
 - **`src/lualib.zig`**: Registered `"string"` globally using `lua_setglobal` inside `openstringlib`.
