@@ -113,8 +113,8 @@ Implement `lvm.run` for real:
 
 Implement library bodies in `src/lib/*.zig`:
 
-- baselib: `print`, `assert`, `type`, `pairs`, `ipairs`, `tostring`, `tonumber`, etc.
-- mathlib: `math.sin`, `math.cos`, `math.sqrt`, `math.random`, etc.
+- baselib: `print`, `assert`, `type`, `pairs`, `ipairs`, `tostring`, `tonumber`, etc. — **DONE**
+- mathlib: `math.sin`, `math.cos`, `math.sqrt`, `math.random`, etc. — **DONE** (2026-07-11)
 - stringlib: pattern matching, `string.find`, `string.gsub`, `string.match`, etc.
 - tablelib: `table.insert`, `table.remove`, `table.sort`, `table.concat`, etc.
 - utf8lib: UTF-8 character/byte iteration

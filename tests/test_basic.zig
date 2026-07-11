@@ -1096,6 +1096,240 @@ test "baselib: tonumber() and tostring()" {
     try std.testing.expectEqual(lua.LUA_OK, status);
 }
 
+test "mathlib: constants and basic functions" {
+    const gpa = std.testing.allocator;
+    var L: lua.lua_State = undefined;
+    try lua.luaL_newstate(&L, gpa);
+    defer lua.lua_close(&L);
+    try lua.luaL_openlibs(&L);
+
+    const testfn = struct {
+        fn f(Ls: *lua.lua_State) anyerror!i32 {
+            // math.pi
+            _ = lua.lua_getglobal(Ls, "math");
+            _ = try lua.lua_getfield(Ls, -1, "pi");
+            const pi = lua.lua_tonumber(Ls, -1) orelse return error.NoPi;
+            try std.testing.expect(std.math.approxEqAbs(f64, pi, std.math.pi, 0.0001));
+            lua.lua_pop(Ls, 1);
+
+            // math.huge
+            _ = try lua.lua_getfield(Ls, -1, "huge");
+            const huge = lua.lua_tonumber(Ls, -1) orelse return error.NoHuge;
+            try std.testing.expect(huge > 1e308);
+            lua.lua_pop(Ls, 1);
+
+            // math.maxinteger (compare as float due to f64 precision)
+            _ = try lua.lua_getfield(Ls, -1, "maxinteger");
+            const maxint = lua.lua_tonumber(Ls, -1) orelse return error.NoMaxInt;
+            try std.testing.expectApproxEqAbs(@as(f64, @floatFromInt(lua.LUA_MAXINTEGER)), maxint, 1.0);
+            lua.lua_pop(Ls, 1);
+
+            // math.mininteger
+            _ = try lua.lua_getfield(Ls, -1, "mininteger");
+            const minint = lua.lua_tonumber(Ls, -1) orelse return error.NoMinInt;
+            try std.testing.expectApproxEqAbs(@as(f64, @floatFromInt(lua.LUA_MININTEGER)), minint, 1.0);
+            lua.lua_pop(Ls, 2);
+
+            // math.abs(-5) == 5 (integer)
+            _ = lua.lua_getglobal(Ls, "math");
+            _ = try lua.lua_getfield(Ls, -1, "abs");
+            lua.lua_pushinteger(Ls, -5);
+            try lua.lua_call(Ls, 1, 1);
+            const abs_i = lua.lua_tointeger(Ls, -1) orelse return error.NoAbsInt;
+            try std.testing.expectEqual(@as(i64, 5), abs_i);
+            lua.lua_pop(Ls, 2);
+
+            // math.abs(-3.5) == 3.5 (float)
+            _ = lua.lua_getglobal(Ls, "math");
+            _ = try lua.lua_getfield(Ls, -1, "abs");
+            lua.lua_pushnumber(Ls, -3.5);
+            try lua.lua_call(Ls, 1, 1);
+            const abs_f = lua.lua_tonumber(Ls, -1) orelse return error.NoAbsFloat;
+            try std.testing.expectEqual(@as(f64, 3.5), abs_f);
+            lua.lua_pop(Ls, 2);
+
+            // math.floor(3.7) == 3
+            _ = lua.lua_getglobal(Ls, "math");
+            _ = try lua.lua_getfield(Ls, -1, "floor");
+            lua.lua_pushnumber(Ls, 3.7);
+            try lua.lua_call(Ls, 1, 1);
+            const fl = lua.lua_tointeger(Ls, -1) orelse return error.NoFloor;
+            try std.testing.expectEqual(@as(i64, 3), fl);
+            lua.lua_pop(Ls, 2);
+
+            // math.ceil(3.2) == 4
+            _ = lua.lua_getglobal(Ls, "math");
+            _ = try lua.lua_getfield(Ls, -1, "ceil");
+            lua.lua_pushnumber(Ls, 3.2);
+            try lua.lua_call(Ls, 1, 1);
+            const cl = lua.lua_tointeger(Ls, -1) orelse return error.NoCeil;
+            try std.testing.expectEqual(@as(i64, 4), cl);
+            lua.lua_pop(Ls, 2);
+
+            // math.sqrt(9) == 3
+            _ = lua.lua_getglobal(Ls, "math");
+            _ = try lua.lua_getfield(Ls, -1, "sqrt");
+            lua.lua_pushnumber(Ls, 9.0);
+            try lua.lua_call(Ls, 1, 1);
+            const sq = lua.lua_tonumber(Ls, -1) orelse return error.NoSqrt;
+            try std.testing.expectEqual(@as(f64, 3.0), sq);
+            lua.lua_pop(Ls, 2);
+
+            return 0;
+        }
+    }.f;
+    lua.lua_pushcfunction(&L, testfn);
+    const status = lua.lua_pcallk(&L, 0, 0, 0, 0, null);
+    try std.testing.expectEqual(lua.LUA_OK, status);
+}
+
+test "mathlib: min, max, type, ult, tointeger" {
+    const gpa = std.testing.allocator;
+    var L: lua.lua_State = undefined;
+    try lua.luaL_newstate(&L, gpa);
+    defer lua.lua_close(&L);
+    try lua.luaL_openlibs(&L);
+
+    const testfn = struct {
+        fn f(Ls: *lua.lua_State) anyerror!i32 {
+            // math.max(3, 7, 5) == 7
+            _ = lua.lua_getglobal(Ls, "math");
+            _ = try lua.lua_getfield(Ls, -1, "max");
+            lua.lua_pushinteger(Ls, 3);
+            lua.lua_pushinteger(Ls, 7);
+            lua.lua_pushinteger(Ls, 5);
+            try lua.lua_call(Ls, 3, 1);
+            const mx = lua.lua_tointeger(Ls, -1) orelse return error.NoMax;
+            try std.testing.expectEqual(@as(i64, 7), mx);
+            lua.lua_pop(Ls, 2);
+
+            // math.min(3, 7, 5) == 3
+            _ = lua.lua_getglobal(Ls, "math");
+            _ = try lua.lua_getfield(Ls, -1, "min");
+            lua.lua_pushinteger(Ls, 3);
+            lua.lua_pushinteger(Ls, 7);
+            lua.lua_pushinteger(Ls, 5);
+            try lua.lua_call(Ls, 3, 1);
+            const mn = lua.lua_tointeger(Ls, -1) orelse return error.NoMin;
+            try std.testing.expectEqual(@as(i64, 3), mn);
+            lua.lua_pop(Ls, 2);
+
+            // math.type(3) == "integer"
+            _ = lua.lua_getglobal(Ls, "math");
+            _ = try lua.lua_getfield(Ls, -1, "type");
+            lua.lua_pushinteger(Ls, 42);
+            try lua.lua_call(Ls, 1, 1);
+            const ti = lua.lua_tostring(Ls, -1) orelse return error.NoType;
+            try std.testing.expectEqualStrings("integer", ti);
+            lua.lua_pop(Ls, 2);
+
+            // math.type(3.5) == "float"
+            _ = lua.lua_getglobal(Ls, "math");
+            _ = try lua.lua_getfield(Ls, -1, "type");
+            lua.lua_pushnumber(Ls, 3.5);
+            try lua.lua_call(Ls, 1, 1);
+            const tf = lua.lua_tostring(Ls, -1) orelse return error.NoType;
+            try std.testing.expectEqualStrings("float", tf);
+            lua.lua_pop(Ls, 2);
+
+            // math.ult(3, 7) == true
+            _ = lua.lua_getglobal(Ls, "math");
+            _ = try lua.lua_getfield(Ls, -1, "ult");
+            lua.lua_pushinteger(Ls, 3);
+            lua.lua_pushinteger(Ls, 7);
+            try lua.lua_call(Ls, 2, 1);
+            const ult1 = lua.lua_toboolean(Ls, -1);
+            try std.testing.expectEqual(@as(i32, 1), ult1);
+            lua.lua_pop(Ls, 2);
+
+            // math.ult(7, 3) == false
+            _ = lua.lua_getglobal(Ls, "math");
+            _ = try lua.lua_getfield(Ls, -1, "ult");
+            lua.lua_pushinteger(Ls, 7);
+            lua.lua_pushinteger(Ls, 3);
+            try lua.lua_call(Ls, 2, 1);
+            const ult2 = lua.lua_toboolean(Ls, -1);
+            try std.testing.expectEqual(@as(i32, 0), ult2);
+            lua.lua_pop(Ls, 2);
+
+            // math.tointeger(3.0) == 3
+            _ = lua.lua_getglobal(Ls, "math");
+            _ = try lua.lua_getfield(Ls, -1, "tointeger");
+            lua.lua_pushnumber(Ls, 3.0);
+            try lua.lua_call(Ls, 1, 1);
+            const ti2 = lua.lua_tointeger(Ls, -1) orelse return error.NoToInt;
+            try std.testing.expectEqual(@as(i64, 3), ti2);
+            lua.lua_pop(Ls, 2);
+
+            // math.tointeger(3.5) == nil (not integral)
+            _ = lua.lua_getglobal(Ls, "math");
+            _ = try lua.lua_getfield(Ls, -1, "tointeger");
+            lua.lua_pushnumber(Ls, 3.5);
+            try lua.lua_call(Ls, 1, 1);
+            try std.testing.expectEqual(lua.lua_type(Ls, -1), lua.LUA_TNIL);
+            lua.lua_pop(Ls, 2);
+
+            return 0;
+        }
+    }.f;
+    lua.lua_pushcfunction(&L, testfn);
+    const status = lua.lua_pcallk(&L, 0, 0, 0, 0, null);
+    try std.testing.expectEqual(lua.LUA_OK, status);
+}
+
+test "mathlib: random and randomseed" {
+    const gpa = std.testing.allocator;
+    var L: lua.lua_State = undefined;
+    try lua.luaL_newstate(&L, gpa);
+    defer lua.lua_close(&L);
+    try lua.luaL_openlibs(&L);
+
+    const testfn = struct {
+        fn f(Ls: *lua.lua_State) anyerror!i32 {
+            // math.random() returns a float in [0, 1)
+            _ = lua.lua_getglobal(Ls, "math");
+            _ = try lua.lua_getfield(Ls, -1, "random");
+            try lua.lua_call(Ls, 0, 1);
+            const r1 = lua.lua_tonumber(Ls, -1) orelse return error.NoRandom;
+            try std.testing.expect(r1 >= 0.0 and r1 < 1.0);
+            lua.lua_pop(Ls, 2);
+
+            // math.random(n) returns an integer in [1, n]
+            _ = lua.lua_getglobal(Ls, "math");
+            _ = try lua.lua_getfield(Ls, -1, "random");
+            lua.lua_pushinteger(Ls, 100);
+            try lua.lua_call(Ls, 1, 1);
+            const r2 = lua.lua_tointeger(Ls, -1) orelse return error.NoRandomInt;
+            try std.testing.expect(r2 >= 1 and r2 <= 100);
+            lua.lua_pop(Ls, 2);
+
+            // math.random(m, n) returns an integer in [m, n]
+            _ = lua.lua_getglobal(Ls, "math");
+            _ = try lua.lua_getfield(Ls, -1, "random");
+            lua.lua_pushinteger(Ls, 50);
+            lua.lua_pushinteger(Ls, 60);
+            try lua.lua_call(Ls, 2, 1);
+            const r3 = lua.lua_tointeger(Ls, -1) orelse return error.NoRandomRange;
+            try std.testing.expect(r3 >= 50 and r3 <= 60);
+            lua.lua_pop(Ls, 2);
+
+            // math.randomseed re-seeds
+            _ = lua.lua_getglobal(Ls, "math");
+            _ = try lua.lua_getfield(Ls, -1, "randomseed");
+            lua.lua_pushinteger(Ls, 42);
+            try lua.lua_call(Ls, 1, lua.LUA_MULTRET);
+            const nret = lua.lua_gettop(Ls);
+            try std.testing.expectEqual(@as(i32, 3), nret);
+            lua.lua_pop(Ls, nret);
+
+            return 0;
+        }
+    }.f;
+    lua.lua_pushcfunction(&L, testfn);
+    const status = lua.lua_pcallk(&L, 0, 0, 0, 0, null);
+    try std.testing.expectEqual(lua.LUA_OK, status);
+}
+
 test "baselib: select()" {
     const gpa = std.testing.allocator;
     var L: lua.lua_State = undefined;

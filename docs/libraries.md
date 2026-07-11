@@ -58,6 +58,19 @@ Functions: `abs`, `acos`, `asin`, `atan`, `atan2`, `ceil`, `cos`, `cosh`, `deg`,
 
 Mostly pure number operations. Low dependency on other components.
 
+Current `src/lib/mathlib.zig` status: **fully implemented** — all 26 functions
+(`abs`, `sin`, `cos`, `tan`, `asin`, `acos`, `atan`, `floor`, `ceil`, `fmod`,
+`modf`, `sqrt`, `ult`, `log`, `exp`, `deg`, `rad`, `frexp`, `ldexp`, `min`,
+`max`, `type`, `random`, `randomseed`, `tointeger`) plus constants
+(`pi`, `huge`, `maxinteger`, `mininteger`) ported from `lua/lmathlib.c`.
+PRNG uses a per-state `std.Random.Xoshiro256` seeded in `luaL_newstate_io`.
+Verified by 3 integration tests (37 total).
+
+Note: the C reference also provides `cosh`, `sinh`, `tanh` (hyperbolic) and
+`math.maxinteger`/`math.mininteger` constants. The current implementation matches
+Lua 5.5.1 `lua/lmathlib.c` exactly (no hyperbolic functions; integer bounds
+exposed as constants).
+
 ### stringlib (`lua/lstrlib.c`)
 
 Functions: `byte`, `char`, `dump`, `find`, `format`, `gmatch`, `gsub`, `len`, `lower`, `match`, `pack`, `packsize`, `rep`, `reverse`, `sub`, `unpack`, `upper`

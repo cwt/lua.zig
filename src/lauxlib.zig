@@ -74,6 +74,32 @@ pub fn luaL_optinteger(L: *lua.lua_State, idx: i32, def: i64) i64 {
     return luaL_checkinteger(L, idx) catch def;
 }
 
+pub fn luaL_checknumber(L: *lua.lua_State, idx: i32) !lua.lua_Number {
+    const n = lua.lua_tonumber(L, idx);
+    if (n == null) {
+        if (lua.lua_type(L, idx) == lua.LUA_TNONE) {
+            return luaL_argerror(L, idx, "value expected");
+        }
+        return luaL_typeerror(L, idx, "number");
+    }
+    return n.?;
+}
+
+pub fn luaL_optnumber(L: *lua.lua_State, idx: i32, def: lua.lua_Number) lua.lua_Number {
+    if (lua.lua_isnoneornil(L, idx)) return def;
+    return luaL_checknumber(L, idx) catch def;
+}
+
+pub fn luaL_pushfail(L: *lua.lua_State) void {
+    lua.lua_pushnil(L);
+}
+
+pub fn luaL_argcheck(L: *lua.lua_State, cond: bool, arg: i32, msg: []const u8) !void {
+    if (!cond) {
+        return luaL_argerror(L, arg, msg);
+    }
+}
+
 pub fn luaL_optlstring(L: *lua.lua_State, idx: i32, def: ?[]const u8, len: ?*usize) !?[]const u8 {
     if (lua.lua_isnoneornil(L, idx)) {
         if (len) |l| {

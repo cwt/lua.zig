@@ -451,3 +451,58 @@ Implemented the binary bytecode loader (`lundump.zig`), allowing precompiled Lua
 
 `zig build test` compiled and passed all **34/34 tests** with zero memory leaks.
 
+---
+
+## 2026-07-11 — Phase F: Math Standard Library (mathlib) port
+
+### Changes
+- **`src/llimits.zig`**: Added `LUA_MAXINTEGER` (`std.math.maxInt(i64)`) and
+  `LUA_MININTEGER` (`std.math.minInt(i64)`) exposing Lua 5.5.1 integer bounds.
+- **`src/lua.zig`**: Re-exported the integer bounds. Added `.prng: std.Random.Xoshiro256`
+  field to `global_State`, initialized in `luaL_newstate_io` with
+  `std.Random.Xoshiro256.init(@intFromPtr(L))`. Rewrote `lua_tointegerx` to
+  perform the C `lua_numbertointeger` range check (`-2^63 .. 2^63`) so out-of-range
+  f64 values (e.g. `huge` = inf, `math.maxinteger`) return `null` instead of
+  panicking on `@intFromFloat`.
+- **`src/lauxlib.zig`**: Added `luaL_checknumber`, `luaL_optnumber`,
+  `luaL_pushfail`, `luaL_argcheck` helpers.
+- **`src/lib/mathlib.zig`** (rewritten): Ported all 26 functions from `lua/lmathlib.c`
+  (`abs`, `sin`, `cos`, `tan`, `asin`, `acos`, `atan`, `floor`, `ceil`, `fmod`,
+  `modf`, `sqrt`, `ult`, `log`, `exp`, `deg`, `rad`, `frexp`, `ldexp`, `min`,
+  `max`, `type`, `random`, `randomseed`, `tointeger`) plus constants
+  (`pi`, `huge`, `maxinteger`, `mininteger`). PRNG uses the seeded Xoshiro256.
+- **`src/lualib.zig`**: Wired `openmathlib` to call `mathlib.openmathlib(L)`.
+- **`tests/test_basic.zig`**: Added 3 mathlib test blocks (constants/basic,
+  min/max/type/ult/tointeger, random/randomseed).
+
+### Bugs fixed (this session)
+- **mathlib overflow**: `math_abs` used `@as(i64, @bitCast(0 - un))` for the
+  negative-integer absolute value. For `n == LUA_MININTEGER` this is an unsigned
+  subtraction that panics in Zig (runtime integer overflow). Changed to wrapping
+  `@as(u64, 0) -% un`.
+- **`math.randomseed`/`math.random` test stack bugs**: the C-API test blocks
+  left the `math` table on the stack and then called it directly as a function,
+  returning `LUA_ERRRUN`. Fixed by re-pushing `math` via `lua_getglobal` before
+  each sub-call and adjusting `lua_gettop` expectation after `randomseed`
+  (3 = math table + 2 return values).
+
+### §0.1 Self-Audit
+- Allocator threaded through every allocating function (PRNG seeded in `global_State`).
+- Errors propagated via `!void` + `try`; `lua_setfield`/`lua_getfield` call sites use `try`.
+- Numeric conversions use `@intFromFloat`/`@floatFromInt`; `@bitCast` used only for
+  unsigned reinterpretation of integer bit patterns.
+- `lua_tointegerx` implements the exact C `lua_numbertointeger` range predicate,
+  satisfying §0.1 rule 14 (no stub return values for standard API functions).
+- `LUA_MAXINTEGER`/`LUA_MININTEGER` read via `lua_tonumber` (f64) in tests
+  because the odd extreme cannot round-trip through the f64-only number
+  representation without precision loss.
+
+### Verification
+`zig build` and `zig build test` both pass: **37/37 tests**, zero memory leaks.
+
+### Known Limitations
+- TValue stores all numbers as `f64`; `lua_pushinteger(LUA_MAXINTEGER)` yields
+  `9223372036854775808.0` (off by 1, f64 rounding). `lua_tointegerx` guards
+  against the resulting out-of-range panic, but exact large integers are not
+  representable. This is a fundamental consequence of the f64-only number model
+  (also noted in the Phase B "Known Limitations" section).

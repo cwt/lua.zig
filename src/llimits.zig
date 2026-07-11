@@ -75,6 +75,10 @@ pub const lua_Integer = luaconf.LUA_INTEGER;
 // Type for unsigned integer
 pub const lua_Unsigned = luaconf.LUA_UNSIGNED;
 
+// Maximum and minimum integer values
+pub const LUA_MAXINTEGER: lua_Integer = std.math.maxInt(lua_Integer);
+pub const LUA_MININTEGER: lua_Integer = std.math.minInt(lua_Integer);
+
 // ===================================================================
 // Debug API constants
 // ===================================================================

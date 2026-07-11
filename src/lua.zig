@@ -30,6 +30,8 @@ pub const LUA_ERRMEM: i32 = llimits.LUA_ERRMEM;
 pub const LUA_ERRSYNTAX: i32 = llimits.LUA_ERRSYNTAX;
 pub const LUA_MINSTACK: i32 = llimits.LUA_MINSTACK;
 pub const LUA_NUMTYPES: i32 = llimits.LUA_NUMTYPES;
+pub const LUA_MAXINTEGER: lua_Integer = llimits.LUA_MAXINTEGER;
+pub const LUA_MININTEGER: lua_Integer = llimits.LUA_MININTEGER;
 
 // Arithmetic and bitwise operators
 pub const LUA_OPADD: i32 = llimits.LUA_OPADD;
@@ -456,6 +458,7 @@ pub const global_State = struct {
     tmname: [25]?*lua_TString = [_]?*lua_TString{null} ** 25,
     io_backend: ?std.Io.Threaded = null,
     io: std.Io,
+    prng: std.Random.Xoshiro256,
 };
 
 inline fn G(L: *lua_State) *global_State {
@@ -760,12 +763,19 @@ pub fn lua_tonumberx(L: *lua_State, idx: i32, isnum: ?*i32) ?f64 {
 
 pub fn lua_tointegerx(L: *lua_State, idx: i32, isnum: ?*i32) ?i64 {
     const v = stackAt(L, idx);
+    const min_f64 = @as(f64, -9223372036854775808.0);
+    const max_exclusive_f64 = @as(f64, 9223372036854775808.0);
     if (isnum) |p| p.* = switch (v) {
-        .number => |n| if (@trunc(n) == n) 1 else 0,
+        .number => |n| if (@trunc(n) == n and n >= min_f64 and n < max_exclusive_f64) 1 else 0,
         else => 0,
     };
     return switch (v) {
-        .number => |n| @as(i64, @intFromFloat(n)),
+        .number => |n| {
+            if (@trunc(n) == n and n >= min_f64 and n < max_exclusive_f64) {
+                return @as(i64, @intFromFloat(n));
+            }
+            return null;
+        },
         else => null,
     };
 }
@@ -1971,6 +1981,7 @@ pub fn luaL_newstate_io(L: *lua_State, gpa: std.mem.Allocator, io: std.Io) !void
         .tmname = [_]?*lua_TString{null} ** 25,
         .io_backend = null,
         .io = io,
+        .prng = std.Random.Xoshiro256.init(@intFromPtr(L)),
     };
     const stack = try gpa.alloc(TValue, LUA_MINSTACK + 1);
     L.* = .{

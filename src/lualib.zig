@@ -14,6 +14,7 @@ const lprefix = @import("lprefix.zig");
 // ===================================================================
 
 const baselib = @import("lib/baselib.zig");
+const mathlib = @import("lib/mathlib.zig");
 
 pub fn openbaselib(L: *lua.lua_State) !void {
     try baselib.openbaselib(L);
@@ -54,9 +55,7 @@ pub fn openstringlib(L: *lua.lua_State) !void {
 // ===================================================================
 
 pub fn openmathlib(L: *lua.lua_State) !void {
-    const math = L;
-    _ = math;
-    // Register math library functions
+    try mathlib.openmathlib(L);
 }
 
 // ===================================================================
@@ -104,7 +103,6 @@ pub fn opendbalib(L: *lua.lua_State) !void {
 // ===================================================================
 
 pub fn openbit32(L: *lua.lua_State) !void {
-    const bit32 = L;
-    _ = bit32;
-    // Register bit32 library functions
+    _ = L;
+    // mathlib wired; bit32 pending
 }
