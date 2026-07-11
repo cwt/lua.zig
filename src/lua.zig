@@ -1879,6 +1879,7 @@ pub fn luaC_collectgarbage(L: *lua_State) !void {
     for (dead_strings.items) |key| {
         const ts = g.strt.get(key).?;
         _ = g.strt.swapRemove(key);
+        g.allocator.free(key);
         g.allocator.destroy(ts);
     }
 }
@@ -2198,7 +2199,9 @@ pub fn lua_close(L: *lua_State) void {
         // Free string table entries
         var it = g.strt.iterator();
         while (it.next()) |entry| {
+            const key = entry.key_ptr.*;
             g.allocator.destroy(entry.value_ptr.*);
+            g.allocator.free(key);
         }
         g.strt.deinit(g.allocator);
         if (g.io_backend) |*threaded| {

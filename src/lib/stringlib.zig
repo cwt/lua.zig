@@ -117,7 +117,11 @@ fn str_rep(L: *lua.lua_State) anyerror!i32 {
         _ = lua.lua_pushlstring(L, "", 0);
         return 1;
     }
-    const un: u64 = @intCast(n);
+    const MAX_SIZE = @min(std.math.maxInt(usize) / 2, @as(usize, @intCast(std.math.maxInt(i64))));
+    const un = @as(u64, @intCast(n));
+    if (len > MAX_SIZE -| lsep or (len + lsep) > MAX_SIZE / un) {
+        return lauxlib.luaL_error(L, "resulting string too large");
+    }
     const totallen = un * (@as(u64, @intCast(len)) + @as(u64, @intCast(lsep))) - @as(u64, @intCast(lsep));
     var b = lauxlib.luaL_Buffer{};
     lauxlib.luaL_buffinit(L, &b);
@@ -145,6 +149,9 @@ fn str_byte(L: *lua.lua_State) anyerror!i32 {
     const posi = posrelatI(pi, l);
     const pose = getendpos(L, 3, pi, l);
     if (posi > pose) return 0;
+    if (pose - posi >= @as(usize, @intCast(std.math.maxInt(i32)))) {
+        return lauxlib.luaL_error(L, "string slice too long");
+    }
     const n = pose - posi + 1;
     try lauxlib.luaL_checkstack(L, @as(i32, @intCast(n)), "string slice too long");
     var i: usize = 0;
@@ -290,12 +297,11 @@ fn match_class(c: u8, cl: u8) bool {
     return if (std.ascii.isLower(cl)) res else !res;
 }
 
-fn classend(ms: *MatchState, p_idx: usize) usize {
+fn classend(ms: *MatchState, p_idx: usize) anyerror!usize {
     switch (ms.p[p_idx]) {
         '%' => {
             if (p_idx + 1 >= ms.p_end) {
-                _ = lauxlib.luaL_error(ms.L, "malformed pattern (ends with '%%')") catch unreachable;
-                return ms.p_end;
+                return lauxlib.luaL_error(ms.L, "malformed pattern (ends with '%')");
             }
             return p_idx + 2;
         },
@@ -304,8 +310,7 @@ fn classend(ms: *MatchState, p_idx: usize) usize {
             if (p < ms.p_end and ms.p[p] == '^') p += 1;
             while (true) {
                 if (p >= ms.p_end) {
-                    _ = lauxlib.luaL_error(ms.L, "malformed pattern (missing ']')") catch unreachable;
-                    return ms.p_end;
+                    return lauxlib.luaL_error(ms.L, "malformed pattern (missing ']')");
                 }
                 if (ms.p[p] == '%' and p + 1 < ms.p_end) {
                     p += 2;
@@ -356,10 +361,9 @@ fn singlematch(ms: *MatchState, s: usize, p: usize, ep: usize) bool {
     }
 }
 
-fn matchbalance(ms: *MatchState, s: usize, p: usize) ?usize {
+fn matchbalance(ms: *MatchState, s: usize, p: usize) anyerror!?usize {
     if (p + 1 >= ms.p_end) {
-        _ = lauxlib.luaL_error(ms.L, "malformed pattern (missing arguments to '%%b')") catch unreachable;
-        return null;
+        return lauxlib.luaL_error(ms.L, "malformed pattern (missing arguments to '%b')");
     }
     if (s >= ms.src_end or ms.src[s] != ms.p[p]) return null;
     const b = ms.p[p];
@@ -378,21 +382,21 @@ fn matchbalance(ms: *MatchState, s: usize, p: usize) ?usize {
     return null;
 }
 
-fn max_expand(ms: *MatchState, s: usize, p: usize, ep: usize) ?usize {
+fn max_expand(ms: *MatchState, s: usize, p: usize, ep: usize) anyerror!?usize {
     var i: usize = 0;
     while (singlematch(ms, s + i, p, ep)) : (i += 1) {}
     while (true) {
-        const res = match(ms, s + i, ep + 1);
+        const res = try match(ms, s + i, ep + 1);
         if (res) |r| return r;
         if (i == 0) return null;
         i -= 1;
     }
 }
 
-fn min_expand(ms: *MatchState, s: usize, p: usize, ep: usize) ?usize {
+fn min_expand(ms: *MatchState, s: usize, p: usize, ep: usize) anyerror!?usize {
     var s_idx = s;
     while (true) {
-        const res = match(ms, s_idx, ep + 1);
+        const res = try match(ms, s_idx, ep + 1);
         if (res) |r| return r;
         if (singlematch(ms, s_idx, p, ep)) {
             s_idx += 1;
@@ -402,23 +406,22 @@ fn min_expand(ms: *MatchState, s: usize, p: usize, ep: usize) ?usize {
     }
 }
 
-fn start_capture(ms: *MatchState, s: usize, p: usize, what: i64) ?usize {
+fn start_capture(ms: *MatchState, s: usize, p: usize, what: i64) anyerror!?usize {
     const level = ms.level;
     if (level >= LUA_MAXCAPTURES) {
-        _ = lauxlib.luaL_error(ms.L, "too many captures") catch unreachable;
-        return null;
+        return lauxlib.luaL_error(ms.L, "too many captures");
     }
     ms.capture[@as(usize, @intCast(level))] = .{ .init = s, .len = what };
     ms.level = level + 1;
-    const res = match(ms, s, p);
+    const res = try match(ms, s, p);
     if (res == null) ms.level = level;
     return res;
 }
 
-fn end_capture(ms: *MatchState, s: usize, p: usize) ?usize {
-    const l = capture_to_close(ms) orelse return null;
+fn end_capture(ms: *MatchState, s: usize, p: usize) anyerror!?usize {
+    const l = try capture_to_close(ms) orelse return null;
     ms.capture[l].len = @as(i64, @intCast(s)) - @as(i64, @intCast(ms.capture[l].init));
-    const res = match(ms, s, p);
+    const res = try match(ms, s, p);
     if (res == null) ms.capture[l].len = CAP_UNFINISHED;
     return res;
 }
@@ -431,19 +434,18 @@ fn check_capture(ms: *MatchState, l_arg: u8) !usize {
     return l;
 }
 
-fn capture_to_close(ms: *MatchState) ?usize {
+fn capture_to_close(ms: *MatchState) anyerror!?usize {
     var level: i32 = ms.level - 1;
     while (level >= 0) : (level -= 1) {
         if (ms.capture[@as(usize, @intCast(level))].len == CAP_UNFINISHED) {
             return @as(usize, @intCast(level));
         }
     }
-    _ = lauxlib.luaL_error(ms.L, "invalid pattern capture") catch unreachable;
-    return null;
+    return lauxlib.luaL_error(ms.L, "invalid pattern capture");
 }
 
-fn match_capture(ms: *MatchState, s: usize, l: u8) ?usize {
-    const cap_idx = check_capture(ms, l) catch return null;
+fn match_capture(ms: *MatchState, s: usize, l: u8) anyerror!?usize {
+    const cap_idx = try check_capture(ms, l);
     const init = ms.capture[cap_idx].init;
     const capl = @as(usize, @intCast(ms.capture[cap_idx].len));
     if (ms.src_end -| s >= capl and std.mem.eql(u8, ms.src[init..][0..capl], ms.src[s..][0..capl])) {
@@ -452,12 +454,12 @@ fn match_capture(ms: *MatchState, s: usize, l: u8) ?usize {
     return null;
 }
 
-fn match(ms: *MatchState, s: usize, p: usize) ?usize {
+fn match(ms: *MatchState, s: usize, p: usize) anyerror!?usize {
     if (ms.matchdepth == 0) {
-        _ = lauxlib.luaL_error(ms.L, "pattern too complex") catch unreachable catch unreachable;
-        return null;
+        return lauxlib.luaL_error(ms.L, "pattern too complex");
     }
     ms.matchdepth -= 1;
+    defer ms.matchdepth += 1;
 
     var s_idx = s;
     var p_idx = p;
@@ -466,14 +468,14 @@ fn match(ms: *MatchState, s: usize, p: usize) ?usize {
         switch (ms.p[p_idx]) {
             '(' => {
                 if (p_idx + 1 < ms.p_end and ms.p[p_idx + 1] == ')') {
-                    s_idx = start_capture(ms, s_idx, p_idx + 2, CAP_POSITION) orelse return null;
+                    s_idx = (try start_capture(ms, s_idx, p_idx + 2, CAP_POSITION)) orelse return null;
                 } else {
-                    s_idx = start_capture(ms, s_idx, p_idx + 1, CAP_UNFINISHED) orelse return null;
+                    s_idx = (try start_capture(ms, s_idx, p_idx + 1, CAP_UNFINISHED)) orelse return null;
                 }
                 break;
             },
             ')' => {
-                s_idx = end_capture(ms, s_idx, p_idx + 1) orelse return null;
+                s_idx = (try end_capture(ms, s_idx, p_idx + 1)) orelse return null;
                 break;
             },
             '$' => {
@@ -481,7 +483,7 @@ fn match(ms: *MatchState, s: usize, p: usize) ?usize {
                     if (s_idx != ms.src_end) return null;
                     break;
                 }
-                const ep = classend(ms, p_idx);
+                const ep = try classend(ms, p_idx);
                 if (!singlematch(ms, s_idx, p_idx, ep)) {
                     if (ep < ms.p_end and (ms.p[ep] == '*' or ms.p[ep] == '?' or ms.p[ep] == '-')) {
                         p_idx = ep + 1;
@@ -490,9 +492,10 @@ fn match(ms: *MatchState, s: usize, p: usize) ?usize {
                         return null;
                     }
                 } else {
-                    switch (ms.p[ep]) {
+                    const suffix = if (ep < ms.p_end) ms.p[ep] else 0;
+                    switch (suffix) {
                         '?' => {
-                            if (match(ms, s_idx + 1, ep + 1)) |res| {
+                            if (try match(ms, s_idx + 1, ep + 1)) |res| {
                                 s_idx = res;
                             } else {
                                 p_idx = ep + 1;
@@ -500,13 +503,13 @@ fn match(ms: *MatchState, s: usize, p: usize) ?usize {
                             }
                         },
                         '+' => {
-                            s_idx = max_expand(ms, s_idx + 1, p_idx, ep) orelse return null;
+                            s_idx = (try max_expand(ms, s_idx + 1, p_idx, ep)) orelse return null;
                         },
                         '*' => {
-                            s_idx = max_expand(ms, s_idx, p_idx, ep) orelse return null;
+                            s_idx = (try max_expand(ms, s_idx, p_idx, ep)) orelse return null;
                         },
                         '-' => {
-                            s_idx = min_expand(ms, s_idx, p_idx, ep) orelse return null;
+                            s_idx = (try min_expand(ms, s_idx, p_idx, ep)) orelse return null;
                         },
                         else => {
                             s_idx += 1;
@@ -520,22 +523,20 @@ fn match(ms: *MatchState, s: usize, p: usize) ?usize {
             '%' => {
                 p_idx += 1;
                 if (p_idx >= ms.p_end) {
-                    _ = lauxlib.luaL_error(ms.L, "malformed pattern (ends with '%%')") catch unreachable;
-                    return null;
+                    return lauxlib.luaL_error(ms.L, "malformed pattern (ends with '%')");
                 }
                 switch (ms.p[p_idx]) {
                     'b' => {
-                        s_idx = matchbalance(ms, s_idx, p_idx + 1) orelse break;
+                        s_idx = (try matchbalance(ms, s_idx, p_idx + 1)) orelse break;
                         p_idx += 3;
                         continue;
                     },
                     'f' => {
                         p_idx += 1;
                         if (p_idx >= ms.p_end or ms.p[p_idx] != '[') {
-                            _ = lauxlib.luaL_error(ms.L, "missing '[' after '%%f' in pattern") catch unreachable;
-                            return null;
+                            return lauxlib.luaL_error(ms.L, "missing '[' after '%f' in pattern");
                         }
-                        const ep = classend(ms, p_idx);
+                        const ep = try classend(ms, p_idx);
                         const previous: u8 = if (s_idx == ms.src_init) 0 else ms.src[s_idx - 1];
                         if (!matchbracketclass(ms, previous, p_idx, ep - 1) and
                             matchbracketclass(ms, ms.src[s_idx], p_idx, ep - 1))
@@ -546,12 +547,12 @@ fn match(ms: *MatchState, s: usize, p: usize) ?usize {
                         return null;
                     },
                     '0'...'9' => {
-                        s_idx = match_capture(ms, s_idx, ms.p[p_idx]) orelse return null;
+                        s_idx = (try match_capture(ms, s_idx, ms.p[p_idx])) orelse return null;
                         p_idx += 2;
                         continue;
                     },
                     else => {
-                        const ep = classend(ms, p_idx - 1);
+                        const ep = try classend(ms, p_idx - 1);
                         if (!singlematch(ms, s_idx, p_idx - 1, ep)) {
                             if (ep < ms.p_end and (ms.p[ep] == '*' or ms.p[ep] == '?' or ms.p[ep] == '-')) {
                                 p_idx = ep + 1;
@@ -560,9 +561,10 @@ fn match(ms: *MatchState, s: usize, p: usize) ?usize {
                                 return null;
                             }
                         } else {
-                            switch (ms.p[ep]) {
+                            const suffix = if (ep < ms.p_end) ms.p[ep] else 0;
+                            switch (suffix) {
                                 '?' => {
-                                    if (match(ms, s_idx + 1, ep + 1)) |res| {
+                                    if (try match(ms, s_idx + 1, ep + 1)) |res| {
                                         s_idx = res;
                                     } else {
                                         p_idx = ep + 1;
@@ -570,13 +572,13 @@ fn match(ms: *MatchState, s: usize, p: usize) ?usize {
                                     }
                                 },
                                 '+' => {
-                                    s_idx = max_expand(ms, s_idx + 1, p_idx - 1, ep) orelse return null;
+                                    s_idx = (try max_expand(ms, s_idx + 1, p_idx - 1, ep)) orelse return null;
                                 },
                                 '*' => {
-                                    s_idx = max_expand(ms, s_idx, p_idx - 1, ep) orelse return null;
+                                    s_idx = (try max_expand(ms, s_idx, p_idx - 1, ep)) orelse return null;
                                 },
                                 '-' => {
-                                    s_idx = min_expand(ms, s_idx, p_idx - 1, ep) orelse return null;
+                                    s_idx = (try min_expand(ms, s_idx, p_idx - 1, ep)) orelse return null;
                                 },
                                 else => {
                                     s_idx += 1;
@@ -591,7 +593,7 @@ fn match(ms: *MatchState, s: usize, p: usize) ?usize {
                 break;
             },
             else => {
-                const ep = classend(ms, p_idx);
+                const ep = try classend(ms, p_idx);
                 if (!singlematch(ms, s_idx, p_idx, ep)) {
                     if (ep < ms.p_end and (ms.p[ep] == '*' or ms.p[ep] == '?' or ms.p[ep] == '-')) {
                         p_idx = ep + 1;
@@ -600,9 +602,10 @@ fn match(ms: *MatchState, s: usize, p: usize) ?usize {
                         return null;
                     }
                 } else {
-                    switch (ms.p[ep]) {
+                    const suffix = if (ep < ms.p_end) ms.p[ep] else 0;
+                    switch (suffix) {
                         '?' => {
-                            if (match(ms, s_idx + 1, ep + 1)) |res| {
+                            if (try match(ms, s_idx + 1, ep + 1)) |res| {
                                 s_idx = res;
                             } else {
                                 p_idx = ep + 1;
@@ -610,13 +613,13 @@ fn match(ms: *MatchState, s: usize, p: usize) ?usize {
                             }
                         },
                         '+' => {
-                            s_idx = max_expand(ms, s_idx + 1, p_idx, ep) orelse return null;
+                            s_idx = (try max_expand(ms, s_idx + 1, p_idx, ep)) orelse return null;
                         },
                         '*' => {
-                            s_idx = max_expand(ms, s_idx, p_idx, ep) orelse return null;
+                            s_idx = (try max_expand(ms, s_idx, p_idx, ep)) orelse return null;
                         },
                         '-' => {
-                            s_idx = min_expand(ms, s_idx, p_idx, ep) orelse return null;
+                            s_idx = (try min_expand(ms, s_idx, p_idx, ep)) orelse return null;
                         },
                         else => {
                             s_idx += 1;
@@ -629,18 +632,6 @@ fn match(ms: *MatchState, s: usize, p: usize) ?usize {
             },
         }
     }
-
-    ms.matchdepth += 1;
-
-    if (s_idx != 0) {
-        // s_idx is a valid position; just return it
-        // In C, s could be NULL or a valid pointer.
-        // In our port, s_idx is checked against src_end for boundary.
-        // Since we already checked bounds above, if we reach here,
-        // s_idx is valid (and ms.src_end means success for anchoring).
-        // But we need to ensure we return null correctly.
-    }
-
     return s_idx;
 }
 
@@ -752,7 +743,7 @@ fn str_find_aux(L: *lua.lua_State, find: bool) anyerror!i32 {
         var s_idx = s1;
         while (true) {
             reprepstate(&ms);
-            const res = match(&ms, s_idx, 0);
+            const res = try match(&ms, s_idx, 0);
             if (res) |r| {
                 if (find) {
                     lua.lua_pushinteger(L, @as(i64, @intCast(s_idx)) + 1);
@@ -792,7 +783,7 @@ fn gmatch_aux(L: *lua.lua_State) anyerror!i32 {
     var src = gm.src;
     while (src <= gm.ms.src_end) : (src += 1) {
         reprepstate(&gm.ms);
-        const e = match(&gm.ms, src, gm.p_idx);
+        const e = try match(&gm.ms, src, gm.p_idx);
         if (e) |e_val| {
             if (e_val != gm.lastmatch) {
                 gm.src = e_val;
@@ -831,8 +822,7 @@ fn add_s(ms: *MatchState, b: *lauxlib.luaL_Buffer, s: usize, e: usize) !void {
         try lauxlib.luaL_addlstring(L, b, rest[0..pos]);
         const p = pos + 1;
         if (p >= rest.len) {
-            _ = lauxlib.luaL_error(L, "invalid use of '%c' in replacement string") catch unreachable;
-            return;
+            return lauxlib.luaL_error(L, "invalid use of '%' in replacement string");
         }
         const c = rest[p];
         if (c == '%') {
@@ -849,8 +839,7 @@ fn add_s(ms: *MatchState, b: *lauxlib.luaL_Buffer, s: usize, e: usize) !void {
                 try lauxlib.luaL_addlstring(L, b, ms.src[cap_info.init..][0..len2]);
             }
         } else {
-            _ = lauxlib.luaL_error(L, "invalid use of '%c' in replacement string") catch unreachable;
-            return;
+            return lauxlib.luaL_error(L, "invalid use of '%' in replacement string");
         }
         rest = rest[p + 1 ..];
     }
@@ -880,7 +869,10 @@ fn add_value(ms: *MatchState, b: *lauxlib.luaL_Buffer, s: usize, e: usize, tr: i
         return false;
     }
     if (lua.lua_isstring(L, -1) == 0) {
-        return lauxlib.luaL_error(L, "invalid replacement value (a %s)");
+        var temp_buf: [128]u8 = undefined;
+        const typename = lua.lua_typename(lua.lua_type(L, -1));
+        const msg = try std.fmt.bufPrint(&temp_buf, "invalid replacement value (a {s})", .{typename});
+        return lauxlib.luaL_error(L, msg);
     }
     try lauxlib.luaL_addvalue(L, b);
     return true;
@@ -910,7 +902,7 @@ fn str_gsub(L: *lua.lua_State) anyerror!i32 {
     var changed = false;
     while (n < max_s) {
         reprepstate(&ms);
-        const e = match(&ms, src_idx, 0);
+        const e = try match(&ms, src_idx, 0);
         if (e) |e_val| {
             if (e_val != ms.src_init) { // lastmatch check
                 n += 1;
@@ -946,11 +938,21 @@ fn addquoted(L: *lua.lua_State, b: *lauxlib.luaL_Buffer, s: []const u8, len: usi
     var i: usize = 0;
     while (i < len) : (i += 1) {
         const c = s[i];
-        if (c == '\\' or c == '"') {
+        if (c == '"' or c == '\\' or c == '\n') {
             try lauxlib.luaL_addchar(L, b, '\\');
             try lauxlib.luaL_addchar(L, b, c);
-        } else if (c == 0) {
-            try lauxlib.luaL_addlstring(L, b, "\\000");
+        } else if (std.ascii.isControl(c)) {
+            var buff: [10]u8 = undefined;
+            var nb: usize = 0;
+            const next_is_digit = (i + 1 < len) and std.ascii.isDigit(s[i + 1]);
+            if (!next_is_digit) {
+                const slice = try std.fmt.bufPrint(&buff, "\\{d}", .{c});
+                nb = slice.len;
+            } else {
+                const slice = try std.fmt.bufPrint(&buff, "\\{d:0>3}", .{c});
+                nb = slice.len;
+            }
+            try lauxlib.luaL_addlstring(L, b, buff[0..nb]);
         } else {
             try lauxlib.luaL_addchar(L, b, c);
         }
@@ -958,33 +960,50 @@ fn addquoted(L: *lua.lua_State, b: *lauxlib.luaL_Buffer, s: []const u8, len: usi
     try lauxlib.luaL_addchar(L, b, '"');
 }
 
-fn quotefloat(f: f64) !struct { buf: [50]u8, len: usize } {
-    var buf: [50]u8 = undefined;
-    const buf_len = try std.fmt.bufPrint(&buf, "{d}", .{f});
-    return .{ .buf = buf, .len = buf_len.len };
+fn quotefloat(buf: []u8, n: f64) ![]const u8 {
+    if (std.math.isInf(n)) {
+        return if (n > 0) "1e9999" else "-1e9999";
+    }
+    if (std.math.isNan(n)) {
+        return "(0/0)";
+    }
+    var temp_buf: [150]u8 = undefined;
+    const hex_float = try formatFloatA(&temp_buf, @abs(n), 'a', null);
+    
+    var prefix: []const u8 = "";
+    if (std.math.signbit(n)) {
+        prefix = "-";
+    }
+    
+    if (prefix.len + hex_float.len > buf.len) return error.NoSpaceLeft;
+    @memcpy(buf[0..prefix.len], prefix);
+    @memcpy(buf[prefix.len..][0..hex_float.len], hex_float);
+    return buf[0..prefix.len + hex_float.len];
 }
 
 fn addliteral(L: *lua.lua_State, b: *lauxlib.luaL_Buffer, arg: i32) !void {
     switch (lua.lua_type(L, arg)) {
-        lua.LUA_TNIL => try lauxlib.luaL_addlstring(L, b, "nil"),
-        lua.LUA_TBOOLEAN => {
-            if (lua.lua_toboolean(L, arg) != 0) {
-                try lauxlib.luaL_addlstring(L, b, "true");
-            } else {
-                try lauxlib.luaL_addlstring(L, b, "false");
-            }
+        lua.LUA_TNIL, lua.LUA_TBOOLEAN => {
+            var len: usize = 0;
+            _ = lauxlib.luaL_tolstring(L, arg, &len);
+            try lauxlib.luaL_addvalue(L, b);
         },
         lua.LUA_TNUMBER => {
             if (lua.lua_isinteger(L, arg) != 0) {
-                try lauxlib.luaL_addchar(L, b, 'L');
-                var buf: [50]u8 = undefined;
-                const int_val = lua.lua_tointeger(L, arg) orelse 0;
-                const s = try std.fmt.bufPrint(&buf, "{d}", .{int_val});
+                const n = lua.lua_tointeger(L, arg) orelse 0;
+                var buf: [100]u8 = undefined;
+                var s: []const u8 = "";
+                if (n == std.math.minInt(i64)) {
+                    s = try std.fmt.bufPrint(&buf, "0x{x}", .{@as(u64, @bitCast(n))});
+                } else {
+                    s = try std.fmt.bufPrint(&buf, "{d}", .{n});
+                }
                 try lauxlib.luaL_addlstring(L, b, s);
             } else {
                 const n = lua.lua_tonumber(L, arg) orelse 0.0;
-                const result = try quotefloat(n);
-                try lauxlib.luaL_addlstring(L, b, result.buf[0..result.len]);
+                var buf: [150]u8 = undefined;
+                const s = try quotefloat(&buf, n);
+                try lauxlib.luaL_addlstring(L, b, s);
             }
         },
         lua.LUA_TSTRING => {
@@ -992,7 +1011,9 @@ fn addliteral(L: *lua.lua_State, b: *lauxlib.luaL_Buffer, arg: i32) !void {
             const s = lua.lua_tolstring(L, arg, &len) orelse "";
             try addquoted(L, b, s, len);
         },
-        else => _ = lauxlib.luaL_error(L, "invalid value (%s) at index %d in format string") catch unreachable,
+        else => {
+            return lauxlib.luaL_argerror(L, arg, "value has no literal form");
+        },
     }
 }
 
@@ -1010,122 +1031,373 @@ fn get2digits(s: []const u8, pos: usize) struct { val: i32, new_pos: usize } {
     return .{ .val = val, .new_pos = p };
 }
 
-const MaxFormat = struct {
-    flags: ComptimeFlags,
-    width: i64,
-    precision: i64,
-};
-const ComptimeFlags = packed struct(u8) {
-    minus: bool = false,
-    plus: bool = false,
-    space: bool = false,
-    num2: bool = false,
-    zero: bool = false,
-    _pad: u3 = 0,
-};
+fn intToString(comptime val: usize) []const u8 {
+    if (val == 0) return "0";
+    var res: []const u8 = "";
+    var temp = val;
+    while (temp > 0) {
+        const digit_char = &[_]u8{ '0' + @as(u8, @intCast(temp % 10)) };
+        res = digit_char ++ res;
+        temp /= 10;
+    }
+    return res;
+}
 
-fn checkformat(_: *lua.lua_State, form: []const u8, form_len: usize, max: *MaxFormat) !void {
-    var idx: usize = 0;
-    while (idx < form_len) {
-        const c = form[idx];
-        if (c == '-' or c == '+' or c == ' ') break;
-        idx += 1;
-    }
-    max.flags = .{};
-    while (idx < form_len) {
-        const c = form[idx];
-        switch (c) {
-            '-' => max.flags.minus = true,
-            '+' => max.flags.plus = true,
-            ' ' => max.flags.space = true,
-            '#' => max.flags.num2 = true,
-            '0' => max.flags.zero = true,
-            else => break,
+fn formatFloatF(buf: []u8, abs_val: f64, precision: usize) ![]const u8 {
+    const fmts = comptime blk: {
+        var arr: [101][]const u8 = undefined;
+        for (0..101) |i| {
+            arr[i] = "{d:." ++ intToString(i) ++ "}";
         }
-        idx += 1;
+        break :blk arr;
+    };
+    const prec = if (precision > 100) 100 else precision;
+    inline for (0..101) |i| {
+        if (prec == i) {
+            return try std.fmt.bufPrint(buf, fmts[i], .{abs_val});
+        }
     }
-    if (idx < form_len and std.ascii.isDigit(form[idx])) {
-        const res = get2digits(form, idx);
-        max.width = @intCast(res.val);
-        idx = res.new_pos;
+    return error.NoSpaceLeft;
+}
+
+fn formatFloatE(buf: []u8, abs_val: f64, spec: u8, precision: usize) ![]const u8 {
+    const fmts = comptime blk: {
+        var arr: [101][]const u8 = undefined;
+        for (0..101) |i| {
+            arr[i] = "{e:." ++ intToString(i) ++ "}";
+        }
+        break :blk arr;
+    };
+    const prec = if (precision > 100) 100 else precision;
+    var raw: []const u8 = "";
+    var raw_buf: [150]u8 = undefined;
+    inline for (0..101) |i| {
+        if (prec == i) {
+            raw = try std.fmt.bufPrint(&raw_buf, fmts[i], .{abs_val});
+        }
+    }
+    if (raw.len == 0) return error.NoSpaceLeft;
+    
+    var out_buf: [150]u8 = undefined;
+    var len: usize = 0;
+    var e_idx: ?usize = null;
+    for (raw, 0..) |c, idx| {
+        if (c == 'e') {
+            e_idx = idx;
+            break;
+        }
+    }
+    
+    if (e_idx) |ei| {
+        @memcpy(out_buf[0..ei], raw[0..ei]);
+        len = ei;
+        out_buf[len] = if (spec == 'E' or spec == 'G') 'E' else 'e';
+        len += 1;
+        const exp_str = raw[ei+1..];
+        var exp_sign: u8 = '+';
+        var exp_val_str = exp_str;
+        if (exp_str.len > 0 and (exp_str[0] == '-' or exp_str[0] == '+')) {
+            exp_sign = exp_str[0];
+            exp_val_str = exp_str[1..];
+        }
+        out_buf[len] = exp_sign;
+        len += 1;
+        if (exp_val_str.len == 1) {
+            out_buf[len] = '0';
+            out_buf[len+1] = exp_val_str[0];
+            len += 2;
+        } else {
+            @memcpy(out_buf[len..][0..exp_val_str.len], exp_val_str);
+            len += exp_val_str.len;
+        }
     } else {
-        max.width = -1;
+        @memcpy(out_buf[0..raw.len], raw);
+        len = raw.len;
     }
-    if (idx < form_len and form[idx] == '.') {
-        idx += 1;
-        if (idx < form_len and std.ascii.isDigit(form[idx])) {
-            const res = get2digits(form, idx);
-            max.precision = @intCast(res.val);
-            idx = res.new_pos;
+    if (len > buf.len) return error.NoSpaceLeft;
+    @memcpy(buf[0..len], out_buf[0..len]);
+    return buf[0..len];
+}
+
+fn formatFloatG(buf: []u8, abs_val: f64, spec: u8, precision: usize, strip_zeros: bool) ![]const u8 {
+    if (std.math.isNan(abs_val)) {
+        return if (spec == 'G') "NAN" else "nan";
+    }
+    if (std.math.isInf(abs_val)) {
+        return if (spec == 'G') "INF" else "inf";
+    }
+    if (abs_val == 0.0) {
+        if (strip_zeros) return "0";
+        return try formatFloatF(buf, 0.0, precision - 1);
+    }
+    const log10_val = std.math.log10(abs_val);
+    const exponent = @as(i32, @intCast(@as(i64, @intFromFloat(std.math.floor(log10_val)))));
+    const p = if (precision == 0) @as(usize, 1) else precision;
+    var temp_buf: [150]u8 = undefined;
+    var raw: []const u8 = "";
+    if (exponent < -4 or exponent >= p) {
+        const prec_e = p - 1;
+        raw = try formatFloatE(&temp_buf, abs_val, spec, prec_e);
+    } else {
+        const dec_places = @as(i32, @intCast(p)) - 1 - exponent;
+        if (dec_places > 0) {
+            raw = try formatFloatF(&temp_buf, abs_val, @intCast(dec_places));
         } else {
-            max.precision = 0;
+            raw = try formatFloatF(&temp_buf, abs_val, 0);
+        }
+    }
+    var out_buf: [150]u8 = undefined;
+    @memcpy(out_buf[0..raw.len], raw);
+    var len = raw.len;
+    if (strip_zeros) {
+        var exp_idx: ?usize = null;
+        for (out_buf[0..len], 0..) |c, i| {
+            if (c == 'e' or c == 'E') {
+                exp_idx = i;
+                break;
+            }
+        }
+        const end_frac = exp_idx orelse len;
+        var dot_idx: ?usize = null;
+        for (out_buf[0..end_frac], 0..) |c, i| {
+            if (c == '.') {
+                dot_idx = i;
+                break;
+            }
+        }
+        if (dot_idx) |di| {
+            var new_end_frac = end_frac;
+            while (new_end_frac > di + 1 and out_buf[new_end_frac - 1] == '0') {
+                new_end_frac -= 1;
+            }
+            if (new_end_frac == di + 1) {
+                new_end_frac = di;
+            }
+            if (exp_idx) |ei| {
+                const exp_len = len - ei;
+                std.mem.copyForwards(u8, out_buf[new_end_frac..][0..exp_len], out_buf[ei..][0..exp_len]);
+                len = new_end_frac + exp_len;
+            } else {
+                len = new_end_frac;
+            }
+        }
+    }
+    if (len > buf.len) return error.NoSpaceLeft;
+    @memcpy(buf[0..len], out_buf[0..len]);
+    return buf[0..len];
+}
+
+fn formatFloatA(buf: []u8, abs_val: f64, spec: u8, precision: ?usize) ![]const u8 {
+    var raw: []const u8 = "";
+    var temp_buf: [150]u8 = undefined;
+    if (precision) |p| {
+        const fmts = comptime blk: {
+            var arr: [101][]const u8 = undefined;
+            for (0..101) |i| {
+                arr[i] = "{x:." ++ intToString(i) ++ "}";
+            }
+            break :blk arr;
+        };
+        const prec = if (p > 100) 100 else p;
+        inline for (0..101) |i| {
+            if (prec == i) {
+                raw = try std.fmt.bufPrint(&temp_buf, fmts[i], .{abs_val});
+            }
         }
     } else {
-        max.precision = -1;
+        raw = try std.fmt.bufPrint(&temp_buf, "{x}", .{abs_val});
     }
-}
-
-const StringFmt = struct {
-    format: []const u8,
-    length: i32,
-};
-
-fn getformat(L: *lua.lua_State, strfrmt: []const u8, len: usize, pos: *usize) !?StringFmt {
-    while (pos.* < len and strfrmt[pos.*] != '\x00' and strfrmt[pos.*] != '%') {
-        pos.* += 1;
-    }
-    if (pos.* >= len or strfrmt[pos.*] == '\x00') return null;
-    pos.* += 1;
-    const start = pos.*;
-    if (pos.* >= len) return lauxlib.luaL_error(L, "malformed format string (ends with '%')");
-    {
-        const c = strfrmt[pos.*];
-        pos.* += 1;
-        if (c == 's' or c == 'f' or c == 'i' or c == 'd' or c == 'o' or c == 'x' or c == 'X' or c == 'u' or c == 'c' or c == 'b' or c == 'p' or c == 'q' or c == 'a' or c == 'A' or c == 'g' or c == 'G' or c == 'e' or c == 'E') {
-            return StringFmt{ .format = strfrmt[start..pos.*], .length = 1 };
+    if (raw.len == 0) return error.NoSpaceLeft;
+    
+    var out_buf: [150]u8 = undefined;
+    var len: usize = 0;
+    var p_idx: ?usize = null;
+    for (raw, 0..) |c, i| {
+        if (c == 'p' or c == 'P') {
+            p_idx = i;
+            break;
         }
-        if (c == 'E' or c == 'f' or c == 'g' or c == 'G') return StringFmt{ .format = strfrmt[start..pos.*], .length = 1 };
     }
-    return lauxlib.luaL_error(L, "malformed format string");
+    
+    if (p_idx) |pi| {
+        @memcpy(out_buf[0..pi], raw[0..pi]);
+        len = pi;
+        out_buf[len] = if (spec == 'A') 'P' else 'p';
+        len += 1;
+        const exp_str = raw[pi+1..];
+        if (exp_str.len > 0 and exp_str[0] != '+' and exp_str[0] != '-') {
+            out_buf[len] = '+';
+            len += 1;
+        }
+        @memcpy(out_buf[len..][0..exp_str.len], exp_str);
+        len += exp_str.len;
+    } else {
+        @memcpy(out_buf[0..raw.len], raw);
+        len = raw.len;
+    }
+    
+    if (spec == 'A') {
+        if (len >= 2 and out_buf[0] == '0' and out_buf[1] == 'x') {
+            out_buf[1] = 'X';
+        }
+        const hex_end = p_idx orelse len;
+        for (out_buf[2..hex_end]) |*c| {
+            c.* = std.ascii.toUpper(c.*);
+        }
+    }
+    
+    if (len > buf.len) return error.NoSpaceLeft;
+    @memcpy(buf[0..len], out_buf[0..len]);
+    return buf[0..len];
 }
 
-fn addlenmod(s: []const u8, mod: []const u8) ![]const u8 {
-    if (std.mem.indexOf(u8, s, "l")) |pos| {
-        const result = try std.fmt.allocPrint(std.heap.page_allocator, "{s}{s}{s}", .{ s[0..pos], mod, s[pos + 1 ..] });
-        return result;
+fn formatFloat(buf: []u8, val: f64, spec: u8, flags: u8, precision: ?usize) ![]const u8 {
+    var prefix: []const u8 = "";
+    const is_neg = std.math.signbit(val);
+    if (is_neg) {
+        prefix = "-";
+    } else {
+        if ((flags & 2) != 0) { // '+'
+            prefix = "+";
+        } else if ((flags & 4) != 0) { // ' '
+            prefix = " ";
+        }
     }
-    return s;
+    const abs_val = @abs(val);
+    var val_buf: [150]u8 = undefined;
+    var raw: []const u8 = "";
+    const prec = precision orelse 6;
+    switch (spec) {
+        'f' => {
+            raw = try formatFloatF(&val_buf, abs_val, prec);
+        },
+        'e', 'E' => {
+            raw = try formatFloatE(&val_buf, abs_val, spec, prec);
+        },
+        'g', 'G' => {
+            const strip_zeros = (flags & 8) == 0;
+            raw = try formatFloatG(&val_buf, abs_val, spec, prec, strip_zeros);
+        },
+        'a', 'A' => {
+            raw = try formatFloatA(&val_buf, abs_val, spec, precision);
+        },
+        else => unreachable,
+    }
+    const total_len = prefix.len + raw.len;
+    if (total_len > buf.len) return error.NoSpaceLeft;
+    @memcpy(buf[0..prefix.len], prefix);
+    @memcpy(buf[prefix.len..][0..raw.len], raw);
+    return buf[0..total_len];
 }
 
-fn num2straux(buf: []u8, n: f64, is_upper: bool) []const u8 {
-    if (std.math.isInf(n)) {
-        if (is_upper) {
-            _ = std.mem.replaceScalar(u8, buf[0..3], ' ', 'I');
-            return "INF";
+fn formatInteger(buf: []u8, val: i64, spec: u8, flags: u8, precision: ?usize) ![]const u8 {
+    var prefix: []const u8 = "";
+    var abs_val: u64 = undefined;
+    if (spec == 'd' or spec == 'i') {
+        if (val < 0) {
+            prefix = "-";
+            abs_val = @as(u64, @bitCast(-%val));
         } else {
-            return "inf";
+            if ((flags & 2) != 0) { // '+'
+                prefix = "+";
+            } else if ((flags & 4) != 0) { // ' '
+                prefix = " ";
+            }
+            abs_val = @as(u64, @intCast(val));
+        }
+    } else {
+        abs_val = @as(u64, @bitCast(val));
+        if ((flags & 8) != 0 and abs_val != 0) { // '#'
+            if (spec == 'x') {
+                prefix = "0x";
+            } else if (spec == 'X') {
+                prefix = "0X";
+            } else if (spec == 'o') {
+                prefix = "0";
+            }
         }
     }
-    if (std.math.isNan(n)) {
-        if (is_upper) {
-            _ = std.mem.replaceScalar(u8, buf[0..3], ' ', 'N');
-            return "NAN";
-        } else {
-            return "nan";
+    var digits_buf: [100]u8 = undefined;
+    var digits: []const u8 = "";
+    if (abs_val == 0 and precision == 0) {
+        digits = "";
+    } else {
+        const base: u8 = switch (spec) {
+            'o' => 8,
+            'x', 'X' => 16,
+            else => 10,
+        };
+        const case: std.fmt.Case = if (spec == 'X') .upper else .lower;
+        const len = std.fmt.printInt(&digits_buf, abs_val, base, case, .{});
+        digits = digits_buf[0..len];
+    }
+    var prec_digits_buf: [150]u8 = undefined;
+    var prec_digits = digits;
+    if (precision) |p| {
+        if (digits.len < p) {
+            const pad_len = p - digits.len;
+            @memset(prec_digits_buf[0..pad_len], '0');
+            @memcpy(prec_digits_buf[pad_len..][0..digits.len], digits);
+            prec_digits = prec_digits_buf[0..p];
         }
     }
-    return "";
+    const total_len = prefix.len + prec_digits.len;
+    if (total_len > buf.len) return error.NoSpaceLeft;
+    @memcpy(buf[0..prefix.len], prefix);
+    @memcpy(buf[prefix.len..][0..prec_digits.len], prec_digits);
+    return buf[0..total_len];
 }
 
-fn lua_number2strx(_: *lua.lua_State, _: []const u8, v: f64) ![]const u8 {
-    if (std.math.isInf(v) or std.math.isNan(v)) {
-        var buf: [20]u8 = undefined;
-        const s = num2straux(&buf, v, true);
-        if (s.len > 0) return s;
+fn getPrefixLen(s: []const u8) usize {
+    if (s.len >= 3) {
+        const p3 = s[0..3];
+        if (std.mem.eql(u8, p3, "-0x") or std.mem.eql(u8, p3, "-0X") or
+            std.mem.eql(u8, p3, "+0x") or std.mem.eql(u8, p3, "+0X") or
+            std.mem.eql(u8, p3, " 0x") or std.mem.eql(u8, p3, " 0X")) {
+            return 3;
+        }
     }
-    var buf: [100]u8 = undefined;
-    const s = try std.fmt.bufPrint(&buf, "{d}", .{v});
-    return s;
+    if (s.len >= 2) {
+        const p2 = s[0..2];
+        if (std.mem.eql(u8, p2, "0x") or std.mem.eql(u8, p2, "0X")) {
+            return 2;
+        }
+    }
+    if (s.len >= 1) {
+        const c = s[0];
+        if (c == '-' or c == '+' or c == ' ') {
+            return 1;
+        }
+    }
+    return 0;
+}
+
+fn padAndAlign(L: *lua.lua_State, b: *lauxlib.luaL_Buffer, content: []const u8, flags: u8, width: ?usize, is_int: bool, has_precision: bool) !void {
+    if (width) |w| {
+        if (content.len < w) {
+            const pad_len = w - content.len;
+            const use_zero_pad = ((flags & 16) != 0) and ((flags & 1) == 0) and (!is_int or !has_precision);
+            if (use_zero_pad) {
+                const pl = getPrefixLen(content);
+                try lauxlib.luaL_addlstring(L, b, content[0..pl]);
+                var i: usize = 0;
+                while (i < pad_len) : (i += 1) try lauxlib.luaL_addchar(L, b, '0');
+                try lauxlib.luaL_addlstring(L, b, content[pl..]);
+            } else {
+                if ((flags & 1) != 0) { // left aligned
+                    try lauxlib.luaL_addlstring(L, b, content);
+                    var i: usize = 0;
+                    while (i < pad_len) : (i += 1) try lauxlib.luaL_addchar(L, b, ' ');
+                } else { // right aligned
+                    var i: usize = 0;
+                    while (i < pad_len) : (i += 1) try lauxlib.luaL_addchar(L, b, ' ');
+                    try lauxlib.luaL_addlstring(L, b, content);
+                }
+            }
+            return;
+        }
+    }
+    try lauxlib.luaL_addlstring(L, b, content);
 }
 
 fn str_format(L: *lua.lua_State) anyerror!i32 {
@@ -1135,9 +1407,9 @@ fn str_format(L: *lua.lua_State) anyerror!i32 {
     var b = lauxlib.luaL_Buffer{};
     lauxlib.luaL_buffinit(L, &b);
     var argn: i32 = 2;
-    var nformats: i32 = 0;
+    const top = lua.lua_gettop(L);
+    
     while (pos < len) {
-        // Copy literal text before '%' or '\x00'
         const start = pos;
         while (pos < len and strfrmt[pos] != '\x00' and strfrmt[pos] != '%') {
             pos += 1;
@@ -1151,22 +1423,17 @@ fn str_format(L: *lua.lua_State) anyerror!i32 {
             pos += 1;
             continue;
         }
-        // c == '%'
         pos += 1;
         if (pos >= len) return lauxlib.luaL_error(L, "malformed format string");
 
-        // Skip % itself
         if (strfrmt[pos] == '%') {
             try lauxlib.luaL_addchar(L, &b, '%');
             pos += 1;
             continue;
         }
 
-        nformats += 1;
-        if (argn > lua.lua_gettop(L)) return lauxlib.luaL_error(L, "no value for format");
-        try lauxlib.luaL_checkstack(L, 1, "too many formats");
+        if (argn > top) return lauxlib.luaL_error(L, "no value for format");
 
-        // Parse flags
         var flags: u8 = 0;
         while (pos < len) {
             const fc = strfrmt[pos];
@@ -1181,27 +1448,17 @@ fn str_format(L: *lua.lua_State) anyerror!i32 {
             pos += 1;
         }
 
-        // Parse width
         var width: i64 = -1;
-        if (pos < len and strfrmt[pos] == '*') {
-            width = try lauxlib.luaL_checkinteger(L, argn);
-            argn += 1;
-            pos += 1;
-        } else if (pos < len and std.ascii.isDigit(strfrmt[pos])) {
+        if (pos < len and std.ascii.isDigit(strfrmt[pos])) {
             const res = get2digits(strfrmt, pos);
             width = @intCast(res.val);
             pos = res.new_pos;
         }
 
-        // Parse precision
         var precision: i64 = -1;
         if (pos < len and strfrmt[pos] == '.') {
             pos += 1;
-            if (pos < len and strfrmt[pos] == '*') {
-                precision = try lauxlib.luaL_checkinteger(L, argn);
-                argn += 1;
-                pos += 1;
-            } else if (pos < len and std.ascii.isDigit(strfrmt[pos])) {
+            if (pos < len and std.ascii.isDigit(strfrmt[pos])) {
                 const res = get2digits(strfrmt, pos);
                 precision = @intCast(res.val);
                 pos = res.new_pos;
@@ -1210,331 +1467,94 @@ fn str_format(L: *lua.lua_State) anyerror!i32 {
             }
         }
 
-        // Skip length modifier (we ignore it except 'I64' and 'l' vs 'L')
-        var long: bool = false;
-        var long64: bool = false;
-        if (pos < len) {
-            const cc = strfrmt[pos];
-            if (cc == 'l') {
-                long = true;
-                pos += 1;
-            } else if (cc == 'L') {
-                long64 = true;
-                pos += 1;
-            } else if (cc == 'I') {
-                pos += 1;
-                if (pos < len and strfrmt[pos] == '6') {
-                    pos += 1;
-                    if (pos < len and strfrmt[pos] == '4') {
-                        long64 = true;
-                        pos += 1;
-                    }
-                }
-            }
-        }
-
         if (pos >= len) return lauxlib.luaL_error(L, "malformed format string");
 
         const spec = strfrmt[pos];
         pos += 1;
 
-        // Handle floating point cases that need precision
-        var need_precision = false;
         switch (spec) {
-            'f', 'e', 'E', 'g', 'G', 'a', 'A' => need_precision = true,
-            else => {},
-        }
-
-        // Build format spec string for Zig
-        var fmt_buf: [50]u8 = undefined;
-        var fmt_idx: usize = 0;
-
-        if (need_precision) {
-            fmt_buf[fmt_idx] = '{';
-            fmt_idx += 1;
-            if (width >= 0) {
-                fmt_buf[fmt_idx] = ':';
-                fmt_idx += 1;
-                if (width >= 0) {
-                    if ((flags & 1) != 0) { // '-'
-                        fmt_buf[fmt_idx] = '<';
-                        fmt_idx += 1;
-                    }
-                    if ((flags & 16) != 0) { // '0'
-                        fmt_buf[fmt_idx] = '0';
-                        fmt_idx += 1;
-                    }
-                    const width_val = @as(usize, @intCast(width));
-                    const ws = try std.fmt.bufPrint(fmt_buf[fmt_idx..], "{d}", .{width_val});
-                    fmt_idx += ws.len;
-                }
-                if (precision >= 0) {
-                    fmt_buf[fmt_idx] = '.';
-                    fmt_idx += 1;
-                    const prec_val = @as(usize, @intCast(precision));
-                    const ws2 = try std.fmt.bufPrint(fmt_buf[fmt_idx..], "{d}", .{prec_val});
-                    fmt_idx += ws2.len;
-                }
-                switch (spec) {
-                    'f' => { fmt_buf[fmt_idx] = '}'; fmt_idx += 1; },
-                    else => { fmt_buf[fmt_idx] = '}'; fmt_idx += 1; },
-                }
-            } else if (precision >= 0) {
-                fmt_buf[fmt_idx] = ':';
-                fmt_idx += 1;
-                if ((flags & 1) != 0) {
-                    fmt_buf[fmt_idx] = '<';
-                    fmt_idx += 1;
-                }
-                if ((flags & 16) != 0) {
-                    fmt_buf[fmt_idx] = '0';
-                    fmt_idx += 1;
-                }
-                if (precision >= 0) {
-                    fmt_buf[fmt_idx] = '.';
-                    fmt_idx += 1;
-                    const prec_val = @as(usize, @intCast(precision));
-                    const ws2 = try std.fmt.bufPrint(fmt_buf[fmt_idx..], "{d}", .{prec_val});
-                    fmt_idx += ws2.len;
-                }
-                switch (spec) {
-                    'f' => { fmt_buf[fmt_idx] = '}'; fmt_idx += 1; },
-                    else => { fmt_buf[fmt_idx] = '}'; fmt_idx += 1; },
-                }
-            } else {
-                fmt_buf[fmt_idx] = '}';
-                fmt_idx += 1;
-            }
-            const float_fmt = fmt_buf[0..fmt_idx];
-            _ = float_fmt;
-        }
-
-        switch (spec) {
-            's' => {
-                var sl: usize = 0;
-                const s = try lauxlib.luaL_checklstring(L, argn, &sl);
-                argn += 1;
-                if (precision >= 0) {
-                    const pl = @as(usize, @intCast(precision));
-                    const sl_actual = if (pl < sl) pl else sl;
-                    if (width > 0) {
-                        const w = @as(usize, @intCast(width));
-                        if ((flags & 1) != 0) { // left-justify
-                            try lauxlib.luaL_addlstring(L, &b, s[0..sl_actual]);
-                            var sp: usize = 0;
-                            while (sp < w -| sl_actual) : (sp += 1) try lauxlib.luaL_addchar(L, &b, ' ');
-                        } else {
-                            var sp: usize = 0;
-                            while (sp < w -| sl_actual) : (sp += 1) try lauxlib.luaL_addchar(L, &b, ' ');
-                            try lauxlib.luaL_addlstring(L, &b, s[0..sl_actual]);
-                        }
-                    } else {
-                        try lauxlib.luaL_addlstring(L, &b, s[0..sl_actual]);
-                    }
-                } else {
-                    if (width > 0) {
-                        const w = @as(usize, @intCast(width));
-                        if ((flags & 1) != 0) {
-                            try lauxlib.luaL_addlstring(L, &b, s[0..sl]);
-                            var sp: usize = 0;
-                            while (sp < w -| sl) : (sp += 1) try lauxlib.luaL_addchar(L, &b, ' ');
-                        } else {
-                            var sp: usize = 0;
-                            while (sp < w -| sl) : (sp += 1) try lauxlib.luaL_addchar(L, &b, ' ');
-                            try lauxlib.luaL_addlstring(L, &b, s[0..sl]);
-                        }
-                    } else {
-                        try lauxlib.luaL_addlstring(L, &b, s[0..sl]);
-                    }
-                }
-            },
             'c' => {
                 const c_val = try lauxlib.luaL_checkinteger(L, argn);
                 argn += 1;
-                const cv = @as(u8, @intCast(@as(u32, @intCast(c_val))));
-                try lauxlib.luaL_addchar(L, &b, cv);
+                if (c_val < 0 or c_val > 255) {
+                    return lauxlib.luaL_argerror(L, argn - 1, "value out of range");
+                }
+                const cv = @as(u8, @intCast(c_val));
+                const char_slice = &[1]u8{cv};
+                const w = if (width >= 0) @as(usize, @intCast(width)) else null;
+                try padAndAlign(L, &b, char_slice, flags, w, false, false);
             },
             'd', 'i' => {
                 const n = try lauxlib.luaL_checkinteger(L, argn);
                 argn += 1;
-                var ibuf: [100]u8 = undefined;
-                var ifmt: [20]u8 = undefined;
-                var ifmt_idx: usize = 0;
-                ifmt[ifmt_idx] = '{'; ifmt_idx += 1;
-                if (width >= 0 or (flags & 2) != 0 or (flags & 4) != 0) {
-                    ifmt[ifmt_idx] = ':'; ifmt_idx += 1;
-                    if ((flags & 1) != 0) { ifmt[ifmt_idx] = '<'; ifmt_idx += 1; }
-                    if ((flags & 2) != 0) { ifmt[ifmt_idx] = '+'; ifmt_idx += 1; }
-                    if ((flags & 4) != 0) { ifmt[ifmt_idx] = ' '; ifmt_idx += 1; }
-                    if ((flags & 16) != 0) { ifmt[ifmt_idx] = '0'; ifmt_idx += 1; }
-                    if (width >= 0) {
-                        const ws = try std.fmt.bufPrint(ifmt[ifmt_idx..], "{d}", .{width});
-                        ifmt_idx += ws.len;
-                    }
-                }
-                ifmt[ifmt_idx] = '}'; ifmt_idx += 1;
-                const s = try std.fmt.bufPrint(&ibuf, "{d}", .{n});
-                try lauxlib.luaL_addlstring(L, &b, s);
+                var ibuf: [150]u8 = undefined;
+                const prec_val = if (precision >= 0) @as(usize, @intCast(precision)) else null;
+                const s_slice = try formatInteger(&ibuf, n, spec, flags, prec_val);
+                const w = if (width >= 0) @as(usize, @intCast(width)) else null;
+                try padAndAlign(L, &b, s_slice, flags, w, true, precision >= 0);
             },
             'o', 'u', 'x', 'X' => {
                 const n = try lauxlib.luaL_checkinteger(L, argn);
                 argn += 1;
-                var ibuf: [100]u8 = undefined;
-                const unsigned_n = @as(u64, @bitCast(n));
-                var ifmt: [20]u8 = undefined;
-                var ifmt_idx: usize = 0;
-                ifmt[ifmt_idx] = '{'; ifmt_idx += 1;
-                ifmt[ifmt_idx] = ':'; ifmt_idx += 1;
-                if ((flags & 1) != 0) { ifmt[ifmt_idx] = '<'; ifmt_idx += 1; }
-                if ((flags & 16) != 0) { ifmt[ifmt_idx] = '0'; ifmt_idx += 1; }
-                if ((flags & 8) != 0 and spec == 'x') { ifmt[ifmt_idx] = '#'; ifmt_idx += 1; }
-                if (width >= 0) {
-                    const ws = try std.fmt.bufPrint(ifmt[ifmt_idx..], "{d}", .{width});
-                    ifmt_idx += ws.len;
-                }
-                switch (spec) {
-                    'o' => { ifmt[ifmt_idx] = 'o'; ifmt_idx += 1; },
-                    'u' => { ifmt[ifmt_idx] = 'd'; ifmt_idx += 1; },
-                    'x' => { ifmt[ifmt_idx] = 'x'; ifmt_idx += 1; },
-                    'X' => { ifmt[ifmt_idx] = 'X'; ifmt_idx += 1; },
-                    else => unreachable,
-                }
-                ifmt[ifmt_idx] = '}'; ifmt_idx += 1;
-                const s = try std.fmt.bufPrint(&ibuf, "{}", .{unsigned_n});
-                try lauxlib.luaL_addlstring(L, &b, s);
+                var ibuf: [150]u8 = undefined;
+                const prec_val = if (precision >= 0) @as(usize, @intCast(precision)) else null;
+                const s_slice = try formatInteger(&ibuf, n, spec, flags, prec_val);
+                const w = if (width >= 0) @as(usize, @intCast(width)) else null;
+                try padAndAlign(L, &b, s_slice, flags, w, true, precision >= 0);
             },
-            'f' => {
+            'f', 'e', 'E', 'g', 'G', 'a', 'A' => {
                 const n = try lauxlib.luaL_checknumber(L, argn);
                 argn += 1;
-                var fbuf: [200]u8 = undefined;
-                if (precision < 0) precision = 6;
-                if (std.math.trunc(n) == n) {
-                    // integer that fits, use d format
-                    const int_val = @as(i64, @intFromFloat(n));
-                    var ifmt: [20]u8 = undefined;
-                    var ifmt_idx: usize = 0;
-                    ifmt[ifmt_idx] = '{'; ifmt_idx += 1;
-                    ifmt[ifmt_idx] = ':'; ifmt_idx += 1;
-                    if ((flags & 1) != 0) { ifmt[ifmt_idx] = '<'; ifmt_idx += 1; }
-                    if (width >= 0) {
-                        const ws = try std.fmt.bufPrint(ifmt[ifmt_idx..], "{d}", .{width});
-                        ifmt_idx += ws.len;
-                    }
-                    if (precision >= 0) {
-                        ifmt[ifmt_idx] = '.'; ifmt_idx += 1;
-                        const ps = try std.fmt.bufPrint(ifmt[ifmt_idx..], "{d}", .{precision});
-                        ifmt_idx += ps.len;
-                    }
-                    ifmt[ifmt_idx] = '}'; ifmt_idx += 1;
-                    const s = try std.fmt.bufPrint(&fbuf, "{d}", .{int_val});
-                    try lauxlib.luaL_addlstring(L, &b, s);
-                } else {
-                    const p = @as(usize, @intCast(precision));
-                    var ffmt: [20]u8 = undefined;
-                    var ffmt_idx: usize = 0;
-                    ffmt[ffmt_idx] = '{'; ffmt_idx += 1;
-                    ffmt[ffmt_idx] = ':'; ffmt_idx += 1;
-                    if ((flags & 1) != 0) { ffmt[ffmt_idx] = '<'; ffmt_idx += 1; }
-                    if ((flags & 16) != 0) { ffmt[ffmt_idx] = '0'; ffmt_idx += 1; }
-                    if ((flags & 2) != 0) { ffmt[ffmt_idx] = '+'; ffmt_idx += 1; }
-                    if ((flags & 4) != 0) { ffmt[ffmt_idx] = ' '; ffmt_idx += 1; }
-                    if (width >= 0) {
-                        const ws = try std.fmt.bufPrint(ffmt[ffmt_idx..], "{d}", .{width});
-                        ffmt_idx += ws.len;
-                    }
-                    ffmt[ffmt_idx] = '.'; ffmt_idx += 1;
-                    const ps = try std.fmt.bufPrint(ffmt[ffmt_idx..], "{d}", .{p});
-                    ffmt_idx += ps.len;
-                    ffmt[ffmt_idx] = '}'; ffmt_idx += 1;
-                    const s = try std.fmt.bufPrint(&fbuf, "{d}", .{n});
-                    try lauxlib.luaL_addlstring(L, &b, s);
-                }
-            },
-            'e', 'E', 'g', 'G' => {
-                const n = try lauxlib.luaL_checknumber(L, argn);
-                argn += 1;
-                if (precision < 0) precision = 6;
-                var fbuf: [200]u8 = undefined;
-                var ffmt: [20]u8 = undefined;
-                var ffmt_idx: usize = 0;
-                ffmt[ffmt_idx] = '{'; ffmt_idx += 1;
-                ffmt[ffmt_idx] = ':'; ffmt_idx += 1;
-                if ((flags & 1) != 0) { ffmt[ffmt_idx] = '<'; ffmt_idx += 1; }
-                if ((flags & 16) != 0) { ffmt[ffmt_idx] = '0'; ffmt_idx += 1; }
-                if ((flags & 2) != 0) { ffmt[ffmt_idx] = '+'; ffmt_idx += 1; }
-                if ((flags & 4) != 0) { ffmt[ffmt_idx] = ' '; ffmt_idx += 1; }
-                if (width >= 0) {
-                    const ws = try std.fmt.bufPrint(ffmt[ffmt_idx..], "{d}", .{width});
-                    ffmt_idx += ws.len;
-                }
-                ffmt[ffmt_idx] = '.'; ffmt_idx += 1;
-                const ps = try std.fmt.bufPrint(ffmt[ffmt_idx..], "{d}", .{precision});
-                ffmt_idx += ps.len;
-                switch (spec) {
-                    'e' => { ffmt[ffmt_idx] = 'e'; ffmt_idx += 1; },
-                    'E' => { ffmt[ffmt_idx] = 'E'; ffmt_idx += 1; },
-                    'g' => { ffmt[ffmt_idx] = 'e'; ffmt_idx += 1; },
-                    'G' => { ffmt[ffmt_idx] = 'E'; ffmt_idx += 1; },
-                    else => unreachable,
-                }
-                ffmt[ffmt_idx] = '}'; ffmt_idx += 1;
-                const s = try std.fmt.bufPrint(&fbuf, "{d}", .{n});
-                var result = s;
-                if (spec == 'g' or spec == 'G') {
-                    // Remove trailing zeros for %g/%G
-                    if (std.mem.indexOfScalar(u8, s, '.')) |dot| {
-                        var end = s.len;
-                        while (end > dot + 1 and s[end - 1] == '0') : (end -= 1) {}
-                        if (end == dot + 1 and s[dot + 1] == '0') end = dot;
-                        result = s[0..end];
-                    }
-                }
-                try lauxlib.luaL_addlstring(L, &b, result[0..result.len]);
-            },
-            'a', 'A' => {
-                var sl: usize = 0;
-                _ = try lauxlib.luaL_checklstring(L, argn, &sl);
-                const n = try lauxlib.luaL_checknumber(L, argn);
-                argn += 1;
-                var ifmt_offset: usize = 0;
-                var fbuf: [200]u8 = undefined;
-                if (spec == 'A') {
-                    fbuf[0] = '%'; fbuf[1] = 'A';
-                    ifmt_offset = 2;
-                } else {
-                    fbuf[0] = '%'; fbuf[1] = 'a';
-                    ifmt_offset = 2;
-                }
-                if (width >= 0) {
-                    const ws = try std.fmt.bufPrint(fbuf[ifmt_offset..], "{d}", .{width});
-                    ifmt_offset += ws.len;
-                }
-                if (precision >= 0) {
-                    fbuf[ifmt_offset] = '.';
-                    ifmt_offset += 1;
-                    const ps = try std.fmt.bufPrint(fbuf[ifmt_offset..], "{d}", .{precision});
-                    ifmt_offset += ps.len;
-                }
-                const s = try lua_number2strx(L, fbuf[0..ifmt_offset], n);
-                try lauxlib.luaL_addlstring(L, &b, s);
+                var fbuf: [250]u8 = undefined;
+                const prec_val = if (precision >= 0) @as(usize, @intCast(precision)) else null;
+                const s_slice = try formatFloat(&fbuf, n, spec, flags, prec_val);
+                const w = if (width >= 0) @as(usize, @intCast(width)) else null;
+                try padAndAlign(L, &b, s_slice, flags, w, false, false);
             },
             'p' => {
-                var sl: usize = 0;
-                _ = try lauxlib.luaL_checklstring(L, argn, &sl);
-                const p_val = try lauxlib.luaL_checkinteger(L, argn);
+                const p = lua.lua_topointer(L, argn);
                 argn += 1;
                 var ibuf: [100]u8 = undefined;
-                const s = try std.fmt.bufPrint(&ibuf, "{d}", .{p_val});
-                try lauxlib.luaL_addlstring(L, &b, s);
+                var s_slice: []const u8 = "";
+                if (p) |ptr| {
+                    s_slice = try std.fmt.bufPrint(&ibuf, "0x{x}", .{@intFromPtr(ptr)});
+                } else {
+                    s_slice = "(null)";
+                }
+                const w = if (width >= 0) @as(usize, @intCast(width)) else null;
+                try padAndAlign(L, &b, s_slice, flags, w, false, false);
             },
             'q' => {
+                if (flags != 0 or width >= 0 or precision >= 0) {
+                    return lauxlib.luaL_error(L, "specifier '%q' cannot have modifiers");
+                }
                 try addliteral(L, &b, argn);
                 argn += 1;
             },
+            's' => {
+                var sl: usize = 0;
+                const s = lauxlib.luaL_tolstring(L, argn, &sl) orelse "";
+                argn += 1;
+                if (flags == 0 and width == -1 and precision == -1) {
+                    try lauxlib.luaL_addvalue(L, &b);
+                } else {
+                    if (std.mem.indexOfScalar(u8, s, 0) != null) {
+                        return lauxlib.luaL_argerror(L, argn - 1, "string contains zeros");
+                    }
+                    var actual_s = s;
+                    if (precision >= 0) {
+                        const p = @as(usize, @intCast(precision));
+                        if (actual_s.len > p) {
+                            actual_s = actual_s[0..p];
+                        }
+                    }
+                    const w = if (width >= 0) @as(usize, @intCast(width)) else null;
+                    try padAndAlign(L, &b, actual_s, flags, w, false, false);
+                    lua.lua_pop(L, 1);
+                }
+            },
             else => {
-                // Unknown specifier, just add as literal
-                try lauxlib.luaL_addchar(L, &b, '%');
-                try lauxlib.luaL_addchar(L, &b, spec);
+                return lauxlib.luaL_error(L, "invalid conversion to 'format'");
             },
         }
     }
@@ -2109,8 +2129,10 @@ fn createmetatable(L: *lua.lua_State) !void {
     lua.lua_createtable(L, 0, 1);
     lua.lua_pushvalue(L, -2);
     try lua.lua_setfield(L, -2, "__index");
-    lua.lua_pushvalue(L, -1);
+    _ = lua.lua_pushlstring(L, "", 0);
+    lua.lua_pushvalue(L, -2);
     _ = lua.lua_setmetatable(L, -2);
+    lua.lua_pop(L, 2);
 }
 
 pub fn openstringlib(L: *lua.lua_State) anyerror!i32 {

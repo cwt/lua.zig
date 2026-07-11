@@ -75,7 +75,7 @@ exposed as constants).
 
 Functions: `byte`, `char`, `dump`, `find`, `format`, `gmatch`, `gsub`, `len`, `lower`, `match`, `pack`, `packsize`, `rep`, `reverse`, `sub`, `unpack`, `upper`
 
-Pattern matching is the most complex part. `string.dump` depends on `lua_dump` (loader).
+Current `src/lib/stringlib.zig` status: **fully implemented** — all 17 functions, including string interning memory fixes, pattern matching try-propagation (longjmp-free), and a complete pure-Zig C-compatible formatting engine. Verified by 40 passing tests.
 
 ### tablelib (`lua/ltablib.c`)
 

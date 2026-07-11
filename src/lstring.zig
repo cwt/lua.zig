@@ -34,7 +34,8 @@ pub fn luaS_new(
     if (gop.found_existing) {
         return gop.value_ptr.*;
     }
-    const key = gop.key_ptr.*;
+    const key = try allocator.dupe(u8, s);
+    gop.key_ptr.* = key;
     const ts = try allocator.create(lua.lua_TString);
     ts.* = .{
         .s = key,

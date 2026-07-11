@@ -1577,3 +1577,104 @@ test "bit32: bitwise library" {
     const status = lua.lua_pcallk(&L, 0, 0, 0, 0, null);
     try std.testing.expectEqual(lua.LUA_OK, status);
 }
+
+test "string library: comprehensive verification" {
+    const gpa = std.testing.allocator;
+    var L: lua.lua_State = undefined;
+    try lua.luaL_newstate(&L, gpa);
+    defer lua.lua_close(&L);
+    try lua.luaL_openlibs(&L);
+
+    const testfn = struct {
+        fn check_format(Ls: *lua.lua_State, fmt: []const u8, val_push_fn: anytype, expected: []const u8) !void {
+            _ = lua.lua_getglobal(Ls, "string");
+            _ = try lua.lua_getfield(Ls, -1, "format");
+            _ = lua.lua_pushstring(Ls, fmt);
+            val_push_fn(Ls);
+            try lua.lua_call(Ls, 2, 1);
+            const got = lua.lua_tostring(Ls, -1) orelse return error.NoResult;
+            try std.testing.expectEqualStrings(expected, got);
+            lua.lua_pop(Ls, 2); // pop result and string table
+        }
+        
+        fn f(Ls: *lua.lua_State) anyerror!i32 {
+            // Integer formatting
+            try check_format(Ls, "%d", struct { fn g(l: *lua.lua_State) void { lua.lua_pushinteger(l, 42); } }.g, "42");
+            try check_format(Ls, "%5d", struct { fn g(l: *lua.lua_State) void { lua.lua_pushinteger(l, 42); } }.g, "   42");
+            try check_format(Ls, "%-5d", struct { fn g(l: *lua.lua_State) void { lua.lua_pushinteger(l, 42); } }.g, "42   ");
+            try check_format(Ls, "%05d", struct { fn g(l: *lua.lua_State) void { lua.lua_pushinteger(l, 42); } }.g, "00042");
+            try check_format(Ls, "%+d", struct { fn g(l: *lua.lua_State) void { lua.lua_pushinteger(l, 42); } }.g, "+42");
+            try check_format(Ls, "% d", struct { fn g(l: *lua.lua_State) void { lua.lua_pushinteger(l, 42); } }.g, " 42");
+            try check_format(Ls, "%+05d", struct { fn g(l: *lua.lua_State) void { lua.lua_pushinteger(l, 42); } }.g, "+0042");
+            try check_format(Ls, "%.5d", struct { fn g(l: *lua.lua_State) void { lua.lua_pushinteger(l, 42); } }.g, "00042");
+            
+            // Hex/Octal/Unsigned
+            try check_format(Ls, "%x", struct { fn g(l: *lua.lua_State) void { lua.lua_pushinteger(l, 255); } }.g, "ff");
+            try check_format(Ls, "%X", struct { fn g(l: *lua.lua_State) void { lua.lua_pushinteger(l, 255); } }.g, "FF");
+            try check_format(Ls, "%o", struct { fn g(l: *lua.lua_State) void { lua.lua_pushinteger(l, 8); } }.g, "10");
+            try check_format(Ls, "%u", struct { fn g(l: *lua.lua_State) void { lua.lua_pushinteger(l, -1); } }.g, "18446744073709551615");
+            try check_format(Ls, "%#x", struct { fn g(l: *lua.lua_State) void { lua.lua_pushinteger(l, 255); } }.g, "0xff");
+            try check_format(Ls, "%#o", struct { fn g(l: *lua.lua_State) void { lua.lua_pushinteger(l, 8); } }.g, "010");
+
+            // Float formatting
+            try check_format(Ls, "%f", struct { fn g(l: *lua.lua_State) void { lua.lua_pushnumber(l, 3.14); } }.g, "3.140000");
+            try check_format(Ls, "%.2f", struct { fn g(l: *lua.lua_State) void { lua.lua_pushnumber(l, 3.14159); } }.g, "3.14");
+            try check_format(Ls, "%e", struct { fn g(l: *lua.lua_State) void { lua.lua_pushnumber(l, 1000); } }.g, "1.000000e+03");
+            try check_format(Ls, "%.1e", struct { fn g(l: *lua.lua_State) void { lua.lua_pushnumber(l, 1000); } }.g, "1.0e+03");
+            try check_format(Ls, "%g", struct { fn g(l: *lua.lua_State) void { lua.lua_pushnumber(l, 123.456); } }.g, "123.456");
+            try check_format(Ls, "%a", struct { fn g(l: *lua.lua_State) void { lua.lua_pushnumber(l, 1.5); } }.g, "0x1.8p+0");
+
+            // String formatting
+            try check_format(Ls, "%s", struct { fn g(l: *lua.lua_State) void { _ = lua.lua_pushstring(l, "hello"); } }.g, "hello");
+            try check_format(Ls, "%10s", struct { fn g(l: *lua.lua_State) void { _ = lua.lua_pushstring(l, "hello"); } }.g, "     hello");
+            try check_format(Ls, "%-10s", struct { fn g(l: *lua.lua_State) void { _ = lua.lua_pushstring(l, "hello"); } }.g, "hello     ");
+            try check_format(Ls, "%.3s", struct { fn g(l: *lua.lua_State) void { _ = lua.lua_pushstring(l, "hello"); } }.g, "hel");
+
+            // Quoted and pointers
+            try check_format(Ls, "%q", struct { fn g(l: *lua.lua_State) void { _ = lua.lua_pushstring(l, "a\nb\"c"); } }.g, "\"a\\\nb\\\"c\"");
+            try check_format(Ls, "%p", struct { fn g(l: *lua.lua_State) void { lua.lua_pushnil(l); } }.g, "(null)");
+
+            // Pattern Matching and Gsub
+            {
+                // find
+                _ = lua.lua_getglobal(Ls, "string");
+                _ = try lua.lua_getfield(Ls, -1, "find");
+                _ = lua.lua_pushstring(Ls, "hello world");
+                _ = lua.lua_pushstring(Ls, "l+o");
+                try lua.lua_call(Ls, 2, 2);
+                const start = lua.lua_tointeger(Ls, -2) orelse 0;
+                const end = lua.lua_tointeger(Ls, -1) orelse 0;
+                try std.testing.expectEqual(@as(i64, 3), start);
+                try std.testing.expectEqual(@as(i64, 5), end);
+                lua.lua_pop(Ls, 3); // result-1, result-2, string table
+            }
+            {
+                // gsub
+                _ = lua.lua_getglobal(Ls, "string");
+                _ = try lua.lua_getfield(Ls, -1, "gsub");
+                _ = lua.lua_pushstring(Ls, "banana");
+                _ = lua.lua_pushstring(Ls, "a");
+                _ = lua.lua_pushstring(Ls, "o");
+                try lua.lua_call(Ls, 3, 2);
+                const got = lua.lua_tostring(Ls, -2) orelse "";
+                const count = lua.lua_tointeger(Ls, -1) orelse 0;
+                try std.testing.expectEqualStrings("bonono", got);
+                try std.testing.expectEqual(@as(i64, 3), count);
+                lua.lua_pop(Ls, 3); // results, count, string table
+            }
+            
+            return 0;
+        }
+    }.f;
+    lua.lua_pushcfunction(&L, testfn);
+    const status = lua.lua_pcallk(&L, 0, 0, 0, 0, null);
+    if (status != lua.LUA_OK) {
+        const err_msg = lua.lua_tostring(&L, -1) orelse "no error message";
+        std.debug.print("Lua error bytes:", .{});
+        for (err_msg) |byte| {
+            std.debug.print(" {x}", .{byte});
+        }
+        std.debug.print("\n", .{});
+    }
+    try std.testing.expectEqual(lua.LUA_OK, status);
+}

@@ -598,3 +598,27 @@ Implemented the binary bytecode loader (`lundump.zig`), allowing precompiled Lua
 - Same f64-only number model caveat as other libraries: byte positions/codepoints
   are pushed as `f64` integers; `lua_tointeger` round-trips them exactly for the
   UTF-8 range (codepoints ≤ 0x10FFFF, positions ≤ string length).
+
+## 2026-07-12 — Phase F: String Standard Library (string) port
+
+### Changes
+- **`src/lib/stringlib.zig`** (rewritten): Ported all remaining string library functions from `lua/lstrlib.c` (`byte`, `char`, `dump`, `find`, `format`, `gmatch`, `gsub`, `len`, `lower`, `match`, `pack`, `packsize`, `rep`, `reverse`, `sub`, `unpack`, `upper`).
+  - Added a complete, C-compatible, pure-Zig formatting engine in `str_format` supporting all modifiers (flags `+`, `-`, ` `, `#`, `0`, width, precision) for integer (`%d`, `%i`, `%o`, `%u`, `%x`, `%X`), floating-point (`%f`, `%e`, `%E`, `%g`, `%G`, `%a`, `%A`), character (`%c`), literal (`%q`), pointer (`%p`), and string (`%s`) conversions.
+  - Refactored the pattern matcher (`match`, `classend`, `matchbalance`, `start_capture`, `end_capture`, `capture_to_close`, `match_capture`) to return error unions and propagate errors cleanly instead of using `catch unreachable` panics.
+  - Safeguarded pattern modifier checks in `match` to avoid out-of-bounds panics when matching patterns that end with non-modifier characters.
+  - Ensured C-compatible string representation for `%q` with correct escaping of control characters and newlines.
+  - Fixed `%p` to support any value (via `lua_topointer`) and format as hexadecimal/`(null)`.
+  - Added overflow and slice size limits check for `str_rep` and `str_byte`.
+- **`src/lstring.zig`**: Duplicated hash map key memory inside `luaS_new` using `allocator.dupe` to guarantee stable memory backing for all short/long interned strings, preventing use-after-free bugs on temporary string buffers.
+- **`src/lua.zig`**: Freed duplicated string key memory using `allocator.free` inside GC sweeps and `lua_close` cleanup. Fixed `createmetatable` in `stringlib` to copy and set the metatable of a dummy string, properly registering string metatables globally.
+- **`src/lualib.zig`**: Registered `"string"` globally using `lua_setglobal` inside `openstringlib`.
+- **`tests/test_basic.zig`**: Added `string library: comprehensive verification` covering all format specifiers, pattern matching, substitution, escaping, null pointers, and boundary limits.
+
+### §0.1 Self-Audit
+- Allocator threaded: `allocator.dupe` used in `luaS_new` for map key storage, and all allocations/frees correctly threaded down.
+- Errors propagated: Pattern matching uses Zig `anyerror` unions and `try` to bubble up malformed pattern errors instead of panicking.
+- Numeric conversions: Used `@intCast`/`@floatCast` for arithmetic conversion.
+- Boundary conditions: Shift counts and indexing in pattern matching are bounds-checked to avoid out-of-bound panics.
+
+### Verification
+`zig build` and `zig build test` both pass cleanly: **40/40 tests**, zero memory leaks.

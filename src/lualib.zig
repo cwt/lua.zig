@@ -49,6 +49,7 @@ pub fn opentablib(L: *lua.lua_State) !void {
 
 pub fn openstringlib(L: *lua.lua_State) !void {
     _ = try stringlib.openstringlib(L);
+    lua.lua_setglobal(L, "string");
 }
 
 // ===================================================================

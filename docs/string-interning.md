@@ -80,9 +80,10 @@ pub const global_State = struct {
 `strt` owns the key bytes; `lua_TString.s` points into that owned storage, so there is
 a single copy of each distinct string. Implemented in `src/lstring.zig`:
 `luaS_new` (intern / reuse), `luaS_hash` (FNV-1a with the state seed), `luaS_eqstr`.
+To prevent use-after-free bugs on temporary strings (e.g. from string buffers or VM execution), the key bytes are duplicated via `allocator.dupe` when inserted into `strt`, and are freed via `allocator.free` during GC sweeps or when `lua_close` is called.
 
 `global_State` is created in `luaL_newstate` and freed in `lua_close` (which also
-destroys every interned `lua_TString` and the `strt` map). `lua_pushlstring` /
+destroys every interned `lua_TString`, frees all duplicated key bytes, and deinits the `strt` map). `lua_pushlstring` /
 `lua_pushstring` now intern via `luaS_new`.
 
 ### Hash Computation

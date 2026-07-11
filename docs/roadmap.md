@@ -115,7 +115,7 @@ Implement library bodies in `src/lib/*.zig`:
 
 - baselib: `print`, `assert`, `type`, `pairs`, `ipairs`, `tostring`, `tonumber`, etc. — **DONE**
 - mathlib: `math.sin`, `math.cos`, `math.sqrt`, `math.random`, etc. — **DONE** (2026-07-11)
-- stringlib: pattern matching, `string.find`, `string.gsub`, `string.match`, etc.
+- stringlib: pattern matching, `string.find`, `string.gsub`, `string.match`, etc. — **DONE** (2026-07-12)
 - tablelib: `table.insert`, `table.remove`, `table.sort`, `table.concat`, etc.
 - utf8lib: UTF-8 character/byte iteration — **DONE** (2026-07-12, ported from `lua/lutf8lib.c`)
 - oslib: `os.clock`, `os.date`, `os.time`, `os.execute` etc.
