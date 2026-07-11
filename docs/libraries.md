@@ -89,6 +89,11 @@ Functions: `charpattern`, `codes`, `codepoint`, `char`, `len`, `offset`
 
 Pure UTF-8 byte manipulation. Low external dependencies.
 
+Current `src/lib/utf8lib.zig` status: **fully implemented** — all 6 functions
+(`char`, `codepoint`, `len`, `offset`, `codes`) plus `utf8.charpattern`, ported
+from `lua/lutf8lib.c`. `codes`/`offset` semantics (iterator closures, 2-value
+byte positions) preserved; `len` returns `nil, pos` on invalid bytes.
+
 ### iolib (`lua/liolib.c`)
 
 Functions: `close`, `flush`, `input`, `lines`, `open`, `output`, `popen`, `read`, `tmpfile`, `type`, `write`

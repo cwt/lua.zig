@@ -551,3 +551,50 @@ Implemented the binary bytecode loader (`lundump.zig`), allowing precompiled Lua
   precision in `lua_tonumber` reads, but `lua_tointeger` round-trips them exactly
   (the 32-bit range fits in f64 exactly). Tests read results via
   `lua_tointeger`.
+
+## 2026-07-12 — Phase F: UTF-8 Standard Library (utf8) port
+
+### Changes
+- **`src/lib/utf8lib.zig`** (rewritten): Ported from `lua/lutf8lib.c`. Functions:
+  `char` (`char_`), `codepoint`, `len`, `offset`, `codes`, and the `openutf8lib`
+  registration that installs the `utf8` global table plus `utf8.charpattern`.
+  Helpers ported exactly: `utf8_decode` (with `strict` flag and the `limits[]`
+  table), `u_posrelat` (negative position = back from end), and `encode_utf8`
+  (RFC 3629 long-form encoder with the high-byte mask `0xFF << (8 - nb)`).
+  Constants kept faithful: `MAXUNICODE = 0x10FFFF`, `MAXUTF = 0x7FFFFFFF`,
+  `UTF8PATT = "[\x00-\x7F\xC2-\xFD][\x80-\xBF]*"`. `codes` closes over a
+  `lax` flag via two iterator closures (`iter_auxlax`/`iter_auxstrict`) selected
+  at registration time through a `*const fn` value. `codepoint` returns N values
+  across the `[i, j]` character range; `offset` returns the byte position of the
+  n-th character (optionally counting back from a given position), returning two
+  values (start, end) for a multi-byte character; `len` returns `nil, pos` on an
+  invalid byte.
+- **`src/lualib.zig`**: Wired `openutf8lib` to call `utf8lib.openutf8lib(L)`;
+  imported the module.
+- **`src/lauxlib.zig`**: `luaL_openselectedlibs` gained a `LUA_UTF8LIB` branch so
+  `luaL_openlibs` opens the `utf8` library by default.
+- **`tests/test_basic.zig`**: Added a `utf8: utf8 library` block covering `char`
+  (ASCII + 4-byte emoji), `codepoint` (single, range, multi-return), `len`
+  (ASCII, multibyte, invalid-sequence → nil), `offset` (ASCII and multibyte),
+  `codes` iterator (first call yields pos=1, codepoint=65), `charpattern` is a
+  string, and the `codepoint` error path on an invalid byte.
+
+### §0.1 Self-Audit
+- Allocator threaded: `char_` builds its output via `std.ArrayList(u8).empty` +
+  `appendSlice(L.allocator, ...)` with `defer list.deinit(L.allocator)`.
+- Errors propagated via `!i32`/`!void` + `try`; `lua_setfield`/`lua_getfield`
+  call sites use `try`; `luaL_argcheck`/`luaL_error` from `lauxlib` raise on
+  out-of-bounds / invalid field arguments.
+- Numeric conversions use `@intCast`; `iscont`/`iscont_at` use masking, no
+  `@bitCast` between f64 and integers.
+- Boundary-checked shifts: `encode_utf8` shifts `0xFF` as a fixed-width `u8`
+  (`@as(u8, 0xFF) << @as(u3, ...)`), and `u_posrelat` guards `abs > slen`,
+  satisfying §0.1 rule 11.
+
+### Verification
+`zig build` and `zig build test` both pass (all 39+ tests), zero memory leaks.
+
+### Known Limitations
+- Same f64-only number model caveat as other libraries: byte positions/codepoints
+  are pushed as `f64` integers; `lua_tointeger` round-trips them exactly for the
+  UTF-8 range (codepoints ≤ 0x10FFFF, positions ≤ string length).

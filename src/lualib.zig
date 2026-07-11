@@ -16,6 +16,7 @@ const lprefix = @import("lprefix.zig");
 const baselib = @import("lib/baselib.zig");
 const mathlib = @import("lib/mathlib.zig");
 const bit32 = @import("lib/bit32.zig");
+const utf8lib = @import("lib/utf8lib.zig");
 
 pub fn openbaselib(L: *lua.lua_State) !void {
     try baselib.openbaselib(L);
@@ -105,4 +106,12 @@ pub fn opendbalib(L: *lua.lua_State) !void {
 
 pub fn openbit32(L: *lua.lua_State) !void {
     try bit32.openbit32(L);
+}
+
+// ===================================================================
+// UTF-8 Library
+// ===================================================================
+
+pub fn openutf8lib(L: *lua.lua_State) !void {
+    try utf8lib.openutf8lib(L);
 }

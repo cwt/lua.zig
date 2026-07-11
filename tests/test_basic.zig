@@ -959,6 +959,149 @@ test "baselib: type() function" {
     try std.testing.expectEqual(lua.LUA_OK, status);
 }
 
+test "utf8: utf8 library" {
+    const gpa = std.testing.allocator;
+    var L: lua.lua_State = undefined;
+    try lua.luaL_newstate(&L, gpa);
+    defer lua.lua_close(&L);
+    try lua.luaL_openlibs(&L);
+
+    const T = struct {
+        fn g(Ls: *lua.lua_State, name: []const u8) !void {
+            _ = lua.lua_getglobal(Ls, "utf8");
+            _ = try lua.lua_getfield(Ls, -1, name);
+        }
+    };
+
+    // utf8.char(65) -> "A"
+    try T.g(&L, "char");
+    lua.lua_pushinteger(&L, 65);
+    try lua.lua_call(&L, 1, 1);
+    const a = lua.lua_tolstring(&L, -1, null) orelse return error.TestFailed;
+    try std.testing.expectEqualSlices(u8, "A", a);
+    lua.lua_pop(&L, 2);
+
+    // utf8.char(0x1F600) -> 4-byte sequence (emoji)
+    try T.g(&L, "char");
+    lua.lua_pushinteger(&L, 0x1F600);
+    try lua.lua_call(&L, 1, 1);
+    const emoji = lua.lua_tolstring(&L, -1, null) orelse return error.TestFailed;
+    try std.testing.expectEqual(@as(usize, 4), emoji.len);
+    try std.testing.expectEqual(@as(u8, 0xF0), emoji[0]);
+    lua.lua_pop(&L, 2);
+
+    // utf8.codepoint("é") -> 233 (U+00E9)
+    try T.g(&L, "codepoint");
+    _ = lua.lua_pushlstring(&L, "é", 2);
+    try lua.lua_call(&L, 1, 1);
+    const cp = lua.lua_tointeger(&L, -1) orelse return error.TestFailed;
+    try std.testing.expectEqual(@as(i64, 233), cp);
+    lua.lua_pop(&L, 2);
+
+    // utf8.codepoint("A", 1, 1) -> 65 (single value)
+    try T.g(&L, "codepoint");
+    _ = lua.lua_pushlstring(&L, "A", 1);
+    lua.lua_pushinteger(&L, 1);
+    lua.lua_pushinteger(&L, 1);
+    try lua.lua_call(&L, 3, 1);
+    const cp2 = lua.lua_tointeger(&L, -1) orelse return error.TestFailed;
+    try std.testing.expectEqual(@as(i64, 65), cp2);
+    lua.lua_pop(&L, 2);
+
+    // utf8.codepoint("AB", 1, 2) -> two values 65, 66
+    try T.g(&L, "codepoint");
+    _ = lua.lua_pushlstring(&L, "AB", 2);
+    lua.lua_pushinteger(&L, 1);
+    lua.lua_pushinteger(&L, 2);
+    try lua.lua_call(&L, 3, 2);
+    const v1 = lua.lua_tointeger(&L, -2) orelse return error.TestFailed;
+    const v2 = lua.lua_tointeger(&L, -1) orelse return error.TestFailed;
+    try std.testing.expectEqual(@as(i64, 65), v1);
+    try std.testing.expectEqual(@as(i64, 66), v2);
+    lua.lua_pop(&L, 2);
+
+    // utf8.len("Hello") -> 5
+    try T.g(&L, "len");
+    _ = lua.lua_pushlstring(&L, "Hello", 5);
+    try lua.lua_call(&L, 1, 1);
+    const hl = lua.lua_tointeger(&L, -1) orelse return error.TestFailed;
+    try std.testing.expectEqual(@as(i64, 5), hl);
+    lua.lua_pop(&L, 2);
+
+    // utf8.len("é") -> 1 (2 bytes, 1 char)
+    try T.g(&L, "len");
+    _ = lua.lua_pushlstring(&L, "é", 2);
+    try lua.lua_call(&L, 1, 1);
+    const e1 = lua.lua_tointeger(&L, -1) orelse return error.TestFailed;
+    try std.testing.expectEqual(@as(i64, 1), e1);
+    lua.lua_pop(&L, 2);
+
+    // utf8.len of invalid sequence "a\xff" -> nil (first result)
+    try T.g(&L, "len");
+    const bad = [_]u8{ 'a', 0xFF };
+    _ = lua.lua_pushlstring(&L, &bad, bad.len);
+    try lua.lua_call(&L, 1, 1);
+    try std.testing.expect(lua.lua_isnil(&L, -1) != 0);
+    lua.lua_pop(&L, 2);
+
+    // utf8.offset("Hello", 4) -> 4
+    try T.g(&L, "offset");
+    _ = lua.lua_pushlstring(&L, "Hello", 5);
+    lua.lua_pushinteger(&L, 4);
+    try lua.lua_call(&L, 2, 1);
+    const off = lua.lua_tointeger(&L, -1) orelse return error.TestFailed;
+    try std.testing.expectEqual(@as(i64, 4), off);
+    lua.lua_pop(&L, 2);
+
+    // utf8.offset on a multibyte string: "éx" -> byte position of 'x' is 3
+    try T.g(&L, "offset");
+    _ = lua.lua_pushlstring(&L, "éx", 3);
+    lua.lua_pushinteger(&L, 2);
+    try lua.lua_call(&L, 2, 1);
+    const off2 = lua.lua_tointeger(&L, -1) orelse return error.TestFailed;
+    try std.testing.expectEqual(@as(i64, 3), off2);
+    lua.lua_pop(&L, 2);
+
+    // utf8.len of mixed 2-char string "éA" -> 2
+    try T.g(&L, "len");
+    _ = lua.lua_pushlstring(&L, "éA", 3);
+    try lua.lua_call(&L, 1, 1);
+    const e2 = lua.lua_tointeger(&L, -1) orelse return error.TestFailed;
+    try std.testing.expectEqual(@as(i64, 2), e2);
+    lua.lua_pop(&L, 2);
+
+    // utf8.codes("AB") iterator: first call yields (pos=1, codepoint=65)
+    _ = lua.lua_getglobal(&L, "utf8");
+    _ = try lua.lua_getfield(&L, -1, "codes");
+    _ = lua.lua_pushlstring(&L, "AB", 2);
+    try lua.lua_call(&L, 1, 3); // stack: [utf8, f, s, 0]
+    try lua.lua_call(&L, 2, 2); // call f(s, 0) -> (pos, codepoint)
+    const pv = lua.lua_tointeger(&L, -2) orelse return error.TestFailed;
+    const cv = lua.lua_tointeger(&L, -1) orelse return error.TestFailed;
+    try std.testing.expectEqual(@as(i64, 1), pv);
+    try std.testing.expectEqual(@as(i64, 65), cv);
+    lua.lua_pop(&L, 3);
+
+    // utf8.charpattern is a string
+    _ = lua.lua_getglobal(&L, "utf8");
+    _ = try lua.lua_getfield(&L, -1, "charpattern");
+    try std.testing.expect(lua.lua_isstring(&L, -1) != 0);
+    lua.lua_pop(&L, 2);
+
+    // utf8.codepoint on an invalid byte raises an error
+    lua.lua_pushcfunction(&L, struct {
+        fn cf(Ls: *lua.lua_State) anyerror!i32 {
+            _ = lua.lua_getglobal(Ls, "utf8");
+            _ = try lua.lua_getfield(Ls, -1, "codepoint");
+            _ = lua.lua_pushlstring(Ls, "\xff", 1);
+            try lua.lua_call(Ls, 1, 1);
+            return 1;
+        }
+    }.cf);
+    const status = lua.lua_pcallk(&L, 0, 0, 0, 0, null);
+    try std.testing.expectEqual(lua.LUA_ERRRUN, status);
+}
+
 test "baselib: rawequal(), rawlen(), rawget(), rawset()" {
     const gpa = std.testing.allocator;
     var L: lua.lua_State = undefined;

@@ -274,4 +274,7 @@ pub fn luaL_openselectedlibs(L: *lua.lua_State, openmask: i32, closedmask: i32) 
     if ((openmask & lua.LUA_BITLIB) != 0) {
         try lualib.openbit32(L);
     }
+    if ((openmask & lua.LUA_UTF8LIB) != 0) {
+        try lualib.openutf8lib(L);
+    }
 }
