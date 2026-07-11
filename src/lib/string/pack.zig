@@ -189,7 +189,13 @@ fn getdetails(h: *Header, fmt: []const u8, pos: *usize, size: *usize, align_val:
     if (al > h.maxalign) {
         al = h.maxalign;
     }
-    if ((al & (al - 1)) != 0) {
+    // `al` is 0 for the no-op options (endianness / alignment markers); a zero
+    // alignment would make the power-of-two test below compute `al - 1` on a
+    // zero value, so normalize it to 1 (these options are `continue`d past in
+    // the caller before alignment is ever applied).
+    if (al == 0) {
+        al = 1;
+    } else if ((al & (al - 1)) != 0) {
         al = 1;
     }
     align_val.* = al;
@@ -234,6 +240,8 @@ pub fn str_pack(L: *lua.lua_State) anyerror!i32 {
     initheader(L, &h);
     var b = lauxlib.luaL_Buffer{};
     lauxlib.luaL_buffinit(L, &b);
+
+    errdefer b.buf.deinit(L.allocator);
     var argn: i32 = 2;
     var pos: usize = 0;
     while (pos < fmt.len) {
@@ -312,6 +320,7 @@ pub fn str_pack(L: *lua.lua_State) anyerror!i32 {
                     lauxlib.luaL_addsize(&b, size);
                 }
             },
+            .max => break,
             else => unreachable,
         }
     }
@@ -441,6 +450,7 @@ pub fn str_unpack(L: *lua.lua_State) anyerror!i32 {
                 }
             },
             .padding => {},
+            .max => break,
             else => unreachable,
         }
         data_offset += size;

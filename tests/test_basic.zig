@@ -1678,3 +1678,212 @@ test "string library: comprehensive verification" {
     }
     try std.testing.expectEqual(lua.LUA_OK, status);
 }
+
+test "string library: byte/char/len/sub/reverse/case/rep/match/gmatch/pack coverage" {
+    const gpa = std.testing.allocator;
+    var L: lua.lua_State = undefined;
+    try lua.luaL_newstate(&L, gpa);
+    defer lua.lua_close(&L);
+    try lua.luaL_openlibs(&L);
+
+    // Push string.<name> onto the stack: layout becomes [string_table, func].
+    const setup = struct {
+        fn call(Ls: *lua.lua_State, name: []const u8) anyerror!void {
+            lua.lua_settop(Ls, 0);
+            _ = lua.lua_getglobal(Ls, "string");
+            _ = try lua.lua_getfield(Ls, -1, name);
+        }
+    }.call;
+
+    const testfn = struct {
+        fn f(Ls: *lua.lua_State) anyerror!i32 {
+            // ----- string.len -----
+            try setup(Ls, "len");
+            _ = lua.lua_pushstring(Ls, "hello");
+            try lua.lua_call(Ls, 1, 1);
+            try std.testing.expectEqual(@as(i64, 5), lua.lua_tointeger(Ls, 2) orelse 0);
+
+            // ----- string.byte single -----
+            try setup(Ls, "byte");
+            _ = lua.lua_pushstring(Ls, "abc");
+            try lua.lua_call(Ls, 1, 1);
+            try std.testing.expectEqual(@as(i64, 97), lua.lua_tointeger(Ls, 2) orelse 0);
+
+            // ----- string.byte range -----
+            try setup(Ls, "byte");
+            _ = lua.lua_pushstring(Ls, "abc");
+            _ = lua.lua_pushinteger(Ls, 1);
+            _ = lua.lua_pushinteger(Ls, 2);
+            try lua.lua_call(Ls, 3, 2);
+            try std.testing.expectEqual(@as(i64, 97), lua.lua_tointeger(Ls, 2) orelse 0);
+            try std.testing.expectEqual(@as(i64, 98), lua.lua_tointeger(Ls, 3) orelse 0);
+
+            // ----- string.byte negative index -----
+            try setup(Ls, "byte");
+            _ = lua.lua_pushstring(Ls, "abc");
+            _ = lua.lua_pushinteger(Ls, -1);
+            try lua.lua_call(Ls, 2, 1);
+            try std.testing.expectEqual(@as(i64, 99), lua.lua_tointeger(Ls, 2) orelse 0);
+
+            // ----- string.byte empty interval returns no values -----
+            try setup(Ls, "byte");
+            _ = lua.lua_pushstring(Ls, "abc");
+            _ = lua.lua_pushinteger(Ls, 2);
+            _ = lua.lua_pushinteger(Ls, 1);
+            try lua.lua_call(Ls, 3, 0);
+            try std.testing.expectEqual(@as(i32, 1), lua.lua_gettop(Ls)); // only the string table remains
+
+            // ----- string.char -----
+            try setup(Ls, "char");
+            _ = lua.lua_pushinteger(Ls, 97);
+            _ = lua.lua_pushinteger(Ls, 98);
+            _ = lua.lua_pushinteger(Ls, 99);
+            try lua.lua_call(Ls, 3, 1);
+            try std.testing.expectEqualStrings("abc", lua.lua_tostring(Ls, 2) orelse "");
+
+            // ----- string.char out of range raises an error -----
+            try setup(Ls, "char");
+            _ = lua.lua_pushinteger(Ls, 256);
+            const char_status = lua.lua_pcallk(Ls, 1, 1, 0, 0, null);
+            try std.testing.expect(char_status != lua.LUA_OK);
+
+            // ----- string.sub -----
+            try setup(Ls, "sub");
+            _ = lua.lua_pushstring(Ls, "hello");
+            _ = lua.lua_pushinteger(Ls, 1);
+            _ = lua.lua_pushinteger(Ls, 3);
+            try lua.lua_call(Ls, 3, 1);
+            try std.testing.expectEqualStrings("hel", lua.lua_tostring(Ls, 2) orelse "");
+
+            // ----- string.sub with negative indices -----
+            try setup(Ls, "sub");
+            _ = lua.lua_pushstring(Ls, "hello");
+            _ = lua.lua_pushinteger(Ls, -3);
+            try lua.lua_call(Ls, 2, 1);
+            try std.testing.expectEqualStrings("llo", lua.lua_tostring(Ls, 2) orelse "");
+
+            try setup(Ls, "sub");
+            _ = lua.lua_pushstring(Ls, "hello");
+            _ = lua.lua_pushinteger(Ls, 2);
+            _ = lua.lua_pushinteger(Ls, -2);
+            try lua.lua_call(Ls, 3, 1);
+            try std.testing.expectEqualStrings("ell", lua.lua_tostring(Ls, 2) orelse "");
+
+            // ----- string.reverse -----
+            try setup(Ls, "reverse");
+            _ = lua.lua_pushstring(Ls, "abc");
+            try lua.lua_call(Ls, 1, 1);
+            try std.testing.expectEqualStrings("cba", lua.lua_tostring(Ls, 2) orelse "");
+
+            // ----- string.upper / string.lower -----
+            try setup(Ls, "upper");
+            _ = lua.lua_pushstring(Ls, "abc");
+            try lua.lua_call(Ls, 1, 1);
+            try std.testing.expectEqualStrings("ABC", lua.lua_tostring(Ls, 2) orelse "");
+
+            try setup(Ls, "lower");
+            _ = lua.lua_pushstring(Ls, "ABC");
+            try lua.lua_call(Ls, 1, 1);
+            try std.testing.expectEqualStrings("abc", lua.lua_tostring(Ls, 2) orelse "");
+
+            // ----- string.rep -----
+            try setup(Ls, "rep");
+            _ = lua.lua_pushstring(Ls, "ab");
+            _ = lua.lua_pushinteger(Ls, 3);
+            try lua.lua_call(Ls, 2, 1);
+            try std.testing.expectEqualStrings("ababab", lua.lua_tostring(Ls, 2) orelse "");
+
+            try setup(Ls, "rep");
+            _ = lua.lua_pushstring(Ls, "ab");
+            _ = lua.lua_pushinteger(Ls, 3);
+            _ = lua.lua_pushstring(Ls, ",");
+            try lua.lua_call(Ls, 3, 1);
+            try std.testing.expectEqualStrings("ab,ab,ab", lua.lua_tostring(Ls, 2) orelse "");
+
+            try setup(Ls, "rep");
+            _ = lua.lua_pushstring(Ls, "x");
+            _ = lua.lua_pushinteger(Ls, 0);
+            try lua.lua_call(Ls, 2, 1);
+            try std.testing.expectEqualStrings("", lua.lua_tostring(Ls, 2) orelse "");
+
+            // ----- string.match -----
+            try setup(Ls, "match");
+            _ = lua.lua_pushstring(Ls, "hello");
+            _ = lua.lua_pushstring(Ls, "l+");
+            try lua.lua_call(Ls, 2, 1);
+            try std.testing.expectEqualStrings("ll", lua.lua_tostring(Ls, 2) orelse "");
+
+            try setup(Ls, "match");
+            _ = lua.lua_pushstring(Ls, "x=10");
+            _ = lua.lua_pushstring(Ls, "(%d+)");
+            try lua.lua_call(Ls, 2, 1);
+            try std.testing.expectEqualStrings("10", lua.lua_tostring(Ls, 2) orelse "");
+
+            // ----- string.gmatch iteration -----
+            {
+                try setup(Ls, "gmatch");
+                _ = lua.lua_pushstring(Ls, "1 2 3");
+                _ = lua.lua_pushstring(Ls, "%d");
+                try lua.lua_call(Ls, 2, 1); // stack: [string_table(-2), iterator(-1)]
+                // The iterator keeps its state in upvalues; lua_call consumes the
+                // closure, so duplicate it (sharing the same upvalue cells) before
+                // each call to preserve the iterator for the next iteration.
+                const expected = [_][]const u8{ "1", "2", "3" };
+                for (expected) |exp| {
+                    lua.lua_pushvalue(Ls, -1); // copy iterator on top
+                    try lua.lua_call(Ls, 0, 1); // [.., iterator, result]
+                    const got = lua.lua_tostring(Ls, -1) orelse return error.TestFailed;
+                    try std.testing.expectEqualStrings(exp, got);
+                    lua.lua_pop(Ls, 1); // back to [.., iterator]
+                }
+                // next call yields nil (end of matches)
+                lua.lua_pushvalue(Ls, -1);
+                try lua.lua_call(Ls, 0, 1);
+                try std.testing.expectEqual(@as(i32, 1), lua.lua_isnil(Ls, -1));
+            }
+
+            // ----- string.pack / unpack / packsize -----
+            try setup(Ls, "pack");
+            _ = lua.lua_pushstring(Ls, "i4");
+            _ = lua.lua_pushinteger(Ls, 1);
+            try lua.lua_call(Ls, 2, 1);
+            const packed_str = lua.lua_tostring(Ls, 2) orelse return error.TestFailed;
+            try std.testing.expectEqual(@as(usize, 4), packed_str.len);
+
+            try setup(Ls, "packsize");
+            _ = lua.lua_pushstring(Ls, "i4");
+            try lua.lua_call(Ls, 1, 1);
+            try std.testing.expectEqual(@as(i64, 4), lua.lua_tointeger(Ls, 2) orelse 0);
+
+            // unpack the packed value back
+            try setup(Ls, "unpack");
+            _ = lua.lua_pushstring(Ls, "i4");
+            _ = lua.lua_pushlstring(Ls, packed_str, packed_str.len);
+            _ = lua.lua_pushinteger(Ls, 1);
+            try lua.lua_call(Ls, 3, 2);
+            try std.testing.expectEqual(@as(i64, 1), lua.lua_tointeger(Ls, 2) orelse 0);
+            try std.testing.expectEqual(@as(i64, 5), lua.lua_tointeger(Ls, 3) orelse 0); // next position
+
+            // big-endian pack/unpack round trip
+            try setup(Ls, "pack");
+            _ = lua.lua_pushstring(Ls, ">i4");
+            _ = lua.lua_pushinteger(Ls, 1);
+            try lua.lua_call(Ls, 2, 1);
+            const packed_be_str = lua.lua_tostring(Ls, 2) orelse return error.TestFailed;
+            try std.testing.expectEqual(@as(usize, 4), packed_be_str.len);
+
+            try setup(Ls, "unpack");
+            _ = lua.lua_pushstring(Ls, ">i4");
+            _ = lua.lua_pushlstring(Ls, packed_be_str, packed_be_str.len);
+            _ = lua.lua_pushinteger(Ls, 1);
+            try lua.lua_call(Ls, 3, 2);
+            try std.testing.expectEqual(@as(i64, 1), lua.lua_tointeger(Ls, 2) orelse 0);
+
+            return 0;
+        }
+    }.f;
+
+    // Run the checks directly so any failing assertion reports its real
+    // location (instead of being swallowed by a pcall wrapper).
+    _ = try testfn(&L);
+}

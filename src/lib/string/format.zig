@@ -479,6 +479,8 @@ pub fn str_format(L: *lua.lua_State) anyerror!i32 {
     var pos: usize = 0;
     var b = lauxlib.luaL_Buffer{};
     lauxlib.luaL_buffinit(L, &b);
+
+    errdefer b.buf.deinit(L.allocator);
     var argn: i32 = 2;
     const top = lua.lua_gettop(L);
     

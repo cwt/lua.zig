@@ -39,6 +39,8 @@ fn str_reverse(L: *lua.lua_State) anyerror!i32 {
     const s = try lauxlib.luaL_checklstring(L, 1, &l);
     var b = lauxlib.luaL_Buffer{};
     lauxlib.luaL_buffinit(L, &b);
+
+    errdefer b.buf.deinit(L.allocator);
     const p = try lauxlib.luaL_prepbuffsize(L, &b, l);
     var i: usize = 0;
     while (i < l) : (i += 1) {
@@ -54,6 +56,8 @@ fn str_lower(L: *lua.lua_State) anyerror!i32 {
     const s = try lauxlib.luaL_checklstring(L, 1, &l);
     var b = lauxlib.luaL_Buffer{};
     lauxlib.luaL_buffinit(L, &b);
+
+    errdefer b.buf.deinit(L.allocator);
     const p = try lauxlib.luaL_prepbuffsize(L, &b, l);
     var i: usize = 0;
     while (i < l) : (i += 1) {
@@ -69,6 +73,8 @@ fn str_upper(L: *lua.lua_State) anyerror!i32 {
     const s = try lauxlib.luaL_checklstring(L, 1, &l);
     var b = lauxlib.luaL_Buffer{};
     lauxlib.luaL_buffinit(L, &b);
+
+    errdefer b.buf.deinit(L.allocator);
     const p = try lauxlib.luaL_prepbuffsize(L, &b, l);
     var i: usize = 0;
     while (i < l) : (i += 1) {
@@ -97,6 +103,8 @@ fn str_rep(L: *lua.lua_State) anyerror!i32 {
     const totallen = un * (@as(u64, @intCast(len)) + @as(u64, @intCast(lsep))) - @as(u64, @intCast(lsep));
     var b = lauxlib.luaL_Buffer{};
     lauxlib.luaL_buffinit(L, &b);
+
+    errdefer b.buf.deinit(L.allocator);
     const p = try lauxlib.luaL_prepbuffsize(L, &b, @intCast(totallen));
     var pos: usize = 0;
     var remaining = n;
@@ -137,6 +145,8 @@ fn str_char(L: *lua.lua_State) anyerror!i32 {
     const n = lua.lua_gettop(L);
     var b = lauxlib.luaL_Buffer{};
     lauxlib.luaL_buffinit(L, &b);
+
+    errdefer b.buf.deinit(L.allocator);
     const p = try lauxlib.luaL_prepbuffsize(L, &b, @as(usize, @intCast(n)));
     var i: i32 = 1;
     while (i <= n) : (i += 1) {

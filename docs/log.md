@@ -6,6 +6,64 @@ tags: [log, changelog]
 timestamp: 2026-07-10T00:00:00Z
 ---
 
+## 2026-07-12 — stringlib §0.1 Robustness Audit
+
+Audited the string standard library (commits 27-29) for completion and
+Zig 0.16.0 best-practice compliance.
+
+### Findings
+- **Completeness:** All 17 functions from the C `strlib[]` table are present and
+  wired in `src/lib/stringlib.zig`: `byte, char, dump, find, format, gmatch,
+  gsub, len, lower, match, rep, reverse, sub, upper, pack, packsize, unpack`.
+- **§0.1 compliance:** Allocator threaded via `luaL_Buffer`; errors propagated
+  with `!T` + `try` (no `catch unreachable`); value conversions use `@intCast`/
+  `@floatCast`/`@bitCast` only for same-width integer reinterpretation; dynamic
+  shift amounts masked/checked; pattern matcher carries explicit boundary guards.
+
+### Bugs found & fixed (string + VM layer)
+1. **`src/lauxlib.zig` `luaL_prepbuffsize`** — used `buf.resize()` (which grows the
+   *logical* length) instead of `ensureTotalCapacity()`, so a `prepbuffsize(sz)` +
+   `addsize(sz)` pair committed `2*sz` bytes (e.g. `string.char("abc")` returned
+   6 bytes `61 62 63 aa aa aa`). Now reserves capacity without advancing the
+   length and returns the reserved slice.
+2. **`src/lib/string/pattern.zig` `push_captures`** — the "push whole match when
+   capture level is 0" test used `s == 0`. In C `s` is a pointer (NULL only for the
+   `find` position-push call), but here `s` is a `usize` index, so a match starting
+   at offset 0 was misclassified and nothing was pushed. Made `s` an optional
+   (`?usize`); the `find` position case passes `null`, a real match passes its
+   (possibly zero) index. Fixes `string.match`/`string.gsub` returning empty for
+   zero-offset matches.
+3. **`src/lib/string/pack.zig` `getdetails`** — the power-of-two alignment check
+   `al & (al - 1)` overflowed when `al == 0` (the no-op endianness/alignment
+   markers `</>/=/!` set `size = 0`). Guarded the `al == 0` case. Fixes an integer
+   overflow panic for formats like `">i4"`.
+4. **`src/lua.zig` `lua_Udata`** — the userdata type had **no payload buffer**
+   (only `len`/`metatable`), so `lua_newuserdatauv`/`lua_touserdata` handed back the
+   tiny header struct cast to the payload type. `string.gmatch`'s `GMatchState`
+   (stored as a userdata upvalue) then wrote past the allocation, corrupting an
+   adjacent closure and segfaulting at `lua_close`. Gave `lua_Udata` a real `data:
+   []u8` buffer, made `lua_newuserdatauv` allocate it, `lua_touserdata` return
+   `data.ptr` (while `lua_topointer` still returns the header for identity), and
+   `freeGCObject` free it.
+5. **Buffer leak on error paths** — `luaL_Buffer`-using string functions did not
+   free the `ArrayList` when a Lua error propagated (e.g. `string.char(256)`).
+   Added `errdefer b.buf.deinit(L.allocator)` after each `buffinit` in
+   `src/lib/stringlib.zig` (5 sites) and `format.zig`/`pattern.zig`/`pack.zig`
+   (3 sites).
+
+### Change
+- `src/lib/string/pack.zig`: explicit `.max => break` in the option switches;
+  `getdetails` zero-alignment guard.
+- `src/lib/string/pattern.zig`: `push_captures` optional `s`; `errdefer` free.
+- `src/lib/stringlib.zig`: `errdefer` free on buffer error paths.
+- `src/lauxlib.zig`: `luaL_prepbuffsize` capacity fix.
+- `src/lua.zig`: `lua_Udata` payload buffer; `lua_touserdata`/`freeGCObject` wiring.
+- `tests/test_basic.zig`: added coverage test exercising byte/char/len/sub/reverse/
+  case/rep/match/gmatch/pack; verified no leaks via the testing allocator.
+
+### Verification
+`zig build test` passes: **41/41 tests**, zero memory leaks.
+
 ## 2026-07-10 — Initial OKF Bundle Creation
 
 Created documentation bundle at `docs/` following OKF v0.1 specification.

@@ -124,8 +124,11 @@ pub const lua_TString = struct {
 };
 
 pub const lua_Udata = struct {
-    len: usize,
     metatable: ?*lua_Table = null,
+    // Payload buffer. `lua_touserdata` returns `data.ptr`; `lua_topointer`
+    // (identity) returns the header address. The buffer is freed alongside the
+    // object in `freeGCObject`.
+    data: []u8,
 };
 
 pub const TValue = union(enum) {
@@ -830,7 +833,7 @@ pub fn lua_tocfunction(L: *lua_State, idx: i32) lua_CFunction {
 pub fn lua_touserdata(L: *lua_State, idx: i32) ?*anyopaque {
     const v = stackAt(L, idx);
     return switch (v) {
-        .userdata => |u| if (u) |p| @as(*anyopaque, @ptrCast(p)) else null,
+        .userdata => |u| if (u) |p| @as(*anyopaque, @ptrCast(p.data.ptr)) else null,
         .lightud => |u| u,
         else => null,
     };
@@ -1232,12 +1235,20 @@ pub fn lua_createtable(L: *lua_State, narr: i32, nrec: i32) void {
 
 pub fn lua_newuserdatauv(L: *lua_State, sz: usize, nuvalue: i32) ?*anyopaque {
     _ = nuvalue;
-    const u = L.allocator.create(lua_Udata) catch return null;
-    u.* = .{ .len = sz, .metatable = null };
-    registerGC(L, u) catch return null;
+    const data = L.allocator.alloc(u8, sz) catch return null;
+    const u = L.allocator.create(lua_Udata) catch {
+        L.allocator.free(data);
+        return null;
+    };
+    u.* = .{ .metatable = null, .data = data };
+    registerGC(L, u) catch {
+        L.allocator.free(data);
+        L.allocator.destroy(u);
+        return null;
+    };
     L.stack[L.top] = TValue{ .userdata = u };
     L.top += 1;
-    return @as(*anyopaque, @ptrCast(u));
+    return @as(*anyopaque, @ptrCast(data.ptr));
 }
 
 pub fn lua_getmetatable(L: *lua_State, objindex: i32) i32 {
@@ -1702,6 +1713,7 @@ fn freeGCObject(L: *lua_State, gc: *VMGCObject) void {
             L.allocator.destroy(f);
         },
         .userdata => |u| {
+            L.allocator.free(u.data);
             L.allocator.destroy(u);
         },
     }

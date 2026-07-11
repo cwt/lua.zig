@@ -432,12 +432,16 @@ fn push_onecapture(ms: *MatchState, i: i32, s: usize, e: usize) !void {
     }
 }
 
-fn push_captures(ms: *MatchState, s: usize, e: usize) !i32 {
-    const nlevels = if (ms.level == 0 and s == 0) @as(i32, 1) else ms.level;
+fn push_captures(ms: *MatchState, s: ?usize, e: usize) !i32 {
+    // In the C reference `s` is a pointer: it is NULL only for the `find`
+    // position-push call, and non-NULL for a real match (even one starting at
+    // the very beginning of the string). We preserve that distinction with an
+    // optional so a zero-length match-index is not mistaken for "no match".
+    const nlevels = if (ms.level == 0 and s != null) @as(i32, 1) else ms.level;
     try lauxlib.luaL_checkstack(ms.L, nlevels, "too many captures");
     var i: i32 = 0;
     while (i < nlevels) : (i += 1) {
-        try push_onecapture(ms, i, s, e);
+        try push_onecapture(ms, i, s.?, e);
     }
     return nlevels;
 }
@@ -508,7 +512,7 @@ fn str_find_aux(L: *lua.lua_State, find: bool) anyerror!i32 {
                 if (find) {
                     lua.lua_pushinteger(L, @as(i64, @intCast(s_idx)) + 1);
                     lua.lua_pushinteger(L, @as(i64, @intCast(r)));
-                    const n = try push_captures(&ms, 0, 0);
+                    const n = try push_captures(&ms, null, 0);
                     return n + 2;
                 } else {
                     return push_captures(&ms, s_idx, r);
@@ -650,6 +654,8 @@ pub fn str_gsub(L: *lua.lua_State) anyerror!i32 {
     var ms: MatchState = undefined;
     var b = lauxlib.luaL_Buffer{};
     lauxlib.luaL_buffinit(L, &b);
+
+    errdefer b.buf.deinit(L.allocator);
     var p_adj = p;
     var lp_adj = lp;
     if (anchor) {

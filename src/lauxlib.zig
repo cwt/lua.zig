@@ -260,8 +260,12 @@ pub fn luaL_addsize(b: *luaL_Buffer, n: usize) void {
 
 pub fn luaL_prepbuffsize(L: *lua.lua_State, b: *luaL_Buffer, sz: usize) ![]u8 {
     const old_len = b.buf.items.len;
-    try b.buf.resize(L.allocator, old_len + sz);
-    return b.buf.items[old_len..];
+    // Reserve capacity for `sz` bytes without committing them: the logical
+    // length stays at `old_len` until luaL_addsize is called. This matches
+    // the C luaL_prepbuffsize / luaL_addsize contract (prepbuffsize only
+    // guarantees free space; addsize commits it).
+    try b.buf.ensureTotalCapacity(L.allocator, old_len + sz);
+    return b.buf.items.ptr[old_len .. old_len + sz];
 }
 
 pub fn luaL_addvalue(L: *lua.lua_State, b: *luaL_Buffer) !void {
