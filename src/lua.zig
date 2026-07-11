@@ -1412,10 +1412,6 @@ pub fn lua_setiuservalue(L: *lua_State, idx: i32, n: i32) i32 {
     return 1;
 }
 
-pub inline fn lua_call(L: *lua_State, nargs: i32, nresults: i32) !void {
-    try lua_callk(L, nargs, nresults, 0, null);
-}
-
 pub fn lua_callk(L: *lua_State, nargs: i32, nresults: i32, ctx: lua_KContext, k: ?lua_KFunction) !void {
     _ = ctx;
     _ = k;
@@ -1423,6 +1419,10 @@ pub fn lua_callk(L: *lua_State, nargs: i32, nresults: i32, ctx: lua_KContext, k:
     if (try precall(L, func_idx, nresults)) |new_ci| {
         try lvm.run(L, new_ci);
     }
+}
+
+pub fn lua_call(L: *lua_State, nargs: i32, nresults: i32) !void {
+    try lua_callk(L, nargs, nresults, 0, null);
 }
 
 pub fn lua_pcallk(L: *lua_State, nargs: i32, nresults: i32, errfunc: i32, ctx: lua_KContext, k: ?lua_KFunction) i32 {
@@ -1942,10 +1942,118 @@ pub fn lua_len(L: *lua_State, idx: i32) void {
     _ = idx;
 }
 
+fn isDigit(c: u8) bool {
+    return c >= '0' and c <= '9';
+}
+
+fn isHexDigit(c: u8) bool {
+    return isDigit(c) or (c >= 'a' and c <= 'f') or (c >= 'A' and c <= 'F');
+}
+
+fn skipDigits(s: []const u8, i: usize) usize {
+    var j = i;
+    while (j < s.len and isDigit(s[j])) : (j += 1) {}
+    return j;
+}
+
 pub fn lua_stringtonumber(L: *lua_State, s: []const u8) usize {
-    _ = L;
-    _ = s;
-    return 0;
+    // returns consumed prefix length + 1 if valid number, else 0
+    if (s.len == 0) return 0;
+
+    var i: usize = 0;
+    // optional sign
+    if (s[i] == '+' or s[i] == '-') {
+        i += 1;
+        if (i >= s.len) return 0;
+    }
+
+    // check for special tokens: inf, nan
+    if (i < s.len) {
+        var lower_i = s[i];
+        if (lower_i >= 'A' and lower_i <= 'Z') lower_i = lower_i - 'A' + 'a';
+        if (lower_i == 'i' and i + 2 < s.len) {
+            const rest = s[i..];
+            var rest_lower: [10]u8 = undefined;
+            const copy_len = @min(rest.len, rest_lower.len);
+            @memcpy(rest_lower[0..copy_len], rest[0..copy_len]);
+            _ = std.ascii.lowerString(rest_lower[0..copy_len], rest[0..copy_len]);
+            if (std.mem.eql(u8, rest_lower[0..3], "inf")) {
+                if (copy_len >= 8 and std.mem.eql(u8, rest_lower[0..8], "infinity")) {
+                    const val: f64 = if (s[0] == '-') -std.math.inf(f64) else std.math.inf(f64);
+                    lua_pushnumber(L, val);
+                    return i + 8;
+                }
+                const val: f64 = if (s[0] == '-') -std.math.inf(f64) else std.math.inf(f64);
+                lua_pushnumber(L, val);
+                return i + 3;
+            }
+            if (std.mem.eql(u8, rest_lower[0..3], "nan")) {
+                const val: f64 = std.math.nan(f64);
+                lua_pushnumber(L, val);
+                return i + 3;
+            }
+        }
+    }
+
+    // hex float?
+    if (i + 1 < s.len and s[i] == '0' and (s[i + 1] == 'x' or s[i + 1] == 'X')) {
+        i += 2;
+        var j = i;
+        // integer part
+        while (j < s.len and isHexDigit(s[j])) : (j += 1) {}
+        // optional fractional part
+        if (j < s.len and s[j] == '.') {
+            j += 1;
+            while (j < s.len and isHexDigit(s[j])) : (j += 1) {}
+        }
+        if (j == i) return 0; // at least one hex digit required
+        // optional binary exponent
+        if (j < s.len and (s[j] == 'p' or s[j] == 'P')) {
+            j += 1;
+            if (j < s.len and (s[j] == '+' or s[j] == '-')) j += 1;
+            j = skipDigits(s, j);
+            if (j > i and s[j - 1] < '0' or s[j - 1] > '9') {
+                if (j > i + 1 and (s[j - 2] >= '0' and s[j - 2] <= '9')) {} else return 0;
+            }
+        }
+        const sub = s[0..j];
+        const n = std.fmt.parseFloat(f64, sub) catch return 0;
+        lua_pushnumber(L, n);
+        return j + 1;
+    }
+
+    // decimal
+    var j = i;
+    // integer part (or go to fractional)
+    j = skipDigits(s, j);
+    // is this just digits? could be integer
+    // check for dot (fractional)
+    var has_dot = false;
+    if (j < s.len and s[j] == '.') {
+        has_dot = true;
+        j += 1;
+        j = skipDigits(s, j);
+    }
+    // exponent
+    if (j < s.len and (s[j] == 'e' or s[j] == 'E')) {
+        j += 1;
+        if (j < s.len and (s[j] == '+' or s[j] == '-')) j += 1;
+        j = skipDigits(s, j);
+    }
+    if (j == i) return 0; // no digits consumed
+
+    const sub = s[0..j];
+    // try integer first (only if no dot)
+    if (!has_dot) {
+        if (std.fmt.parseInt(i64, sub, 0)) |iv| {
+            lua_pushinteger(L, iv);
+            return j + 1;
+        } else |_| {}
+    }
+    // try float
+    const n = std.fmt.parseFloat(f64, sub) catch return 0;
+    lua_pushnumber(L, n);
+    return j + 1;
 }
 
 pub fn lua_getallocf(L: *lua_State, ud: ?*?*anyopaque) lua_Alloc {

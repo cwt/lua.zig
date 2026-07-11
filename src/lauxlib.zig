@@ -235,6 +235,72 @@ pub fn luaL_traceback(L: *lua.lua_State, L2: *lua.lua_State, msg: []const u8, le
 }
 
 // ===================================================================
+// String buffer (luaL_Buffer)
+// ===================================================================
+
+pub const luaL_Buffer = struct {
+    buf: std.ArrayList(u8) = .empty,
+};
+
+pub fn luaL_buffinit(_: *lua.lua_State, b: *luaL_Buffer) void {
+    b.* = .{};
+}
+
+pub fn luaL_addlstring(L: *lua.lua_State, b: *luaL_Buffer, s: []const u8) !void {
+    try b.buf.appendSlice(L.allocator, s);
+}
+
+pub fn luaL_addchar(L: *lua.lua_State, b: *luaL_Buffer, c: u8) !void {
+    try b.buf.append(L.allocator, c);
+}
+
+pub fn luaL_addsize(b: *luaL_Buffer, n: usize) void {
+    b.buf.items.len += n;
+}
+
+pub fn luaL_prepbuffsize(L: *lua.lua_State, b: *luaL_Buffer, sz: usize) ![]u8 {
+    const old_len = b.buf.items.len;
+    try b.buf.resize(L.allocator, old_len + sz);
+    return b.buf.items[old_len..];
+}
+
+pub fn luaL_addvalue(L: *lua.lua_State, b: *luaL_Buffer) !void {
+    const s = lua.lua_tolstring(L, -1, null) orelse return error.NotAString;
+    try luaL_addlstring(L, b, s);
+    lua.lua_pop(L, 1);
+}
+
+pub fn luaL_pushresult(L: *lua.lua_State, b: *luaL_Buffer) void {
+    _ = lua.lua_pushlstring(L, b.buf.items, b.buf.items.len);
+    b.buf.deinit(L.allocator);
+}
+
+pub fn luaL_pushresultsize(L: *lua.lua_State, b: *luaL_Buffer, sz: usize) void {
+    _ = lua.lua_pushlstring(L, b.buf.items[0..sz], sz);
+    b.buf.deinit(L.allocator);
+}
+
+// ===================================================================
+// Utility functions (continued)
+// ===================================================================
+
+pub fn luaL_gsub(L: *lua.lua_State, s: []const u8, p: []const u8, r: []const u8) ![]const u8 {
+    var b = luaL_Buffer{};
+    luaL_buffinit(L, &b);
+    var rest = s;
+    while (std.mem.indexOf(u8, rest, p)) |idx| {
+        try luaL_addlstring(L, &b, rest[0..idx]);
+        try luaL_addlstring(L, &b, r);
+        rest = rest[idx + p.len ..];
+    }
+    try luaL_addlstring(L, &b, rest);
+    _ = lua.lua_pushlstring(L, b.buf.items, b.buf.items.len);
+    const result = lua.lua_tolstring(L, -1, null) orelse return error.NotAString;
+    b.buf.deinit(L.allocator);
+    return result;
+}
+
+// ===================================================================
 // Library opening functions
 // ===================================================================
 

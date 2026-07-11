@@ -17,6 +17,7 @@ const baselib = @import("lib/baselib.zig");
 const mathlib = @import("lib/mathlib.zig");
 const bit32 = @import("lib/bit32.zig");
 const utf8lib = @import("lib/utf8lib.zig");
+const stringlib = @import("lib/stringlib.zig");
 
 pub fn openbaselib(L: *lua.lua_State) !void {
     try baselib.openbaselib(L);
@@ -47,9 +48,7 @@ pub fn opentablib(L: *lua.lua_State) !void {
 // ===================================================================
 
 pub fn openstringlib(L: *lua.lua_State) !void {
-    const str = L;
-    _ = str;
-    // Register string library functions
+    _ = try stringlib.openstringlib(L);
 }
 
 // ===================================================================
