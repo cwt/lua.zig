@@ -72,6 +72,14 @@ justification in your commit message, and even then prefer the Zig way.
     and file I/O flows through the `io: std.Io` from `std.process.Init`, not
     `std.debug.print` or raw C file APIs. `iolib`/`oslib` must take `io`.
 
+11. **Check boundary conditions on dynamic bitwise shifts.** Bitwise shift counts in Zig must be unsigned integers (e.g. `u5` or `u6`), and shifting by equal to or greater than the bit width of the type will panic at runtime. Always mask or bounds-check the shift amount beforehand (e.g. mask with 63/31 or check limits).
+
+12. **Never swallow runtime errors with empty or dummy `catch` blocks.** Discarding errors silently (e.g. `catch {}` or `catch |e| {}`) is strictly prohibited. All error conditions (including table accessors/mutators triggering metamethods) must either be explicitly propagated via `try`, handled with a fallback, or cleanly reported.
+
+13. **Validate stack capacity growth before writing.** When reserving stack slots using `lua_checkstack` or similar functions, verify the return boolean/status to ensure memory was successfully allocated before writing to indices past the current top.
+
+14. **Ensure type-check and conversion predicates are precise.** Never use stub/dummy return values for standard API functions (like `lua_isinteger` or `lua_tointegerx`). Ensure float-to-integer conversion checks have logic for fractional parts (e.g. `math.trunc(x) == x`).
+
 ### 0.2 How to work
 
 - Before writing any function, ask: *"What would a native Zig programmer write
