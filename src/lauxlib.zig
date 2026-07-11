@@ -109,16 +109,19 @@ pub fn luaL_checkoption(L: *lua.lua_State, idx: i32, def: []const u8, opts: [][]
     return luaL_argerror(L, idx, "invalid option");
 }
 
-pub fn luaL_register(L: *lua.lua_State, libname: []const u8, l: ?[]?lua.lua_CFunction) !void {
+pub const luaL_Reg = struct {
+    name: []const u8,
+    func: lua.lua_CFunction,
+};
+
+pub fn luaL_register(L: *lua.lua_State, libname: []const u8, l: ?[]const luaL_Reg) !void {
     if (lua.lua_getglobal(L, libname) == 0) {
         lua.lua_newtable(L);
     }
     if (l) |funcs| {
-        for (funcs) |f_opt| {
-            if (f_opt) |f| {
-                lua.lua_pushcfunction(L, f);
-                lua.lua_setfield(L, -2, "func");
-            }
+        for (funcs) |reg| {
+            lua.lua_pushcfunction(L, reg.func);
+            lua.lua_setfield(L, -2, reg.name);
         }
     }
     lua.lua_setglobal(L, libname);
@@ -153,9 +156,7 @@ pub fn luaL_typeerror(L: *lua.lua_State, idx: i32, tname: []const u8) anyerror {
 
 pub fn luaL_checkstack(L: *lua.lua_State, n: i32, msg: []const u8) !void {
     _ = msg;
-    if (lua.lua_gettop(L) + n > lua.LUA_MINSTACK) {
-        const newstack = @as(usize, @intCast(lua.lua_gettop(L))) + @as(usize, @intCast(n)) + lua.LUA_MINSTACK;
-        _ = newstack;
+    if (lua.lua_checkstack(L, n) == 0) {
         return error.StackOverflow;
     }
 }

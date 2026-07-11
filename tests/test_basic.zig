@@ -112,8 +112,8 @@ test "table setfield/getfield" {
 
     lua.lua_createtable(&L, 0, 0);
     _ = lua.lua_pushstring(&L, "hello");
-    lua.lua_setfield(&L, -2, "key");
-    _ = lua.lua_getfield(&L, -1, "key");
+    try lua.lua_setfield(&L, -2, "key");
+    _ = try lua.lua_getfield(&L, -1, "key");
     const s = lua.lua_tostring(&L, -1) orelse return error.TestFailed;
     try std.testing.expectEqualSlices(u8, "hello", s);
 }
@@ -128,9 +128,9 @@ test "table seti/geti and length" {
     var i: i32 = 1;
     while (i <= 5) : (i += 1) {
         lua.lua_pushinteger(&L, i * 10);
-        lua.lua_seti(&L, -2, i);
+        try lua.lua_seti(&L, -2, i);
     }
-    _ = lua.lua_geti(&L, -1, 3);
+    _ = try lua.lua_geti(&L, -1, 3);
     const v = lua.lua_tointeger(&L, -1) orelse return error.TestFailed;
     try std.testing.expectEqual(@as(i64, 30), v);
     try std.testing.expectEqual(@as(usize, 5), lua.lua_rawlen(&L, -2));
@@ -154,10 +154,10 @@ test "table remove entry" {
 
     lua.lua_createtable(&L, 0, 0);
     lua.lua_pushinteger(&L, 99);
-    lua.lua_seti(&L, -2, 1);
+    try lua.lua_seti(&L, -2, 1);
     try std.testing.expectEqual(@as(usize, 1), lua.lua_rawlen(&L, -1));
     lua.lua_pushnil(&L);
-    lua.lua_seti(&L, -2, 1);
+    try lua.lua_seti(&L, -2, 1);
     try std.testing.expectEqual(@as(usize, 0), lua.lua_rawlen(&L, -1));
 }
 
@@ -169,7 +169,7 @@ test "table hash part stores string keys" {
 
     lua.lua_createtable(&L, 0, 4);
     _ = lua.lua_pushstring(&L, "v");
-    lua.lua_setfield(&L, -2, "k");
+    try lua.lua_setfield(&L, -2, "k");
     _ = lua.lua_pushstring(&L, "k");
     _ = lua.lua_rawget(&L, -2);
     const got = lua.lua_tostring(&L, -1) orelse return error.TestFailed;
@@ -184,11 +184,11 @@ test "table next traversal visits all entries" {
 
     lua.lua_createtable(&L, 0, 0);
     lua.lua_pushinteger(&L, 10);
-    lua.lua_seti(&L, -2, 1);
+    try lua.lua_seti(&L, -2, 1);
     lua.lua_pushinteger(&L, 20);
-    lua.lua_seti(&L, -2, 2);
+    try lua.lua_seti(&L, -2, 2);
     _ = lua.lua_pushstring(&L, "x");
-    lua.lua_setfield(&L, -2, "a");
+    try lua.lua_setfield(&L, -2, "a");
 
     lua.lua_pushnil(&L);
     var count: usize = 0;
@@ -208,9 +208,9 @@ test "table gettable/settable with stack key" {
     lua.lua_createtable(&L, 0, 0);
     _ = lua.lua_pushstring(&L, "name");
     _ = lua.lua_pushstring(&L, "zig");
-    lua.lua_settable(&L, -3);
+    try lua.lua_settable(&L, -3);
     _ = lua.lua_pushstring(&L, "name");
-    _ = lua.lua_gettable(&L, -2);
+    _ = try lua.lua_gettable(&L, -2);
     const got = lua.lua_tostring(&L, -1) orelse return error.TestFailed;
     try std.testing.expectEqualSlices(u8, "zig", got);
 }
@@ -423,13 +423,13 @@ test "__index function metamethod via C API" {
         }
     };
     lua.lua_pushcfunction(&L, IndexFn.index);
-    lua.lua_setfield(&L, mt_idx, "__index");
+    try lua.lua_setfield(&L, mt_idx, "__index");
 
     // setmetatable(t, mt)
     try std.testing.expectEqual(@as(i32, 1), lua.lua_setmetatable(&L, t_idx));
 
     // t["missing"] should invoke __index and return 42
-    _ = lua.lua_getfield(&L, t_idx, "missing");
+    _ = try lua.lua_getfield(&L, t_idx, "missing");
     const v = lua.lua_tonumber(&L, -1) orelse return error.TestFailed;
     try std.testing.expectEqual(@as(f64, 42.0), v);
 }
@@ -444,7 +444,7 @@ test "__index table chain metamethod via C API" {
     lua.lua_createtable(&L, 0, 1);
     const parent_idx: i32 = lua.lua_gettop(&L);
     lua.lua_pushnumber(&L, 99.0);
-    lua.lua_setfield(&L, parent_idx, "x");
+    try lua.lua_setfield(&L, parent_idx, "x");
 
     // child is empty; mt.__index = parent
     lua.lua_createtable(&L, 0, 0);
@@ -453,11 +453,11 @@ test "__index table chain metamethod via C API" {
     lua.lua_createtable(&L, 0, 1);
     const child_mt_idx: i32 = lua.lua_gettop(&L);
     lua.lua_pushvalue(&L, parent_idx);
-    lua.lua_setfield(&L, child_mt_idx, "__index");
+    try lua.lua_setfield(&L, child_mt_idx, "__index");
     try std.testing.expectEqual(@as(i32, 1), lua.lua_setmetatable(&L, child_idx));
 
     // child["x"] should follow chain -> parent -> 99
-    _ = lua.lua_getfield(&L, child_idx, "x");
+    _ = try lua.lua_getfield(&L, child_idx, "x");
     const v = lua.lua_tonumber(&L, -1) orelse return error.TestFailed;
     try std.testing.expectEqual(@as(f64, 99.0), v);
 }
@@ -503,21 +503,21 @@ test "__newindex function metamethod via C API" {
             // upvalue 1 = shadow table (set via lua_pushcclosure below)
             // args: t(1), key(2), val(3)
             lua.lua_pushvalue(LS, 3); // val
-            lua.lua_setfield(LS, lua.lua_upvalueindex(1), "written");
+            try lua.lua_setfield(LS, lua.lua_upvalueindex(1), "written");
             return 0;
         }
     };
     lua.lua_pushvalue(&L, shadow_idx); // upvalue 1 = shadow
     lua.lua_pushcclosure(&L, NewIdxSimple.newindex, 1);
-    lua.lua_setfield(&L, proxy_mt_idx, "__newindex");
+    try lua.lua_setfield(&L, proxy_mt_idx, "__newindex");
     try std.testing.expectEqual(@as(i32, 1), lua.lua_setmetatable(&L, proxy_idx));
 
     // proxy["key"] = 77 — triggers __newindex
     lua.lua_pushnumber(&L, 77.0);
-    lua.lua_setfield(&L, proxy_idx, "key");
+    try lua.lua_setfield(&L, proxy_idx, "key");
 
     // shadow["written"] should now be 77
-    _ = lua.lua_getfield(&L, shadow_idx, "written");
+    _ = try lua.lua_getfield(&L, shadow_idx, "written");
     const v = lua.lua_tonumber(&L, -1) orelse return error.TestFailed;
     try std.testing.expectEqual(@as(f64, 77.0), v);
 }
@@ -597,7 +597,7 @@ test "__add arithmetic metamethod via C API" {
         }
     };
     lua.lua_pushcfunction(&L, AddFn.add);
-    lua.lua_setfield(&L, mt_idx, "__add");
+    try lua.lua_setfield(&L, mt_idx, "__add");
 
     // Set mt on t1
     lua.lua_pushvalue(&L, mt_idx);
@@ -657,7 +657,7 @@ test "VM execution of arithmetic metamethod" {
         }
     };
     lua.lua_pushcfunction(&L, AddFn.add);
-    lua.lua_setfield(&L, mt_idx, "__add");
+    try lua.lua_setfield(&L, mt_idx, "__add");
 
     // Set mt on t1 (t1 is at stack index 2)
     lua.lua_pushvalue(&L, mt_idx);
@@ -705,7 +705,7 @@ test "__eq metamethod via C API" {
         }
     };
     lua.lua_pushcfunction(&L, EqFn.eq);
-    lua.lua_setfield(&L, mt_idx, "__eq");
+    try lua.lua_setfield(&L, mt_idx, "__eq");
 
     // Set mt on t1
     lua.lua_pushvalue(&L, mt_idx);
@@ -743,7 +743,7 @@ test "__lt and __le metamethods via C API" {
         }
     };
     lua.lua_pushcfunction(&L, LtFn.lt);
-    lua.lua_setfield(&L, mt_idx, "__lt");
+    try lua.lua_setfield(&L, mt_idx, "__lt");
 
     const LeFn = struct {
         fn le(LS: *lua.lua_State) anyerror!i32 {
@@ -752,7 +752,7 @@ test "__lt and __le metamethods via C API" {
         }
     };
     lua.lua_pushcfunction(&L, LeFn.le);
-    lua.lua_setfield(&L, mt_idx, "__le");
+    try lua.lua_setfield(&L, mt_idx, "__le");
 
     // Set mt on t1
     lua.lua_pushvalue(&L, mt_idx);

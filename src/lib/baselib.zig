@@ -207,7 +207,7 @@ fn getmetatable(L: *lua.lua_State) anyerror!i32 {
 fn ipairsaux(L: *lua.lua_State) anyerror!i32 {
     const i = (try lauxlib.luaL_checkinteger(L, 2)) + 1;
     lua.lua_pushinteger(L, i);
-    return if (lua.lua_geti(L, 1, i) == lua.LUA_TNIL) 1 else 2;
+    return if (try lua.lua_geti(L, 1, i) == lua.LUA_TNIL) 1 else 2;
 }
 
 fn ipairs(L: *lua.lua_State) anyerror!i32 {

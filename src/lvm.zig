@@ -710,7 +710,7 @@ pub fn run(L: *lua.lua_State, active_ci: *lua.CallInfo) anyerror!void {
                     switch (val) {
                         .string => |s| try list.appendSlice(L.allocator, s.?.s),
                         .number => |num| {
-                            var buf: [32]u8 = undefined;
+                            var buf: [64]u8 = undefined;
                             const slice = std.fmt.bufPrint(&buf, "{d}", .{num}) catch "";
                             try list.appendSlice(L.allocator, slice);
                         },

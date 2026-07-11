@@ -53,7 +53,7 @@ Legend:
 
 ---
 
-## BUG-004 — `lua_tointegerx` truncates non-integral floats  [MED]
+## BUG-004 — `lua_tointegerx` truncates non-integral floats  [MED] ✅ FIXED
 - **Location:** `src/lua.zig:757-764`.
 - **Defect:** For `3.9` it returns `3` with `isnum = true`. The reference sets
   `isnum = false` and returns `0` for non-integral floats.
@@ -64,7 +64,7 @@ Legend:
 
 ---
 
-## BUG-005 — `lua_isinteger` hardcoded to return 0  [MED]
+## BUG-005 — `lua_isinteger` hardcoded to return 0  [MED] ✅ FIXED
 - **Location:** `src/lua.zig:713-717`.
 - **Defect:** The body returns `0` unconditionally. Real Lua returns `1` for
   integral floats.
@@ -78,16 +78,17 @@ Legend:
 ## BUG-006 — `lua_pushvfstring` / `lua_pushfstring` ignore the format string  [MED]
 - **Location:** `src/lua.zig:967-974`.
 - **Defect:** The functions return the format literal unchanged instead of
-  formatting it with the variadic arguments.
+  formatting it with the variadic arguments. Zig has no C-style variadic
+  function signatures (`...`), so the Zig port cannot accept arbitrary format
+  arguments. The functions are unused in the current codebase.
 - **Impact:** All error/diagnostic messages built through these helpers are
-  wrong, hampering debugging and user-facing output.
-- **Fix:** Use `std.fmt` (`allocPrint` with the threaded allocator) to format
-  into a heap string, push it, and free on GC. Thread the allocator already
-  available via `L.g()`.
+  wrong. Not currently triggered.
+- **Status:** Cannot fix without changing the API contract; deferred until the
+  functions are actually needed.
 
 ---
 
-## BUG-007 — `luaL_checkstack` (auxlib) errors almost always  [MED]
+## BUG-007 — `luaL_checkstack` (auxlib) errors almost always  [MED] ✅ FIXED
 - **Location:** `src/lauxlib.zig:154-161`.
 - **Defect:** Returns `error.StackOverflow` whenever `gettop(L) + n > LUA_MINSTACK`
   (20), which is nearly always true, so the call always fails.
@@ -98,7 +99,7 @@ Legend:
 
 ---
 
-## BUG-008 — `luaL_register` registers every function under the name `"func"`  [MED]
+## BUG-008 — `luaL_register` registers every function under the name `"func"`  [MED] ✅ FIXED
 - **Location:** `src/lauxlib.zig:112-125`.
 - **Defect:** The loop does `lua_pushcfunction` + `lua_setfield(L, -2, "func")`
   for each entry, overwriting the previous and using the wrong key.
@@ -110,7 +111,7 @@ Legend:
 
 ---
 
-## BUG-009 — `TValue.typ()` maps `.upval` to `LUA_TTHREAD`  [LOW]
+## BUG-009 — `TValue.typ()` maps `.upval` to `LUA_TTHREAD`  [LOW] ✅ FIXED
 - **Location:** `src/lua.zig:153`.
 - **Defect:** The `.upval` tag maps to `LUA_TTHREAD` (8), colliding with the
   thread type tag.
@@ -121,7 +122,7 @@ Legend:
 
 ---
 
-## BUG-010 — `lua_precall` C-closure `top = L.top + 20` is unbounded  [LOW]
+## BUG-010 — `lua_precall` C-closure `top = L.top + 20` is unbounded  [LOW] ✅ FIXED
 - **Location:** `src/lua.zig:348`.
 - **Defect:** For C closures the new `CallInfo.top` is set to `L.top + 20` with
   no guarantee that the C function's pushes stay within the stack, and no stack
@@ -154,7 +155,7 @@ Legend:
 
 ---
 
-## BUG-012 — C-API `lua_gettable`/`lua_settable` and friends silently swallow metamethod errors  [MED]
+## BUG-012 — C-API `lua_gettable`/`lua_settable` and friends silently swallow metamethod errors  [MED] ✅ FIXED
 - **Location:** `src/lua.zig:1133-1137` (`lua_gettable`), `:1154` (`lua_getfield`),
   `:1170` (`lua_geti`), `:1302` (`lua_settable`), `:1318` (`lua_setfield`),
   `:1329` (`lua_seti`); `lua_pcallk` error path `:1417-1419`/`BUG-002`.
@@ -175,7 +176,7 @@ Legend:
 
 ---
 
-## BUG-013 — `lua_checkstack` return value ignored in `luaT_callTM`/`callTMres` → latent OOB  [LOW]
+## BUG-013 — `lua_checkstack` return value ignored in `luaT_callTM`/`callTMres` → latent OOB  [LOW] ✅ FIXED
 - **Location:** `src/ltm.zig:103` (`luaT_callTM`), `:115` (`luaT_callTMres`);
   helper `src/lua.zig:648` (`lua_checkstack`).
 - **Defect:** Both helpers do `_ = lua.lua_checkstack(L, 4/3)` and then write

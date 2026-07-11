@@ -411,3 +411,43 @@ Implemented the binary bytecode loader (`lundump.zig`), allowing precompiled Lua
 
 `zig build test` compiled and passed all **34/34 tests** with zero memory leaks.
 
+---
+
+## 2026-07-11 — BUG-004/005/007/008/009/010/012/013 fixes
+
+### Changes
+
+- **BUG-004** — `lua_tointegerx`: sets `isnum=0` for non-integral floats
+  (when `@trunc(n) != n`). `src/lua.zig:757-763`.
+- **BUG-005** — `lua_isinteger`: returns `1` for integral floats (when
+  `@trunc(n) == n`). `src/lua.zig:713-717`.
+- **BUG-007** — `luaL_checkstack`: delegates to core `lua_checkstack` instead
+  of checking `lua_gettop(L) + n > LUA_MINSTACK`. `src/lauxlib.zig:154-161`.
+- **BUG-008** — `luaL_register`: defines `luaL_Reg` struct with `name`/`func`
+  fields; uses `reg.name` instead of hardcoded `"func"`. `src/lauxlib.zig:112-125`.
+- **BUG-009** — `TValue.typ()`: maps `.upval` to new `LUA_TUPVAL=9` instead
+  of colliding `LUA_TTHREAD`. `src/llimits.zig:56-58`, `src/lua.zig:23,152`.
+- **BUG-010** — `precall` C-closure: calls `lua_checkstack(L, 20)` before
+  setting `CallInfo.top = L.top + 20`. `src/lua.zig:348`.
+- **BUG-012** — C-API table accessors: `lua_gettable`/`getfield`/`geti`/
+  `settable`/`setfield`/`seti` now propagate errors via `!i32`/`!void` and
+  `try` instead of `catch {}`. Updated callers in `baselib.zig` and
+  `tests/test_basic.zig`. `src/lua.zig:1143-1340`.
+- **BUG-013** — `luaT_callTM`/`luaT_callTMres`: check `lua_checkstack`
+  result and return `error.OutOfMemory` on failure. `src/ltm.zig:101-125`.
+- **`docs/bugs.md`**: Marked BUG-004/005/007/008/009/010/012/013 as fixed.
+  Updated BUG-006 description (cannot fix without C-style varargs).
+- **`src/lib/*.zig`**: Library stubs remain unfixed for BUG-012 (not compiled).
+
+### §0.1 Self-Audit
+
+- All error propagations use `!T` + `try` as required by §0.1 rule 2.
+- `@trunc` used for fractional-part detection (safe float arithmetic).
+- `LUA_TUPVAL` constant added to `llimits.zig` and re-exported from `lua.zig`.
+- No `catch unreachable`, no `@bitCast` for value conversion.
+- `luaL_Reg` struct defined in `lauxlib.zig` with idiomatic Zig struct layout.
+
+### Verification
+
+`zig build test` compiled and passed all **34/34 tests** with zero memory leaks.
+

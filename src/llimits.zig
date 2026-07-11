@@ -54,8 +54,9 @@ pub const LUA_TTABLE: i32 = 5;
 pub const LUA_TFUNCTION: i32 = 6;
 pub const LUA_TUSERDATA: i32 = 7;
 pub const LUA_TTHREAD: i32 = 8;
+pub const LUA_TUPVAL: i32 = 9;
 
-pub const LUA_NUMTYPES: i32 = 9;
+pub const LUA_NUMTYPES: i32 = 10;
 
 // Minimum Lua stack available to a C function
 pub const LUA_MINSTACK: i32 = 20;

@@ -21,6 +21,7 @@ pub const LUA_TSTRING: i32 = llimits.LUA_TSTRING;
 pub const LUA_TFUNCTION: i32 = llimits.LUA_TFUNCTION;
 pub const LUA_TUSERDATA: i32 = llimits.LUA_TUSERDATA;
 pub const LUA_TTHREAD: i32 = llimits.LUA_TTHREAD;
+pub const LUA_TUPVAL: i32 = llimits.LUA_TUPVAL;
 pub const LUA_REGISTRYINDEX: i32 = llimits.LUA_REGISTRYINDEX;
 pub const LUA_OK: i32 = llimits.LUA_OK;
 pub const LUA_YIELD: i32 = llimits.LUA_YIELD;
@@ -149,7 +150,7 @@ pub const TValue = union(enum) {
             .function => LUA_TFUNCTION,
             .userdata => LUA_TUSERDATA,
             .thread => LUA_TTHREAD,
-            .upval => LUA_TTHREAD,
+            .upval => LUA_TUPVAL,
             .proto => LUA_TFUNCTION,
         };
     }
@@ -341,6 +342,7 @@ pub fn precall(L: *lua_State, func_idx: usize, nresults: i32) !?*CallInfo {
     const cl = val.function.?;
     switch (cl.*) {
         .c => |cc| {
+            if (lua_checkstack(L, 20) == 0) return error.StackOverflow;
             const old_ci = L.ci;
             var new_ci = CallInfo{
                 .func = func_idx,
@@ -711,9 +713,11 @@ pub fn lua_iscfunction(L: *lua_State, idx: i32) i32 {
 }
 
 pub fn lua_isinteger(L: *lua_State, idx: i32) i32 {
-    _ = L;
-    _ = idx;
-    return 0;
+    const v = stackAt(L, idx);
+    return switch (v) {
+        .number => |n| if (@trunc(n) == n) 1 else 0,
+        else => 0,
+    };
 }
 
 pub fn lua_isuserdata(L: *lua_State, idx: i32) i32 {
@@ -756,7 +760,10 @@ pub fn lua_tonumberx(L: *lua_State, idx: i32, isnum: ?*i32) ?f64 {
 
 pub fn lua_tointegerx(L: *lua_State, idx: i32, isnum: ?*i32) ?i64 {
     const v = stackAt(L, idx);
-    if (isnum) |p| p.* = switch (v) { .number => 1, else => 0 };
+    if (isnum) |p| p.* = switch (v) {
+        .number => |n| if (@trunc(n) == n) 1 else 0,
+        else => 0,
+    };
     return switch (v) {
         .number => |n| @as(i64, @intFromFloat(n)),
         else => null,
@@ -1127,7 +1134,7 @@ fn getTable(L: *lua_State, idx: i32) ?*lua_Table {
     return null;
 }
 
-pub fn lua_gettable(L: *lua_State, idx: i32) i32 {
+pub fn lua_gettable(L: *lua_State, idx: i32) !i32 {
     const obj = stackAt(L, idx);
     if (obj == .nil) {
         lua_pushnil(L);
@@ -1135,35 +1142,27 @@ pub fn lua_gettable(L: *lua_State, idx: i32) i32 {
     }
     const key = L.stack[L.top - 1];
     const res = L.top - 1;
-    // Overwrite the key slot with the result (mirrors C API contract).
-    ltm.luaV_gettable(L, obj, key, res) catch {
-        L.stack[res] = .{ .nil = {} };
-    };
+    try ltm.luaV_gettable(L, obj, key, res);
     return L.stack[res].typ();
 }
 
-pub fn lua_getfield(L: *lua_State, idx: i32, k: []const u8) i32 {
+pub fn lua_getfield(L: *lua_State, idx: i32, k: []const u8) !i32 {
     const obj = stackAt(L, idx);
     if (obj == .nil) {
         lua_pushnil(L);
         return LUA_TNIL;
     }
     const g = G(L);
-    const ts = lstring.luaS_new(g.allocator, &g.strt, g.seed, k) catch {
-        lua_pushnil(L);
-        return LUA_TNIL;
-    };
+    const ts = try lstring.luaS_new(g.allocator, &g.strt, g.seed, k);
     const key = TValue{ .string = ts };
     const res = L.top;
     L.stack[L.top] = .{ .nil = {} };
     L.top += 1;
-    ltm.luaV_gettable(L, obj, key, res) catch {
-        L.stack[res] = .{ .nil = {} };
-    };
+    try ltm.luaV_gettable(L, obj, key, res);
     return L.stack[res].typ();
 }
 
-pub fn lua_geti(L: *lua_State, idx: i32, n: lua_Integer) i32 {
+pub fn lua_geti(L: *lua_State, idx: i32, n: lua_Integer) !i32 {
     const obj = stackAt(L, idx);
     if (obj == .nil) {
         lua_pushnil(L);
@@ -1173,9 +1172,7 @@ pub fn lua_geti(L: *lua_State, idx: i32, n: lua_Integer) i32 {
     const res = L.top;
     L.stack[L.top] = .{ .nil = {} };
     L.top += 1;
-    ltm.luaV_gettable(L, obj, key, res) catch {
-        L.stack[res] = .{ .nil = {} };
-    };
+    try ltm.luaV_gettable(L, obj, key, res);
     return L.stack[res].typ();
 }
 
@@ -1296,7 +1293,7 @@ pub fn lua_setglobal(L: *lua_State, name: []const u8) void {
     ltable.set(globals, key, val) catch {};
 }
 
-pub fn lua_settable(L: *lua_State, idx: i32) void {
+pub fn lua_settable(L: *lua_State, idx: i32) !void {
     const obj = stackAt(L, idx);
     if (obj == .nil) {
         L.top -= 2;
@@ -1305,26 +1302,23 @@ pub fn lua_settable(L: *lua_State, idx: i32) void {
     const key = L.stack[L.top - 2];
     const val = L.stack[L.top - 1];
     L.top -= 2;
-    ltm.luaV_settable(L, obj, key, val) catch {};
+    try ltm.luaV_settable(L, obj, key, val);
 }
 
-pub fn lua_setfield(L: *lua_State, idx: i32, k: []const u8) void {
+pub fn lua_setfield(L: *lua_State, idx: i32, k: []const u8) !void {
     const obj = stackAt(L, idx);
     if (obj == .nil) {
         L.top -= 1;
         return;
     }
     const g = G(L);
-    const ts = lstring.luaS_new(g.allocator, &g.strt, g.seed, k) catch {
-        L.top -= 1;
-        return;
-    };
+    const ts = try lstring.luaS_new(g.allocator, &g.strt, g.seed, k);
     const val = L.stack[L.top - 1];
     L.top -= 1;
-    ltm.luaV_settable(L, obj, TValue{ .string = ts }, val) catch {};
+    try ltm.luaV_settable(L, obj, TValue{ .string = ts }, val);
 }
 
-pub fn lua_seti(L: *lua_State, idx: i32, n: lua_Integer) void {
+pub fn lua_seti(L: *lua_State, idx: i32, n: lua_Integer) !void {
     const obj = stackAt(L, idx);
     if (obj == .nil) {
         L.top -= 1;
@@ -1332,7 +1326,7 @@ pub fn lua_seti(L: *lua_State, idx: i32, n: lua_Integer) void {
     }
     const val = L.stack[L.top - 1];
     L.top -= 1;
-    ltm.luaV_settable(L, obj, TValue{ .number = @floatFromInt(n) }, val) catch {};
+    try ltm.luaV_settable(L, obj, TValue{ .number = @floatFromInt(n) }, val);
 }
 
 /// Raw (no metamethod) set — key and value are on top of stack.
