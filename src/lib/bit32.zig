@@ -1,191 +1,231 @@
-/*
-** $Id: bit32.zig
-** Bit32 library for Zua (Zig port of Lua 5.5.1)
-** See Copyright Notice in c_compat.zig
-*/
+//
+// ** $Id: bit32.zig $
+// ** Bitwise library for Lua.zig (Zig port of Lua 5.3's bit32 library)
+// ** See Copyright Notice in lua.h
+//
+// Ported from lua-5.3.6/src/lbitlib.c. All values are interpreted as
+// unsigned 32-bit integers (LUA_NBITS = 32). Follows the reference
+// semantics exactly: rotations use disp % 32, but shifts return 0 when
+// |disp| >= 32, and arshift is arithmetic (sign-extends bit 31) only
+// when bit 31 of the value is set.
+//
 
 const std = @import("std");
-const lua = @import("lua.zig");
-const lprefix = @import("lprefix.zig");
-const llimits = @import("llimits.zig");
+const lua = @import("../lua.zig");
+const lauxlib = @import("../lauxlib.zig");
 
-// ===================================================================
-// Bit32 library functions
-// ===================================================================
+const MASK: u64 = 0xFFFFFFFF;
+const NBITS: u6 = 32;
 
-pub fn openbit32(L: *lua_State) !void {
-    // band(x, y)
-    lua.lua_pushcfunction(L, band);
-    lua.lua_setfield(L, -1, "band");
+// Interpret an i64 argument as a 32-bit unsigned value (matches the C
+// `checkunsigned` helper, which masks to NBITS bits).
+fn maskfield(v: i64) u64 {
+    return @as(u64, @bitCast(v)) & MASK;
+}
 
-    // bor(x, y)
-    lua.lua_pushcfunction(L, bor);
-    lua.lua_setfield(L, -1, "bor");
+// Logical left/right shift of a 32-bit value by |disp| bits.
+// Returns 0 when |disp| >= NBITS (the C `b_shift` behaviour).
+fn b_shift(x: u64, disp: i64, left: bool) u64 {
+    const r = x & MASK;
+    const i: i64 = if (disp < 0) -disp else disp;
+    if (i >= NBITS) return 0;
+    if (left) {
+        return (r << @as(u6, @intCast(i))) & MASK;
+    } else {
+        return (r >> @as(u6, @intCast(i))) & MASK;
+    }
+}
 
-    // bxor(x, y)
-    lua.lua_pushcfunction(L, bxor);
-    lua.lua_setfield(L, -1, "bxor");
+fn bit_and(L: *lua.lua_State) !i32 {
+    var r: u64 = ~@as(u64, 0);
+    const n = lua.lua_gettop(L);
+    var i: i32 = 1;
+    while (i <= n) : (i += 1) {
+        r &= maskfield(try lauxlib.luaL_checkinteger(L, i));
+    }
+    lua.lua_pushinteger(L, @as(i64, @bitCast(r & MASK)));
+    return 1;
+}
 
-    // bnot(x)
-    lua.lua_pushcfunction(L, bnot);
-    lua.lua_setfield(L, -1, "bnot");
+fn bit_or(L: *lua.lua_State) !i32 {
+    var r: u64 = 0;
+    const n = lua.lua_gettop(L);
+    var i: i32 = 1;
+    while (i <= n) : (i += 1) {
+        r |= maskfield(try lauxlib.luaL_checkinteger(L, i));
+    }
+    lua.lua_pushinteger(L, @as(i64, @bitCast(r & MASK)));
+    return 1;
+}
 
-    // shl(x, y)
-    lua.lua_pushcfunction(L, shl);
-    lua.lua_setfield(L, -1, "shl");
+fn bit_xor(L: *lua.lua_State) !i32 {
+    var r: u64 = 0;
+    const n = lua.lua_gettop(L);
+    var i: i32 = 1;
+    while (i <= n) : (i += 1) {
+        r ^= maskfield(try lauxlib.luaL_checkinteger(L, i));
+    }
+    lua.lua_pushinteger(L, @as(i64, @bitCast(r & MASK)));
+    return 1;
+}
 
-    // shr(x, y)
-    lua.lua_pushcfunction(L, shr);
-    lua.lua_setfield(L, -1, "shr");
+fn bit_not(L: *lua.lua_State) !i32 {
+    const x = maskfield(try lauxlib.luaL_checkinteger(L, 1));
+    lua.lua_pushinteger(L, @as(i64, @bitCast(~x & MASK)));
+    return 1;
+}
 
-    // btest(x, y)
-    lua.lua_pushcfunction(L, btest);
-    lua.lua_setfield(L, -1, "btest");
+fn bit_test(L: *lua.lua_State) !i32 {
+    var r: u64 = maskfield(try lauxlib.luaL_checkinteger(L, 1));
+    const n = lua.lua_gettop(L);
+    var i: i32 = 2;
+    while (i <= n) : (i += 1) {
+        r &= maskfield(try lauxlib.luaL_checkinteger(L, i));
+    }
+    lua.lua_pushboolean(L, if (r != 0) 1 else 0);
+    return 1;
+}
 
-    // bandi(x, y)
-    lua.lua_pushcfunction(L, bandi);
-    lua.lua_setfield(L, -1, "bandi");
+fn bit_lshift(L: *lua.lua_State) !i32 {
+    const x = maskfield(try lauxlib.luaL_checkinteger(L, 1));
+    const disp = try lauxlib.luaL_checkinteger(L, 2);
+    lua.lua_pushinteger(L, @as(i64, @bitCast(b_shift(x, disp, true))));
+    return 1;
+}
 
-    // bori(x, y)
-    lua.lua_pushcfunction(L, bori);
-    lua.lua_setfield(L, -1, "bori");
+fn bit_rshift(L: *lua.lua_State) !i32 {
+    const x = maskfield(try lauxlib.luaL_checkinteger(L, 1));
+    const disp = try lauxlib.luaL_checkinteger(L, 2);
+    lua.lua_pushinteger(L, @as(i64, @bitCast(b_shift(x, -disp, false))));
+    return 1;
+}
 
-    // bxori(x, y)
-    lua.lua_pushcfunction(L, bxori);
-    lua.lua_setfield(L, -1, "bxori");
+fn bit_arshift(L: *lua.lua_State) !i32 {
+    const x = maskfield(try lauxlib.luaL_checkinteger(L, 1));
+    const disp = try lauxlib.luaL_checkinteger(L, 2);
+    // If disp < 0, or the value's bit 31 is not set, this is a plain
+    // logical shift right by |disp|. Otherwise it is an arithmetic shift
+    // (sign-extend bit 31).
+    if (disp < 0 or (x & (@as(u64, 1) << 31)) == 0) {
+        lua.lua_pushinteger(L, @as(i64, @bitCast(b_shift(x, -disp, false))));
+        return 1;
+    }
+    if (disp >= NBITS) {
+        lua.lua_pushinteger(L, @as(i64, @bitCast(MASK)));
+        return 1;
+    }
+    const i: u6 = @intCast(disp);
+    const hi = (~(MASK >> i)) & MASK;
+    const res = ((x >> i) | hi) & MASK;
+    lua.lua_pushinteger(L, @as(i64, @bitCast(res)));
+    return 1;
+}
 
-    // bori(x, y)
-    lua.lua_pushcfunction(L, bor);
-    lua.lua_setfield(L, -1, "bori");
+fn bit_lrotate(L: *lua.lua_State) !i32 {
+    const x = maskfield(try lauxlib.luaL_checkinteger(L, 1));
+    const disp = try lauxlib.luaL_checkinteger(L, 2);
+    const d: u6 = @intCast(disp & 31);
+    const r = x & MASK;
+    if (d == 0) {
+        lua.lua_pushinteger(L, @as(i64, @bitCast(r)));
+        return 1;
+    }
+    const res = ((r << d) | (r >> (NBITS - d))) & MASK;
+    lua.lua_pushinteger(L, @as(i64, @bitCast(res)));
+    return 1;
+}
 
-    // bxori(x, y)
-    lua.lua_pushcfunction(L, bxor);
-    lua.lua_setfield(L, -1, "bxori");
+fn bit_rrotate(L: *lua.lua_State) !i32 {
+    const x = maskfield(try lauxlib.luaL_checkinteger(L, 1));
+    const disp = try lauxlib.luaL_checkinteger(L, 2);
+    const d: u6 = @intCast(disp & 31);
+    const r = x & MASK;
+    if (d == 0) {
+        lua.lua_pushinteger(L, @as(i64, @bitCast(r)));
+        return 1;
+    }
+    const res = ((r >> d) | (r << (NBITS - d))) & MASK;
+    lua.lua_pushinteger(L, @as(i64, @bitCast(res)));
+    return 1;
+}
 
-    // band(x, y)
-    lua.lua_pushcfunction(L, band);
-    lua.lua_setfield(L, -1, "bandi");
+fn bit_extract(L: *lua.lua_State) !i32 {
+    const x = maskfield(try lauxlib.luaL_checkinteger(L, 1));
+    const field = try lauxlib.luaL_checkinteger(L, 2);
+    const width = lauxlib.luaL_optinteger(L, 3, 1);
+    try lauxlib.luaL_argcheck(L, field >= 0, 2, "field cannot be negative");
+    try lauxlib.luaL_argcheck(L, width > 0, 3, "width must be positive");
+    if (field + width > NBITS) {
+        return lauxlib.luaL_error(L, "trying to access non-existent bits");
+    }
+    const f: u6 = @intCast(field);
+    const w: u6 = @intCast(width);
+    const wmask: u64 = if (w >= NBITS) MASK else ((@as(u64, 1) << w) - 1);
+    const res = (x >> f) & wmask;
+    lua.lua_pushinteger(L, @as(i64, @bitCast(res)));
+    return 1;
+}
 
-    // bor(x, y)
-    lua.lua_pushcfunction(L, bor);
-    lua.lua_setfield(L, -1, "bori");
-
-    // bxor(x, y)
-    lua.lua_pushcfunction(L, bxor);
-    lua.lua_setfield(L, -1, "bxori");
-
-    // lshift(x, y)
-    lua.lua_pushcfunction(L, shl);
-    lua.lua_setfield(L, -1, "lshift");
-
-    // rshift(x, y)
-    lua.lua_pushcfunction(L, shr);
-    lua.lua_setfield(L, -1, "rshift");
-
-    // arshift(x, y)
-    lua.lua_pushcfunction(L, shr);
-    lua.lua_setfield(L, -1, "arshift");
+fn bit_replace(L: *lua.lua_State) !i32 {
+    const x = maskfield(try lauxlib.luaL_checkinteger(L, 1));
+    const v = maskfield(try lauxlib.luaL_checkinteger(L, 2));
+    const field = try lauxlib.luaL_checkinteger(L, 3);
+    const width = lauxlib.luaL_optinteger(L, 4, 1);
+    try lauxlib.luaL_argcheck(L, field >= 0, 3, "field cannot be negative");
+    try lauxlib.luaL_argcheck(L, width > 0, 4, "width must be positive");
+    if (field + width > NBITS) {
+        return lauxlib.luaL_error(L, "trying to access non-existent bits");
+    }
+    const f: u6 = @intCast(field);
+    const w: u6 = @intCast(width);
+    const wmask: u64 = if (w >= NBITS) MASK else ((@as(u64, 1) << w) - 1);
+    const res = (x & ~(wmask << f)) | ((v & wmask) << f);
+    lua.lua_pushinteger(L, @as(i64, @bitCast(res & MASK)));
+    return 1;
 }
 
 // ===================================================================
-// Bit32 library function implementations
+// Library registration
 // ===================================================================
 
-fn band(L: *lua_State) i32 {
-    const x = lua.lua_tointeger(L, 1);
-    const y = lua.lua_tointeger(L, 2);
-    if (x and y) |vx| {
-        lua.lua_pushinteger(L, @as(i64, @bitAnd(vx, y.?)));
-        return 1;
-    }
-    return 0;
-}
+pub fn openbit32(L: *lua.lua_State) !void {
+    lua.lua_createtable(L, 0, 12);
 
-fn bor(L: *lua_State) i32 {
-    const x = lua.lua_tointeger(L, 1);
-    const y = lua.lua_tointeger(L, 2);
-    if (x and y) |vx| {
-        lua.lua_pushinteger(L, @as(i64, @bitOr(vx, y.?)));
-        return 1;
-    }
-    return 0;
-}
+    lua.lua_pushcfunction(L, bit_and);
+    try lua.lua_setfield(L, -2, "band");
 
-fn bxor(L: *lua_State) i32 {
-    const x = lua.lua_tointeger(L, 1);
-    const y = lua.lua_tointeger(L, 2);
-    if (x and y) |vx| {
-        lua.lua_pushinteger(L, @as(i64, @bitXor(vx, y.?)));
-        return 1;
-    }
-    return 0;
-}
+    lua.lua_pushcfunction(L, bit_or);
+    try lua.lua_setfield(L, -2, "bor");
 
-fn bnot(L: *lua_State) i32 {
-    const x = lua.lua_tointeger(L, 1);
-    if (x) |vx| {
-        lua.lua_pushinteger(L, @as(i64, ~vx));
-        return 1;
-    }
-    return 0;
-}
+    lua.lua_pushcfunction(L, bit_xor);
+    try lua.lua_setfield(L, -2, "bxor");
 
-fn shl(L: *lua_State) i32 {
-    const x = lua.lua_tointeger(L, 1);
-    const n = lua.lua_tointeger(L, 2);
-    if (x and n) |vx| {
-        lua.lua_pushinteger(L, @as(i64, @bitShiftLeft(vx, @as(i32, @as(i32,(n.?))));
-        return 1;
-    }
-    return 0;
-}
+    lua.lua_pushcfunction(L, bit_not);
+    try lua.lua_setfield(L, -2, "bnot");
 
-fn shr(L: *lua_State) i32 {
-    const x = lua.lua_tointeger(L, 1);
-    const n = lua.lua_tointeger(L, 2);
-    if (x and n) |vx| {
-        lua.lua_pushinteger(L, @as(i64, @bitShiftRight(vx, @as(i32, @as(i32,(n.?))));
-        return 1;
-    }
-    return 0;
-}
+    lua.lua_pushcfunction(L, bit_test);
+    try lua.lua_setfield(L, -2, "btest");
 
-fn btest(L: *lua_State) i32 {
-    const x = lua.lua_tointeger(L, 1);
-    const y = lua.lua_tointeger(L, 2);
-    if (x and y) |vx| {
-        lua.lua_pushboolean(L, @bitAnd(vx, y.?) != 0);
-        return 1;
-    }
-    return 0;
-}
+    lua.lua_pushcfunction(L, bit_lshift);
+    try lua.lua_setfield(L, -2, "lshift");
 
-fn bandi(L: *lua_State) i32 {
-    const x = lua.lua_tointeger(L, 1);
-    const y = lua.lua_tointeger(L, 2);
-    if (x and y) |vx| {
-        lua.lua_pushinteger(L, @as(i64, @bitAnd(vx, y.?)));
-        return 1;
-    }
-    return 0;
-}
+    lua.lua_pushcfunction(L, bit_rshift);
+    try lua.lua_setfield(L, -2, "rshift");
 
-fn bori(L: *lua_State) i32 {
-    const x = lua.lua_tointeger(L, 1);
-    const y = lua.lua_tointeger(L, 2);
-    if (x and y) |vx| {
-        lua.lua_pushinteger(L, @as(i64, @bitOr(vx, y.?)));
-        return 1;
-    }
-    return 0;
-}
+    lua.lua_pushcfunction(L, bit_arshift);
+    try lua.lua_setfield(L, -2, "arshift");
 
-fn bxori(L: *lua_State) i32 {
-    const x = lua.lua_tointeger(L, 1);
-    const y = lua.lua_tointeger(L, 2);
-    if (x and y) |vx| {
-        lua.lua_pushinteger(L, @as(i64, @bitXor(vx, y.?)));
-        return 1;
-    }
-    return 0;
+    lua.lua_pushcfunction(L, bit_lrotate);
+    try lua.lua_setfield(L, -2, "lrotate");
+
+    lua.lua_pushcfunction(L, bit_rrotate);
+    try lua.lua_setfield(L, -2, "rrotate");
+
+    lua.lua_pushcfunction(L, bit_extract);
+    try lua.lua_setfield(L, -2, "extract");
+
+    lua.lua_pushcfunction(L, bit_replace);
+    try lua.lua_setfield(L, -2, "replace");
+
+    lua.lua_setglobal(L, "bit32");
 }

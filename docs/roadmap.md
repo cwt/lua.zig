@@ -122,7 +122,7 @@ Implement library bodies in `src/lib/*.zig`:
 - iolib: file I/O via `std.Io` instead of C FILE*
 - corolib: coroutine creation/resume/yield
 - loadlib: `require`, `package`, module loading
-- bit32: bitwise operations
+- bit32: bitwise operations — **DONE** (2026-07-11, ported from Lua 5.3 `lbitlib.c`)
 - debug: debug API
 
 Wire `iolib`/`oslib` to `std.Io`/`init.io`.

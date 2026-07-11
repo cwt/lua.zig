@@ -121,6 +121,11 @@ Depends on debug hooks and `CallInfo` introspection.
 
 ### bit32 (`lua/lbitlib.c`)
 
-Functions: `arshift`, `band`, `bnot`, `bor`, `btest`, `bxor`, `extract`, `lrotate`, `lshift`, `replace`, `rrotate`, `rshift`
+Functions: `arshift`, `band`, `bnot`, `bor`, `btest`, `bxor`, `extract`, `lrotate`, `lshift`, `replace`, `rrotate`, `rshift` — **DONE** (2026-07-11)
 
-Pure bit manipulation. Uses `lua_Unsigned` (`u64`). Low dependencies.
+All 12 functions ported from Lua 5.3.6 `lbitlib.c` (absent from this 5.5.1 tree).
+Pure bit manipulation on unsigned 32-bit values (`LUA_NBITS = 32`). `lshift`/`rshift`
+return `0` for `|disp| >= 32`; `arshift` is arithmetic (sign-extends bit 31) only
+when bit 31 is set; `lrotate`/`rrotate` use `disp & 31`. `extract`/`replace` accept
+a `width` argument and validate `field >= 0`, `width > 0`, `field + width <= 32`.
+Low dependencies (only `lua` + `lauxlib`).

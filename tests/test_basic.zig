@@ -1370,3 +1370,67 @@ test "baselib: select()" {
     const status = lua.lua_pcallk(&L, 0, 0, 0, 0, null);
     try std.testing.expectEqual(lua.LUA_OK, status);
 }
+
+test "bit32: bitwise library" {
+    const gpa = std.testing.allocator;
+    var L: lua.lua_State = undefined;
+    try lua.luaL_newstate(&L, gpa);
+    defer lua.lua_close(&L);
+    try lua.luaL_openlibs(&L);
+
+    const testfn = struct {
+        fn check(Ls: *lua.lua_State, name: []const u8, args: []const i64, exp: i64) !void {
+            _ = lua.lua_getglobal(Ls, "bit32");
+            _ = try lua.lua_getfield(Ls, -1, name);
+            for (args) |a| lua.lua_pushinteger(Ls, a);
+            try lua.lua_call(Ls, @as(i32, @intCast(args.len)), 1);
+            const got = lua.lua_tointeger(Ls, -1) orelse return error.NoResult;
+            if (got != exp) return error.UnexpectedResult;
+            lua.lua_pop(Ls, 2);
+        }
+        fn checkb(Ls: *lua.lua_State, name: []const u8, args: []const i64, exp: i32) !void {
+            _ = lua.lua_getglobal(Ls, "bit32");
+            _ = try lua.lua_getfield(Ls, -1, name);
+            for (args) |a| lua.lua_pushinteger(Ls, a);
+            try lua.lua_call(Ls, @as(i32, @intCast(args.len)), 1);
+            const got = lua.lua_toboolean(Ls, -1);
+            if (got != exp) return error.UnexpectedResult;
+            lua.lua_pop(Ls, 2);
+        }
+        fn f(Ls: *lua.lua_State) anyerror!i32 {
+            // band / bor / bxor / bnot
+            try check(Ls, "band", &[_]i64{ 15, 7 }, 7);
+            try check(Ls, "bor", &[_]i64{ 1, 2 }, 3);
+            try check(Ls, "bxor", &[_]i64{ 15, 5 }, 10);
+            try check(Ls, "bnot", &[_]i64{0}, 0xFFFFFFFF);
+
+            // btest returns a boolean
+            try checkb(Ls, "btest", &[_]i64{ 0xF0, 0x10 }, 1);
+            try checkb(Ls, "btest", &[_]i64{ 0xF0, 0x01 }, 0);
+
+            // shifts (all values masked to 32 bits)
+            try check(Ls, "lshift", &[_]i64{ 1, 4 }, 16);
+            try check(Ls, "rshift", &[_]i64{ 16, 4 }, 1);
+            // arshift is arithmetic only when bit 31 is set
+            try check(Ls, "arshift", &[_]i64{ -1, 1 }, 0xFFFFFFFF);
+            try check(Ls, "arshift", &[_]i64{ 0x80000000, 1 }, 0xC0000000);
+            try check(Ls, "arshift", &[_]i64{ 0x12345678, 8 }, 0x00123456);
+            // |disp| >= 32 yields 0
+            try check(Ls, "lshift", &[_]i64{ 1, 32 }, 0);
+            try check(Ls, "rshift", &[_]i64{ 0xFFFFFFFF, 32 }, 0);
+            // rotations use disp % 32
+            try check(Ls, "lrotate", &[_]i64{ 1, 1 }, 2);
+            try check(Ls, "rrotate", &[_]i64{ 1, 1 }, 0x80000000);
+            try check(Ls, "lrotate", &[_]i64{ 1, 33 }, 2);
+
+            // extract / replace
+            try check(Ls, "extract", &[_]i64{ 0x12345678, 8, 8 }, 0x56);
+            try check(Ls, "replace", &[_]i64{ 0x12345678, 0xFF, 16, 8 }, 0x12FF5678);
+
+            return 0;
+        }
+    }.f;
+    lua.lua_pushcfunction(&L, testfn);
+    const status = lua.lua_pcallk(&L, 0, 0, 0, 0, null);
+    try std.testing.expectEqual(lua.LUA_OK, status);
+}

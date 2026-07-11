@@ -506,3 +506,48 @@ Implemented the binary bytecode loader (`lundump.zig`), allowing precompiled Lua
   against the resulting out-of-range panic, but exact large integers are not
   representable. This is a fundamental consequence of the f64-only number model
   (also noted in the Phase B "Known Limitations" section).
+
+## 2026-07-11 — Phase F: Bitwise Standard Library (bit32) port
+
+### Changes
+- **`src/lib/bit32.zig`** (rewritten): Ported all 12 functions from Lua 5.3's
+  `lbitlib.c` (`band`, `bor`, `bxor`, `bnot`, `btest`, `lshift`, `rshift`,
+  `arshift`, `lrotate`, `rrotate`, `extract`, `replace`) plus the `openbit32`
+  registration that installs the `bit32` global table. Because `lbitlib.c` is
+  absent from this 5.5.1 tree, the authoritative reference is Lua 5.3.6
+  (`lua-5.3.6/src/lbitlib.c`), fetched to verify semantics. Key semantics
+  matched exactly:
+  - All values are unsigned 32-bit (`LUA_NBITS = 32`), masked via `checkunsigned`.
+  - `lshift`/`rshift` return `0` when `|disp| >= 32` (NOT modulo 32).
+  - `arshift` is arithmetic (sign-extends bit 31, fills with 1s) **only** when
+    bit 31 of the value is set and `disp >= 0`; otherwise it is a plain logical
+    shift right. A huge `disp` on a negative-valued (bit-31-set) input yields
+    `0xFFFFFFFF` (ALLONES).
+  - `lrotate`/`rrotate` use `disp & 31` (modulo 32), matching `b_rot`.
+  - `extract`/`replace` use `fieldargs` validation (`field >= 0`, `width > 0`,
+    `field + width <= 32`) and raise a Lua error otherwise.
+- **`src/lualib.zig`**: Wired `openbit32` to call `bit32.openbit32(L)`; imported
+  the module.
+- **`tests/test_basic.zig`**: Added a `bit32: bitwise library` block covering all
+  12 functions plus boundary cases (`|disp| >= 32` → 0, `arshift` arithmetic on
+  negative input, rotation wrap).
+
+### §0.1 Self-Audit
+- Allocator threaded where needed (no allocation in bit32 itself; it is pure
+  arithmetic on stack values).
+- Errors propagated via `!i32` + `try`; `lua_setfield` call sites use `try`;
+  `luaL_error` is invoked from `lauxlib` for invalid field/width arguments.
+- Numeric conversions use `@intCast`/`@bitCast` for integer bit reinterpretation
+  only; no `@bitCast` between f64 and integers.
+- Boundary-checked dynamic shifts: shift/rotate amounts are `u6`, with `|disp| >=
+  32` short-circuited to `0` and `disp & 31` for rotations, satisfying §0.1 rule 11.
+
+### Verification
+`zig build` and `zig build test` both pass: **38/38 tests**, zero memory leaks.
+
+### Known Limitations
+- `bit32` over the f64-only number model: the C library returns unsigned 32-bit
+  integers which our `lua_pushinteger` converts to `f64`. Values `> 2^53` lose
+  precision in `lua_tonumber` reads, but `lua_tointeger` round-trips them exactly
+  (the 32-bit range fits in f64 exactly). Tests read results via
+  `lua_tointeger`.
