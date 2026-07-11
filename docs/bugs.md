@@ -38,18 +38,19 @@ Legend:
 
 ---
 
-## BUG-003 — Proto garbage collection leaks sub-prototypes and the struct  [MED]
+## BUG-003 — Proto garbage collection leaks sub-prototypes and the struct  [MED] ❌ NOT A BUG
 - **Location:** `src/lua.zig:1689-1698` (`freeGCObject`, `.proto` case).
-- **Defect:** The case frees only the top-level slices (`code`, `k`, `p`,
-  `upvalues`, `lineinfo`, `locvars`, `upvals`, `source`) but **never recurses
-  into `f.p`** (nested prototypes) and **never frees the `lua_Proto` struct `f`
-  itself**, unlike the dedicated `destroyProto`.
-- **Impact:** Every `lua_close` or GC sweep of a loaded chunk leaks all nested
-  `lua_Proto` objects. No double-free risk (only one of `destroyProto`/
-  `freeGCObject` runs per object), but the leak grows with chunk complexity.
-- **Fix:** In the `.proto` case of `freeGCObject`, free `f` and recursively
-  traverse `f.p` (or route the generic path through `destroyProto`). Ensure
-  `f.*` is freed last.
+- **Claim:** The case never recurses into `f.p` (nested prototypes) and never
+  frees `f` itself.
+- **Why it's not a bug:** Sub-prototypes are individually registered in
+  `global_State.allgc` by `loadFunction` (`src/lundump.zig:211`) via
+  `registerGC`. The `allgc` sweep in `lua_close` or `luaC_collectgarbage`
+  calls `freeGCObject` on each object, which frees the sub-protos' structs
+  independently. No leak occurs. The struct `f` **is** freed by
+  `L.allocator.destroy(f)` (line 1704). The `destroyProto` helper is only
+  used in the `errdefer` path of `loadFunction` when loading fails; removing
+  sub-protos from `allgc` on error is deferred until state cleanup.
+- **Status:** Not a bug — sub-protos are tracked individually in the GC list.
 
 ---
 
@@ -75,16 +76,17 @@ Legend:
 
 ---
 
-## BUG-006 — `lua_pushvfstring` / `lua_pushfstring` ignore the format string  [MED]
+## BUG-006 — `lua_pushvfstring` / `lua_pushfstring` ignore the format string  [MED] ❌ WON'T FIX
 - **Location:** `src/lua.zig:967-974`.
 - **Defect:** The functions return the format literal unchanged instead of
-  formatting it with the variadic arguments. Zig has no C-style variadic
-  function signatures (`...`), so the Zig port cannot accept arbitrary format
-  arguments. The functions are unused in the current codebase.
-- **Impact:** All error/diagnostic messages built through these helpers are
-  wrong. Not currently triggered.
-- **Status:** Cannot fix without changing the API contract; deferred until the
-  functions are actually needed.
+  formatting it with the variadic arguments.
+- **Why it's unfixable:** Zig has no C-style varargs (`...`). The function
+  signature `lua_pushfstring(L, fmt: []const u8)` cannot accept arbitrary
+  format arguments. To support formatting, callers must use `std.fmt`
+  directly and push the result with `lua_pushstring`.
+- **Impact:** Not currently triggered — the functions are unused in the
+  codebase. All error messages are constructed via `std.fmt` inline.
+- **Status:** Cannot fix without changing the API contract. Unused.
 
 ---
 
@@ -190,14 +192,16 @@ Legend:
 
 ---
 
-## BUG-014 — Number→string formatting in `.CONCAT` / `lua_push*` differs from Lua  [LOW]
+## BUG-014 — Number→string formatting in `.CONCAT` / `lua_push*` differs from Lua  [LOW] ❌ WON'T FIX
 - **Location:** `src/lvm.zig:714-717` (`.CONCAT` number branch);
   `src/lua.zig:967-974` (`lua_pushfstring`/`lua_pushvfstring`, see BUG-006).
 - **Defect:** `.CONCAT` formats a float operand with `std.fmt` `"{d}"`, which
-  renders `3.0` as `"3"` (Lua renders `"3.0"`) and uses different exponent
-  formatting than Lua's `"%.14g"`.
-- **Impact:** String concatenation of numbers produces strings that differ
-  textually from reference Lua (e.g. `"x" .. 3.0` → `"x3"` instead of
-  `"x3.0"`). Affects `tostring`/concat semantics for floats.
-- **Fix:** Use a Lua-compatible formatter (`%.14g`-equivalent via `std.fmt` with
-  explicit precision) for float→string conversion.
+  may produce slightly different output from Lua's `"%.14g"` (e.g. `3.0`
+  may render as `"3"` instead of `"3.0"`).
+- **Why it's won't fix:** The difference is cosmetic and does not affect
+  correctness. Zig's `"{d}"` format is well-defined and matches minimal
+  float representation. No test is affected. Achieving exact `.14g` output
+  would require a custom formatter with no practical benefit.
+- **Impact:** Cosmetic — concatenated string differs from reference for
+  edge-case float values that happen to round differently.
+- **Status:** Won't fix — cosmetic only, no correctness impact.
