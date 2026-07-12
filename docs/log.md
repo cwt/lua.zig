@@ -1106,3 +1106,15 @@ The C reference relocates the call frame for hidden varargs (`buildhiddenargs`).
 ### Related
 
 - Phase C source-text compiler (lexer/parser/codegen) remains the only outstanding Phase C item; `luaL_dostring` itself is now complete. `docs/frontend.md` updated to reflect that `luaL_dostring` runs precompiled bytecode.
+
+## 2026-07-12 — Documentation sync: phases A–F marked complete; Phase G (source compiler) added to roadmap (rev 45)
+
+### Changes
+
+- **`README.md`**: Corrected stale status (was "Phase F in progress / 32 passing / lib stubs"). Now states A–F complete, 67/67 tests, all 10 libs done; added Phase G row (source-text compiler, not started) and notes the text-source gap.
+- **`docs/roadmap.md`**: Updated phase overview diagram and phase states (A–F complete; removed stale "NEXT"/"In Progress" markers). Added a full **Phase G — Source-Text Compiler** section (G.1 lexer / G.2 parser / G.3 codegen / G.4 wire `lua_load`, verification, effort ~4,700 LOC). Updated timestamp.
+- **`AGENTS.md`**: Reframed "What is NOT done" #1 as Phase G (not started); marked Phase F ✅ DONE; corrected stale file-by-file guidance (lualib/libraries); added **Phase G** section (items 17–21) to the recommended next-phase roadmap; rewrote §8 "What to work on next" to point at Phase G.
+
+### Note
+
+This is a documentation-only changeset. No source/test changes; `zig build test` still 67/67 pass, zero leaks. Phase G itself is not yet implemented — only planned and documented.

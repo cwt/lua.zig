@@ -182,7 +182,7 @@ are available as a Git subrepo.
    Ported `luaT_adjustvarargs`/`luaT_getvarargs`/`luaT_getvararg` into `src/ltm.zig` and wired `OP_VARARGPREP`/`OP_VARARG`/`OP_GETVARG` in `src/lvm.zig`. Vararg functions (`function f(a, ...) ... end`, `f(...)`, `select`, `{...}`) now execute correctly. Added `lua_Proto.flag` and `CallInfo.nextraargs`. Verified against the Lua 5.5.1 reference binary. **65/65 tests pass.**
 
 ### What is NOT done (future phases)
-1. **No source text compilation.** Lexer (`llex.c`), parser (`lparser.c`), and code generator (`lcode.c`) are not implemented (we rely on precompiled bytecode). `luaL_dostring` is now properly implemented (it loads the chunk via `lua_load` and runs it via `lua_pcallk`, mirroring the C reference); with no parser, text source still fails load with `LUA_ERRSYNTAX`, but binary chunks execute correctly.
+1. **No source-text compilation (Phase G, not started).** Lexer (`llex.c`), parser (`lparser.c`), and code generator (`lcode.c`) are not implemented (we rely on precompiled bytecode). `luaL_dostring` is properly implemented (it loads the chunk via `lua_load` and runs it via `lua_pcallk`, mirroring the C reference); with no parser, text source still fails load with `LUA_ERRSYNTAX`, but binary chunks execute correctly. See §5 "Phase G" for the planned scope.
 2. **`loadlib` `require` loading** — dynamic `.so`/`.dll` loading via `package.loadlib` is functional but `package.path` search and `require()` chain is minimal.
 
 ---
@@ -254,8 +254,8 @@ and string interning in `global_State.strt` (`std.array_hash_map.String`) in
 14. ✅ Expand garbage collector (reconcile stale state, build mark/sweep on top of VMGCObject).
 
 
-### Phase F — Standard libraries (In Progress)
-15. Port library *bodies* in `src/lib/*`. Go module by module and back each with tests.
+### Phase F — Standard libraries ✅ DONE (2026-07-12)
+ 15. Port library *bodies* in `src/lib/*`. Go module by module and back each with tests.
     - ✅ `baselib`: Registered standard functions, implemented all helper structures, tested with 5 new integration tests.
     - ✅ `mathlib`: All 26 functions + constants, PRNG via Xoshiro256 seeded in global_State.
     - ✅ `stringlib`: All 17 functions, modular sub-modules (format, pattern, pack), full pattern matcher.
@@ -277,7 +277,7 @@ and string interning in `global_State.strt` (`std.array_hash_map.String`) in
 |------|--------|-------------|
 | `build.zig` | ✅ exe+lib build OK; test step works | Expand when adding deps or test targets. |
 | `src/luazig.zig` | ✅ entry point, juicy-main | Thread `io` down to `iolib`/`oslib` if syscall-based I/O needs replacement. |
-| `src/lua.zig` | ✅ type model, stack, global_State, table API, binary loader, error propagation, GC | Phase F — standard libraries. |
+| `src/lua.zig` | ✅ type model, stack, global_State, table API, binary loader, error propagation, `luaL_dostring` (real impl), GC | Phase G — source-text compiler. |
 | `src/lundump.zig` | ✅ `loadBinaryChunk` bytecode loader, alignment, varint, string intern | Keep as-is; test coverage is complete. |
 | `src/llimits.zig` | ✅ constants only, no types | Keep as-is. |
 | `src/luaconf.zig` | ✅ version/layout config | Fix `LUA_VDIR` if reference changes. |
@@ -287,8 +287,8 @@ and string interning in `global_State.strt` (`std.array_hash_map.String`) in
 | `src/lstring.zig` | ✅ `luaS_new`/`luaS_hash`/`luaS_eqstr`, interning in `global_State.strt` | Add short/long string split with GC. |
 | `src/lvm.zig` | ✅ run execution loop, all table opcodes via metamethods | Phase E — arithmetic metamethods via `luaT_trybinTM`. |
 | `src/lauxlib.zig` | ✅ aux helpers, frame-relative getmetafield, checked option/checklstring | Complete missing helper functions when adding remaining standard libraries. |
-| `src/lualib.zig` | ✅ inline stubs for all libraries | Phase F — move to `src/lib/*.zig` bodies. |
-| `src/lib/*.zig` | ✅ All 10 libraries; `baselib`, `mathlib`, `stringlib`, `tablelib`, `utf8lib`, `corolib`, `bit32` fully implemented; `iolib`/`oslib` fully implemented; `debug`/`loadlib` stubs | Phase F — port `debug`, `loadlib`. |
+| `src/lualib.zig` | ✅ inline helpers for all libraries (openlibs dispatch) | Keep as-is. |
+| `src/lib/*.zig` | ✅ All 10 libraries fully implemented and tested (`baselib`, `mathlib`, `stringlib`, `tablelib`, `utf8lib`, `corolib`, `bit32`, `iolib`, `oslib`, `debug`, `loadlib`) | Phase G — source-text compiler; `loadlib` `require()` chain still minimal. |
 | `tests/test_basic.zig` | ✅ 50 passing tests | Ready for remaining Phase F libraries (`debug`, `loadlib`). |
 | `docs/` | ✅ OKF v0.1 bundle (architecture, log, glossary) | Update after every phase; see `docs/README.md`. |
 | `lua/` | ✅ Git subrepo tracking git@github.com:lua/lua.git | Reference source; update with `git pull` when needed. |
@@ -315,7 +315,21 @@ and string interning in `global_State.strt` (`std.array_hash_map.String`) in
 
 ---
 
+### Phase G — Source-text compiler (lexer / parser / codegen) — NOT STARTED
+
+Phases A–F are **complete**: the port runs precompiled Lua 5.5.1 bytecode through the full VM with all 10 standard libraries. The one remaining core gap is that **text source cannot be compiled** — there is no lexer, parser, or code generator. `luaL_dostring`/`luaL_loadstring` already delegate to `lua_load`, which only detects the `\x1b` binary signature; a real source path is missing.
+
+**Scope (port of `lua/llex.c`, `lua/lparser.c`, `lua/lcode.c`, + `lua/ldo.c` parser glue):**
+
+17. **Lexer** (`src/llex.zig`): `LexState`, `luaX_init` (reserved words), `luaX_next`, `luaX_lookahead`, `luaX_newstring` (token → interned `lua_Table`/string), number/scanner. Thread the allocator; no C globals.
+18. **Parser** (`src/lparser.zig`): `FuncState`, `expdesc`, `luaY_parser`, `luaD_protectedparser` (the `lua_load` text branch). Recursive descent for blocks, `if`/`while`/`repeat`/`for`, `local`/`global`, functions, varargs. Replace `luaD_throw`/`longjmp` with `!T` error returns.
+19. **Code generator** (`src/lcode.zig`): `expdesc`→instruction emission, register allocation (`luaK_dischargevars`, `luaK_storevar`), jump/patch lists (`luaK_concat`, `luaK_patchtohere`) for `and`/`or`/`goto`, upvalue handling. Produces the same `lua_Proto` shapes `lundump.zig` already builds, so the VM is **untouched**.
+20. Wire `lua_load`: when the first byte is not `\x1b`, call `luaD_protectedparser` instead of `lundump`.
+21. **Verification**: compile `"return 1+2"` → `Proto` identical (when dumped) to the Lua 5.5.1 reference `lua/` binary; round-trip a source string through `luaL_dostring`; run scripts from `lua/testes/`; test count rises past 67.
+
+**Effort**: ~4,700 lines of C (llex 604 / lparser 2202 / lcode 1970 / lzio 89 / ldo glue). Moderate, well-specified, testable against the in-repo `lua/` oracle. See `docs/frontend.md` for the architecture decision and `docs/roadmap.md` §Phase G for the layer-by-layer plan.
+
 ## 8. What to work on next
 
-Phase E (Error handling, GC, metatables) is **done**. All 10 Phase F libraries are **done** (io, os, math, string, table, utf8, coroutine, bit32, base). The immediate next task is to **port `debug` and `loadlib` libraries** in `src/lib/*.zig` and add tests for each in `tests/test_basic.zig`.
+All phases A–F are **done** (VM, runtime, and all 10 standard libraries, 67/67 tests passing, zero leaks). The next task is **Phase G — the source-text compiler** (`src/llex.zig` → `src/lparser.zig` → `src/lcode.zig`), starting with the lexer and validating each layer against the Lua 5.5.1 reference binary. `loadlib`'s `require()` chain remains a secondary, lower-priority gap.
 
