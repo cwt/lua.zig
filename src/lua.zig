@@ -3093,10 +3093,25 @@ pub fn createargtable(L: *lua_State, args: anytype) !void {
 }
 
 pub fn luaL_dostring(L: *lua_State, s: []const u8, name: []const u8) !i32 {
+    var data = s;
+    const status = lua_load(L, luaL_dostringReader, @as(?*anyopaque, @ptrCast(&data)), name, "t");
+    if (status != LUA_OK) {
+        return status;
+    }
+    return lua_pcallk(L, 0, LUA_MULTRET, 0, 0, null);
+}
+
+fn luaL_dostringReader(L: *lua_State, data: ?*anyopaque, size: ?*usize) ?[]const u8 {
     _ = L;
-    _ = s;
-    _ = name;
-    return LUA_OK;
+    const slice_ptr = @as(?*[]const u8, @ptrCast(@alignCast(data))) orelse return null;
+    if (slice_ptr.*.len == 0) {
+        if (size) |s| s.* = 0;
+        return null;
+    }
+    const chunk = slice_ptr.*;
+    slice_ptr.* = &[_]u8{};
+    if (size) |s| s.* = chunk.len;
+    return chunk;
 }
 
 pub const luaL_openlibs = @import("lauxlib.zig").luaL_openlibs;

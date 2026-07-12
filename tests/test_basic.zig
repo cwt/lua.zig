@@ -430,6 +430,37 @@ test "BUG-036: VM vararg execution (VARARGPREP/VARARG)" {
     try std.testing.expectEqual(@as(f64, 3.0), L.stack[L.top - 1].number);
 }
 
+test "luaL_dostring loads and runs a chunk (properly implemented)" {
+    const gpa = std.testing.allocator;
+    var L: lua.lua_State = undefined;
+    try lua.luaL_newstate(&L, gpa);
+    defer lua.lua_close(&L);
+
+    var threaded: std.Io.Threaded = .init_single_threaded;
+    const io = threaded.io();
+    const bytecode = try std.Io.Dir.cwd().readFileAlloc(io, "tests/test_dostring.luac", gpa, .unlimited);
+    defer gpa.free(bytecode);
+
+    // luaL_dostring should load the chunk from the string and run it via pcall,
+    // returning LUA_OK and leaving the chunk's result (6*7 = 42) on the stack.
+    const status = try lua.luaL_dostring(&L, bytecode, "=test_dostring");
+    try std.testing.expectEqual(@as(i32, lua.LUA_OK), status);
+    try std.testing.expectEqual(@as(i32, 1), lua.lua_gettop(&L));
+    try std.testing.expectEqual(@as(f64, 42.0), L.stack[L.top - 1].number);
+}
+
+test "luaL_dostring returns LUA_ERRSYNTAX for non-bytecode source" {
+    const gpa = std.testing.allocator;
+    var L: lua.lua_State = undefined;
+    try lua.luaL_newstate(&L, gpa);
+    defer lua.lua_close(&L);
+
+    // No source-text parser exists; text input must fail load with LUA_ERRSYNTAX
+    // (not silently LUA_OK like the old stub did).
+    const status = try lua.luaL_dostring(&L, "return 1", "=(test)");
+    try std.testing.expectEqual(@as(i32, lua.LUA_ERRSYNTAX), status);
+}
+
 test "__index function metamethod via C API" {
     const gpa = std.testing.allocator;
     var L: lua.lua_State = undefined;

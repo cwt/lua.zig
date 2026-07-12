@@ -15,7 +15,10 @@ pub fn main(init: std.process.Init) !void {
     const status = try lua.luaL_dostring(L, "", "bt");
 
     if (status != lua.LUA_OK) {
-        _ = lua.lua_tostring(L, -1);
+        if (lua.lua_tostring(L, -1)) |msg| {
+            try std.Io.File.stderr().writeStreamingAll(init.io, msg);
+            try std.Io.File.stderr().writeStreamingAll(init.io, "\n");
+        }
     }
 
     lua.lua_close(L);

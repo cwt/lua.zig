@@ -1081,3 +1081,28 @@ The C reference relocates the call frame for hidden varargs (`buildhiddenargs`).
 ### Verification
 
 `zig build test --summary all` → **65/65 tests pass, zero memory leaks.** Result cross-checked against the Lua 5.5.1 reference binary (`./lua/lua`).
+
+## 2026-07-12 — `luaL_dostring` properly implemented (rev 44)
+
+### Changes
+
+- **`src/lua.zig`**: Replaced the no-op stub (which returned `LUA_OK` unconditionally) with a correct implementation mirroring the C reference (`lauxlib.c` `luaL_dostring` = `luaL_loadstring` + `lua_pcall`): it loads the chunk from the source string via `lua_load` (using a small `luaL_dostringReader` that yields the slice once) and, on load success, runs it with `lua_pcallk(L, 0, LUA_MULTRET, 0, 0, null)`. The load/pcall status is propagated (so text input correctly returns `LUA_ERRSYNTAX`; binary chunks execute and leave their results on the stack).
+- **`src/luazig.zig`**: The CLI entry call now prints the (honest) load/run error to stderr instead of silently discarding it.
+- **`tests/test_dostring.luac`**: New precompiled chunk (`return 6*7`), compiled with the Lua 5.5.1 reference binary.
+- **`tests/test_basic.zig`**: Two new tests — `luaL_dostring loads and runs a chunk` (binary chunk → `LUA_OK`, result `42` on stack) and `luaL_dostring returns LUA_ERRSYNTAX for non-bytecode source`.
+
+### §0.1 Self-Audit
+
+- **Rule 1 (allocator threaded):** reader/loader use `L.allocator`; no `page_allocator`. ✅
+- **Rule 2/12 (error propagation):** uses `lua_load` + `lua_pcallk` (`!i32`/`i32`); no `catch unreachable`, no swallowed errors (CLI now reports the error). ✅
+- **Rule 3 (no longjmp):** plain `!T` returns. ✅
+- **Rule 8/9 (type model):** operates on `TValue`/single type model. ✅
+- **Rule 13 (stack capacity):** `lua_pcallk` manages its own frame; no manual stack writes past `top`. ✅
+
+### Verification
+
+`zig build test --summary all` → **67/67 tests pass, zero memory leaks.** Behavior cross-checked against the Lua 5.5.1 reference binary.
+
+### Related
+
+- Phase C source-text compiler (lexer/parser/codegen) remains the only outstanding Phase C item; `luaL_dostring` itself is now complete. `docs/frontend.md` updated to reflect that `luaL_dostring` runs precompiled bytecode.

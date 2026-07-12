@@ -36,7 +36,7 @@ Port the three C modules plus supporting infrastructure:
 Port only `lundump.zig` and use precompiled bytecode chunks.
 
 **Pros**: Much smaller (lundump.c: 11K). Faster path to running real code.
-**Cons**: Requires an external `luac` to compile scripts. Cannot run `luaL_dostring`.
+**Cons**: Requires an external `luac` to compile scripts. `luaL_dostring` is implemented but only executes precompiled bytecode (no source-text parser yet), so text source still fails load.
 
 ## Lexer Design (`lua/llex.c`)
 

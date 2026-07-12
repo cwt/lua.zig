@@ -182,7 +182,7 @@ are available as a Git subrepo.
    Ported `luaT_adjustvarargs`/`luaT_getvarargs`/`luaT_getvararg` into `src/ltm.zig` and wired `OP_VARARGPREP`/`OP_VARARG`/`OP_GETVARG` in `src/lvm.zig`. Vararg functions (`function f(a, ...) ... end`, `f(...)`, `select`, `{...}`) now execute correctly. Added `lua_Proto.flag` and `CallInfo.nextraargs`. Verified against the Lua 5.5.1 reference binary. **65/65 tests pass.**
 
 ### What is NOT done (future phases)
-1. **No source text compilation.** Lexer (`llex.c`), parser (`lparser.c`), and code generator (`lcode.c`) are not implemented (we rely on precompiled bytecode). `luaL_dostring` is still a stub.
+1. **No source text compilation.** Lexer (`llex.c`), parser (`lparser.c`), and code generator (`lcode.c`) are not implemented (we rely on precompiled bytecode). `luaL_dostring` is now properly implemented (it loads the chunk via `lua_load` and runs it via `lua_pcallk`, mirroring the C reference); with no parser, text source still fails load with `LUA_ERRSYNTAX`, but binary chunks execute correctly.
 2. **`loadlib` `require` loading** — dynamic `.so`/`.dll` loading via `package.loadlib` is functional but `package.path` search and `require()` chain is minimal.
 
 ---
