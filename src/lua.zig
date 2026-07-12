@@ -1754,19 +1754,29 @@ fn do_resume(L: *lua_State, narg: i32) !void {
     } else {
         L.status = LUA_OK;
         if (L.ci) |ci| {
-            const prev = ci.previous;
             if (ci.k) |kf| {
+                const prev = ci.previous;
                 const nres = try kf(L, LUA_YIELD, ci.ctx);
                 const u_nres = @as(usize, @intCast(nres));
                 poscall(L, ci, L.top - u_nres, u_nres);
                 L.ci = prev;
                 L.allocator.destroy(ci);
             } else {
-                const func_idx = ci.func;
-                L.ci = prev;
-                L.allocator.destroy(ci);
-                if (try precall(L, func_idx, LUA_MULTRET)) |new_ci| {
-                    try lvm.run(L, new_ci);
+                // Check if the yielded frame is a Lua function. If so, resume
+                // lvm.run on the existing CallInfo — savedpc already points past
+                // the yield. Re-precalling would lose savedpc and restart from 0.
+                const val = L.stack[ci.func];
+                if (val == .function and val.function.?.* == .lua) {
+                    L.ci = ci;
+                    try lvm.run(L, ci);
+                } else {
+                    const prev = ci.previous;
+                    const func_idx = ci.func;
+                    L.ci = prev;
+                    L.allocator.destroy(ci);
+                    if (try precall(L, func_idx, LUA_MULTRET)) |new_ci| {
+                        try lvm.run(L, new_ci);
+                    }
                 }
             }
         } else {

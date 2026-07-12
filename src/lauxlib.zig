@@ -361,18 +361,18 @@ pub fn luaL_checkudata(L: *lua.lua_State, idx: i32, tname: []const u8) !*anyopaq
     return p;
 }
 
-pub fn luaL_setfuncs(L: *lua.lua_State, reg: []const luaL_Reg, nup: i32) void {
+pub fn luaL_setfuncs(L: *lua.lua_State, reg: []const luaL_Reg, nup: i32) !void {
     _ = nup;
     for (reg) |r| {
         if (r.name.len == 0) continue;
         lua.lua_pushcfunction(L, r.func);
-        lua.lua_setfield(L, -2, r.name) catch {};
+        try lua.lua_setfield(L, -2, r.name);
     }
 }
 
-pub fn luaL_newlib(L: *lua.lua_State, reg: []const luaL_Reg) void {
+pub fn luaL_newlib(L: *lua.lua_State, reg: []const luaL_Reg) !void {
     lua.lua_createtable(L, 0, @intCast(reg.len));
-    luaL_setfuncs(L, reg, 0);
+    try luaL_setfuncs(L, reg, 0);
 }
 
 pub fn luaL_fileresult(L: *lua.lua_State, stat: bool, fname: ?[]const u8) i32 {

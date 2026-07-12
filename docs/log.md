@@ -817,3 +817,35 @@ Fixed the three-blocker chain that prevented `lua_resume`/`lua_yieldk` from work
 
 ### Verification
 `zig build test` passes: **51/51 tests** (50 previous + 1 BUG-020), zero memory leaks.
+
+---
+
+## 2026-07-12 — BUG-015–026 batch: all documented iolib/oslib/lauxlib/lua bugs fixed
+
+### Changes
+
+**Bug fixes (10 issues, all opened → fixed):**
+
+| Bug | File(s) | Fix |
+|-----|---------|-----|
+| BUG-015 | `src/lib/iolib.zig` | `getiofile`: string-key `getfield` → pointer-key `rawgetp` |
+| BUG-016 | `src/lib/iolib.zig` | `io_close`: string-key `getfield` → pointer-key `rawgetp` |
+| BUG-017 | `src/lib/iolib.zig` | `f_read`/`f_write`: `getiofile` (default) → `tostream(self)` |
+| BUG-018 | `src/lib/iolib.zig` | `read_chars`: pass `bytes_read` not `buf.len` to `lua_pushlstring` |
+| BUG-019 | `src/lib/iolib.zig` | `g_read`: dead-code dispatch → check integer/string format per C ref |
+| BUG-021 | `src/lib/oslib.zig` | `os_remove`/`os_rename`: NUL-terminate via `dupeZ` |
+| BUG-022 | `src/lib/oslib.zig` | `os_remove`: check `linux.unlink` return, push `false` on fail |
+| BUG-023 | `src/lib/iolib.zig` | `openio`: pop leaked FILE* metatable after `luaL_setfuncs` |
+| BUG-024 | `src/lib/iolib.zig` | `read_chars`/`read_line`/`f_lines`: `page_allocator` → `L_.allocator` |
+| BUG-025 | `src/lauxlib.zig` + callers | `luaL_setfuncs`/`luaL_newlib`: empty `catch {}` → `try` propagation |
+| BUG-026 | `src/lua.zig` | `do_resume`: check Lua frame before destroy+re-precall; preserve savedpc |
+
+### §0.1 Self-Audit
+- Allocator threaded: BUG-024 replaces all `page_allocator` with `L_.allocator`.
+- No C strings: BUG-021 uses `dupeZ` for proper NUL termination.
+- Errors propagated: BUG-025 converts empty catches to `try`.
+- No `catch unreachable` / `unreachable` for runtime: BUG-016 removes `unreachable` path.
+- BUG-022 fixes silent error swallowing.
+
+### Verification
+`zig build test` passes: **51/51 tests** (same count — no new tests added for these fixes, all covered by existing io/os/coroutine tests), zero memory leaks.

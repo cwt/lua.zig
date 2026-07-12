@@ -16,19 +16,34 @@ fn os_execute(L_: *L) !i32 {
 }
 
 fn os_remove(L_: *L) !i32 {
-    const filename = lua.lua_tostring(L_, 1) orelse {
+    const filename_s = lua.lua_tostring(L_, 1) orelse {
         lua.lua_pushnil(L_);
         return 1;
     };
-    _ = linux.unlink(@ptrCast(filename));
+    const filename = L_.allocator.dupeZ(u8, filename_s) catch {
+        lua.lua_pushboolean(L_, 0);
+        return 1;
+    };
+    defer L_.allocator.free(filename);
+    if (linux.unlink(filename) != 0) {
+        lua.lua_pushboolean(L_, 0);
+        return 1;
+    }
     lua.lua_pushboolean(L_, 1);
     return 1;
 }
 
 fn os_rename(L_: *L) !i32 {
-    const from = lua.lua_tostring(L_, 1) orelse return luaL_error(L_, "missing 'from' argument");
-    const to = lua.lua_tostring(L_, 2) orelse return luaL_error(L_, "missing 'to' argument");
-    _ = linux.rename(@ptrCast(from), @ptrCast(to));
+    const from_s = lua.lua_tostring(L_, 1) orelse return luaL_error(L_, "missing 'from' argument");
+    const to_s = lua.lua_tostring(L_, 2) orelse return luaL_error(L_, "missing 'to' argument");
+    const from = L_.allocator.dupeZ(u8, from_s) catch return luaL_error(L_, "out of memory");
+    defer L_.allocator.free(from);
+    const to = L_.allocator.dupeZ(u8, to_s) catch return luaL_error(L_, "out of memory");
+    defer L_.allocator.free(to);
+    if (linux.rename(from, to) != 0) {
+        lua.lua_pushboolean(L_, 0);
+        return 1;
+    }
     lua.lua_pushboolean(L_, 1);
     return 1;
 }
@@ -132,5 +147,5 @@ const syslib = [_]luaL_Reg{
 };
 
 pub fn openoslib(L_: *L) !void {
-    lauxlib.luaL_newlib(L_, &syslib);
+    try lauxlib.luaL_newlib(L_, &syslib);
 }

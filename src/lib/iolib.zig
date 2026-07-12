@@ -51,7 +51,7 @@ fn io_close(L_: *L) !i32 {
     const p = if (lua.lua_isnone(L_, 1) == 0)
         tostream(L_, 1)
     else blk: {
-        _ = try lua.lua_getfield(L_, lua.LUA_REGISTRYINDEX, IO_OUTPUT);
+        _ = lua.lua_rawgetp(L_, lua.LUA_REGISTRYINDEX, @ptrCast(IO_OUTPUT.ptr));
         break :blk tostream(L_, -1);
     };
     return f_close(L_, p);
@@ -78,7 +78,7 @@ fn newfile(L_: *L) !*LStream {
 }
 
 fn getiofile(L_: *L, findex: []const u8) !*LStream {
-    _ = try lua.lua_getfield(L_, lua.LUA_REGISTRYINDEX, findex);
+    _ = lua.lua_rawgetp(L_, lua.LUA_REGISTRYINDEX, @ptrCast(findex.ptr));
     if (lua.lua_type(L_, -1) == lua.LUA_TNIL) {
         return lauxlib.luaL_error(L_, "default file is closed");
     }
@@ -161,23 +161,23 @@ fn io_type(L_: *L) !i32 {
 }
 
 fn read_chars(L_: *L, fd: i32, n: usize) bool {
-    var buf = std.heap.page_allocator.alloc(u8, n) catch return false;
-    defer std.heap.page_allocator.free(buf);
+    var buf = L_.allocator.alloc(u8, n) catch return false;
+    defer L_.allocator.free(buf);
     const bytes_read = std.posix.read(fd, buf) catch return false;
     if (bytes_read == 0) return false;
-    _ = lua.lua_pushlstring(L_, buf[0..bytes_read], buf.len) orelse {};
+    _ = lua.lua_pushlstring(L_, buf[0..bytes_read], bytes_read) orelse {};
     return true;
 }
 
 fn read_line(L_: *L, fd: i32) bool {
     var buf: std.ArrayList(u8) = .empty;
-    defer buf.deinit(std.heap.page_allocator);
+    defer buf.deinit(L_.allocator);
     var single: [1]u8 = undefined;
     while (true) {
         const n = std.posix.read(fd, &single) catch break;
         if (n == 0) break;
         if (single[0] == '\n') break;
-        buf.append(std.heap.page_allocator, single[0]) catch break;
+        buf.append(L_.allocator, single[0]) catch break;
     }
     if (buf.items.len > 0) {
         _ = lua.lua_pushlstring(L_, buf.items, buf.items.len) orelse {};
@@ -190,30 +190,31 @@ fn g_read(L_: *L, fd: i32, first: i32) !i32 {
     var n: i32 = first;
     var nread: i32 = 0;
     const top = lua.lua_gettop(L_);
-    var nargs = top - 1;
+    var nargs = top - (first - 1);
     if (nargs == 0) {
         nargs = 1;
         n = 0;
     }
     for (0..@as(usize, @intCast(nargs))) |_| {
         var success = false;
-        if (n > 0) {
+        if (n == 0) {
             success = read_line(L_, fd);
         } else {
-            const fmt = lua.lua_tointeger(L_, n) orelse 0;
-            if (fmt == 0) {
+            const fmt_int = lua.lua_tointeger(L_, n);
+            if (fmt_int) |num| {
+                if (num > 0) {
+                    success = read_chars(L_, fd, @as(usize, @intCast(num)));
+                }
+            } else {
                 const s = lua.lua_tostring(L_, n) orelse "";
                 if (s.len > 0 and s[0] == '*') {
                     if (s.len >= 2) {
                         switch (s[1]) {
                             'l' => success = read_line(L_, fd),
                             'a' => success = read_chars(L_, fd, 4096),
-                            else => success = false,
+                            else => {},
                         }
                     }
-                } else {
-                    const fmt_len = if (fmt > 0) @as(usize, @intCast(fmt)) else 1;
-                    success = read_chars(L_, fd, fmt_len);
                 }
             }
         }
@@ -231,11 +232,12 @@ fn g_read(L_: *L, fd: i32, first: i32) !i32 {
 }
 
 fn io_read(L_: *L) !i32 {
-    return f_read(L_);
+    const p = getiofile(L_, IO_INPUT) catch return lauxlib.luaL_error(L_, "default input file is closed");
+    return g_read(L_, p.fd, 2);
 }
 
 fn f_read(L_: *L) !i32 {
-    const p = getiofile(L_, IO_INPUT) catch return lauxlib.luaL_error(L_, "default input file is closed");
+    const p = tostream(L_, 1);
     return g_read(L_, p.fd, 2);
 }
 
@@ -275,12 +277,13 @@ fn g_write(L_: *L, fd: i32, arg: i32) !i32 {
 }
 
 fn io_write(L_: *L) !i32 {
-    return f_write(L_);
+    const p = getiofile(L_, IO_OUTPUT) catch return lauxlib.luaL_error(L_, "default output file is closed");
+    return g_write(L_, p.fd, 1);
 }
 
 fn f_write(L_: *L) !i32 {
-    const p = getiofile(L_, IO_OUTPUT) catch return lauxlib.luaL_error(L_, "default output file is closed");
-    return g_write(L_, p.fd, 1);
+    const p = tostream(L_, 1);
+    return g_write(L_, p.fd, 2);
 }
 
 fn f_seek(L_: *L) !i32 {
@@ -332,13 +335,13 @@ fn io_lines(L_: *L) !i32 {
 fn f_lines(L_: *L) !i32 {
     const p = tostream(L_, 1);
     var buf: std.ArrayList(u8) = .empty;
-    defer buf.deinit(std.heap.page_allocator);
+    defer buf.deinit(L_.allocator);
     var single: [1]u8 = undefined;
     while (true) {
         const n = std.posix.read(p.fd, &single) catch break;
         if (n == 0) break;
         if (single[0] == '\n') break;
-        buf.append(std.heap.page_allocator, single[0]) catch break;
+        buf.append(L_.allocator, single[0]) catch break;
     }
     if (buf.items.len > 0) {
         _ = lua.lua_pushlstring(L_, buf.items, buf.items.len) orelse {};
@@ -385,8 +388,9 @@ const flib = [_]luaL_Reg{
 
 pub fn openio(L_: *L) !void {
     _ = try lauxlib.luaL_newmetatable(L_, LUA_FILEHANDLE);
-    lauxlib.luaL_setfuncs(L_, &flib, 0);
-    lauxlib.luaL_newlib(L_, &iolib_reg);
-    try createstdfile(L_, 0, IO_INPUT, null);  // stdin
-    try createstdfile(L_, 1, IO_OUTPUT, null); // stdout
+    try lauxlib.luaL_setfuncs(L_, &flib, 0);
+    lua.lua_pop(L_, 1);  // remove FILE* metatable from the stack
+    try lauxlib.luaL_newlib(L_, &iolib_reg);
+    try createstdfile(L_, 0, IO_INPUT, null);
+    try createstdfile(L_, 1, IO_OUTPUT, null);
 }
