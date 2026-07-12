@@ -2536,8 +2536,12 @@ test "require non-existent module fails" {
 
 test "os.getenv environment variable lookup" {
     const gpa = std.testing.allocator;
+    var threaded = std.Io.Threaded.init(gpa, .{});
+    defer threaded.deinit();
+    const io = threaded.io();
+
     var L: lua.lua_State = undefined;
-    try lua.luaL_newstate(&L, gpa);
+    try lua.luaL_newstate_io(&L, gpa, io);
     defer lua.lua_close(&L);
 
     try lua.luaL_openlibs(&L);

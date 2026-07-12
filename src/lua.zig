@@ -484,6 +484,7 @@ pub const global_State = struct {
     prng: std.Random.Xoshiro256,
     mainthread: ?*lua_State = null,
     thread_list: ?*lua_State = null,
+    clibs: std.ArrayList(*std.DynLib),
 };
 
 inline fn G(L: *lua_State) *global_State {
@@ -2297,6 +2298,7 @@ pub fn luaL_newstate_io(L: *lua_State, gpa: std.mem.Allocator, io: std.Io) !void
         .io_backend = null,
         .io = io,
         .prng = std.Random.Xoshiro256.init(@intFromPtr(L)),
+        .clibs = .empty,
     };
     const stack = try gpa.alloc(TValue, LUA_MINSTACK + 1);
     L.* = .{
@@ -2365,6 +2367,7 @@ pub const luaL_newmetatable = @import("lauxlib.zig").luaL_newmetatable;
 pub const luaL_setmetatable = @import("lauxlib.zig").luaL_setmetatable;
 pub const luaL_testudata = @import("lauxlib.zig").luaL_testudata;
 pub const luaL_checkudata = @import("lauxlib.zig").luaL_checkudata;
+pub const luaL_getenv = @import("lauxlib.zig").luaL_getenv;
 
 pub const LUA_BASELIB: i32 = 1 << 0;
 pub const LUA_COLIB: i32 = 1 << 1;
@@ -2427,6 +2430,13 @@ pub fn lua_close(L: *lua_State) void {
             curr_thread = next_thread;
         }
         g.thread_list = null;
+        
+        // Free dynamically loaded libraries
+        for (g.clibs.items) |lib| {
+            lib.close();
+            g.allocator.destroy(lib);
+        }
+        g.clibs.deinit(g.allocator);
 
         L.allocator.destroy(g);
     }

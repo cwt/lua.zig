@@ -315,6 +315,7 @@ pub fn luaL_pushresultsize(L: *lua.lua_State, b: *luaL_Buffer, sz: usize) void {
 pub fn luaL_gsub(L: *lua.lua_State, s: []const u8, p: []const u8, r: []const u8) ![]const u8 {
     var b = luaL_Buffer{};
     luaL_buffinit(L, &b);
+    errdefer b.buf.deinit(L.allocator);
     var rest = s;
     while (std.mem.indexOf(u8, rest, p)) |idx| {
         try luaL_addlstring(L, &b, rest[0..idx]);
@@ -449,18 +450,25 @@ pub fn luaL_openselectedlibs(L: *lua.lua_State, openmask: i32, closedmask: i32) 
     }
 }
 
-pub fn luaL_getenv(allocator: std.mem.Allocator, name: []const u8) ?[]const u8 {
-    const flags: std.posix.O = .{ .ACCMODE = .RDONLY };
-    const fd = std.posix.openat(std.posix.AT.FDCWD, "/proc/self/environ", flags, 0) catch return null;
-    defer _ = std.os.linux.close(fd);
+pub fn luaL_getenv(L: *lua.lua_State, name: []const u8) anyerror!?[]const u8 {
+    const g = L.l_G orelse return null;
+    const file = std.Io.Dir.cwd().openFile(g.io, "/proc/self/environ", .{ .mode = .read_only }) catch |err| {
+        if (err == error.FileNotFound) return null;
+        return err;
+    };
+    defer file.close(g.io);
 
     var list = std.ArrayList(u8).empty;
-    defer list.deinit(allocator);
+    defer list.deinit(L.allocator);
     var buf: [4096]u8 = undefined;
+    var slices = [_][]u8{&buf};
     while (true) {
-        const n = std.posix.read(fd, &buf) catch return null;
+        const n = file.readStreaming(g.io, &slices) catch |err| switch (err) {
+            error.EndOfStream => break,
+            else => return err,
+        };
         if (n == 0) break;
-        list.appendSlice(allocator, buf[0..n]) catch return null;
+        try list.appendSlice(L.allocator, buf[0..n]);
     }
 
     var it = std.mem.splitScalar(u8, list.items, 0);
@@ -470,7 +478,7 @@ pub fn luaL_getenv(allocator: std.mem.Allocator, name: []const u8) ?[]const u8 {
             const var_name = var_str[0..eq_idx];
             if (std.mem.eql(u8, var_name, name)) {
                 const var_val = var_str[eq_idx + 1 ..];
-                return allocator.dupe(u8, var_val) catch null;
+                return try L.allocator.dupe(u8, var_val);
             }
         }
     }

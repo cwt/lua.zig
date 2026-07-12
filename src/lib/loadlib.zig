@@ -23,28 +23,23 @@ fn readable(L: *lua.lua_State, filename: []const u8) bool {
     return true;
 }
 
-fn noenv(L: *lua.lua_State) bool {
-    _ = lua.lua_getfield(L, lua.LUA_REGISTRYINDEX, "LUA_NOENV") catch return false;
+fn noenv(L: *lua.lua_State) !bool {
+    _ = try lua.lua_getfield(L, lua.LUA_REGISTRYINDEX, "LUA_NOENV");
     const b = lua.lua_toboolean(L, -1) != 0;
     lua.lua_pop(L, 1);
     return b;
 }
 
-fn lsys_load(L: *lua.lua_State, path: []const u8, seeglb: bool) ?*std.DynLib {
+fn lsys_load(L: *lua.lua_State, path: []const u8, seeglb: bool) anyerror!?*std.DynLib {
     _ = seeglb;
-    const path_z = L.allocator.allocSentinel(u8, path.len, 0) catch {
-        pushliteral(L, "out of memory");
-        return null;
-    };
+    const path_z = try L.allocator.allocSentinel(u8, path.len, 0);
     defer L.allocator.free(path_z);
     @memcpy(path_z[0..path.len], path);
 
-    const lib = L.allocator.create(std.DynLib) catch {
-        pushliteral(L, "out of memory");
-        return null;
-    };
+    const lib = try L.allocator.create(std.DynLib);
+    errdefer L.allocator.destroy(lib);
+
     lib.* = std.DynLib.open(path_z) catch |err| {
-        L.allocator.destroy(lib);
         const msg = std.fmt.allocPrint(L.allocator, "cannot open library: {}", .{err}) catch {
             pushliteral(L, "cannot open library");
             return null;
@@ -53,14 +48,16 @@ fn lsys_load(L: *lua.lua_State, path: []const u8, seeglb: bool) ?*std.DynLib {
         _ = lua.lua_pushlstring(L, msg, msg.len);
         return null;
     };
+    errdefer lib.close();
+
+    if (L.l_G) |g| {
+        try g.clibs.append(g.allocator, lib);
+    }
     return lib;
 }
 
-fn lsys_sym(L: *lua.lua_State, lib: *std.DynLib, sym: []const u8) ?lua.lua_CFunction {
-    const sym_z = L.allocator.allocSentinel(u8, sym.len, 0) catch {
-        pushliteral(L, "out of memory");
-        return null;
-    };
+fn lsys_sym(L: *lua.lua_State, lib: *std.DynLib, sym: []const u8) anyerror!?lua.lua_CFunction {
+    const sym_z = try L.allocator.allocSentinel(u8, sym.len, 0);
     defer L.allocator.free(sym_z);
     @memcpy(sym_z[0..sym.len], sym);
 
@@ -75,28 +72,29 @@ fn lsys_unloadlib(lib: *std.DynLib) void {
     lib.close();
 }
 
-fn checkclib(L: *lua.lua_State, path: []const u8) ?*std.DynLib {
-    _ = lua.lua_getfield(L, lua.LUA_REGISTRYINDEX, CLIBS) catch return null;
+fn checkclib(L: *lua.lua_State, path: []const u8) !?*std.DynLib {
+    _ = try lua.lua_getfield(L, lua.LUA_REGISTRYINDEX, CLIBS);
     defer lua.lua_pop(L, 1);
-    _ = lua.lua_getfield(L, -1, path) catch return null;
+    if (lua.lua_type(L, -1) == lua.LUA_TNIL) return null;
+    _ = try lua.lua_getfield(L, -1, path);
     defer lua.lua_pop(L, 1);
     const ud = lua.lua_touserdata(L, -1) orelse return null;
     return @ptrCast(@alignCast(ud));
 }
 
-fn addtoclib(L: *lua.lua_State, path: []const u8, plib: *std.DynLib) void {
-    _ = lua.lua_getfield(L, lua.LUA_REGISTRYINDEX, CLIBS) catch return;
+fn addtoclib(L: *lua.lua_State, path: []const u8, plib: *std.DynLib) !void {
+    _ = try lua.lua_getfield(L, lua.LUA_REGISTRYINDEX, CLIBS);
     defer lua.lua_pop(L, 1);
     lua.lua_pushlightuserdata(L, @ptrCast(plib));
-    lua.lua_setfield(L, -2, path) catch {};
+    try lua.lua_setfield(L, -2, path);
 }
 
-fn lookforfunc(L: *lua.lua_State, path: []const u8, sym: []const u8) i32 {
-    const reg = checkclib(L, path);
+fn lookforfunc(L: *lua.lua_State, path: []const u8, sym: []const u8) anyerror!i32 {
+    const reg = try checkclib(L, path);
     const lib = if (reg) |r| r else blk: {
-        const loaded = lsys_load(L, path, sym.len > 0 and sym[0] == '*');
+        const loaded = try lsys_load(L, path, sym.len > 0 and sym[0] == '*');
         if (loaded) |l| {
-            addtoclib(L, path, l);
+            try addtoclib(L, path, l);
             break :blk l;
         }
         return ERRLIB;
@@ -105,7 +103,7 @@ fn lookforfunc(L: *lua.lua_State, path: []const u8, sym: []const u8) i32 {
         lua.lua_pushboolean(L, 1);
         return 0;
     } else {
-        const f = lsys_sym(L, lib, sym) orelse return ERRFUNC;
+        const f = (try lsys_sym(L, lib, sym)) orelse return ERRFUNC;
         lua.lua_pushcfunction(L, f);
         return 0;
     }
@@ -114,7 +112,7 @@ fn lookforfunc(L: *lua.lua_State, path: []const u8, sym: []const u8) i32 {
 fn ll_loadlib(L: *lua.lua_State) anyerror!i32 {
     const path = try lauxlib.luaL_checkstring(L, 1);
     const init = try lauxlib.luaL_checkstring(L, 2);
-    const stat = lookforfunc(L, path, init);
+    const stat = try lookforfunc(L, path, init);
     if (stat == 0) return 1;
     lauxlib.luaL_pushfail(L);
     lua.lua_insert(L, -2);
@@ -258,28 +256,22 @@ fn findfile(L: *lua.lua_State, name: []const u8, pname: []const u8, dirsep: []co
     return searchpath(L, name, path, ".", dirsep);
 }
 
-fn loadfunc(L: *lua.lua_State, filename: []const u8, modname: []const u8) i32 {
+fn loadfunc(L: *lua.lua_State, filename: []const u8, modname: []const u8) anyerror!i32 {
     var mname = modname;
-    const gsub = lauxlib.luaL_gsub(L, mname, ".", LUA_OFSEP) catch mname;
+    const gsub = try lauxlib.luaL_gsub(L, mname, ".", LUA_OFSEP);
     mname = gsub;
 
     if (std.mem.indexOf(u8, mname, luaconf.LUA_IGMARK)) |mark_pos| {
         const openfunc = mname[0..mark_pos];
-        const pof_name = std.fmt.allocPrint(L.allocator, "{s}{s}", .{ LUA_POF, openfunc }) catch {
-            pushliteral(L, "out of memory");
-            return ERRFUNC;
-        };
+        const pof_name = try std.fmt.allocPrint(L.allocator, "{s}{s}", .{ LUA_POF, openfunc });
         defer L.allocator.free(pof_name);
-        const stat = lookforfunc(L, filename, pof_name);
+        const stat = try lookforfunc(L, filename, pof_name);
         if (stat != ERRFUNC) return stat;
         mname = mname[mark_pos + 1 ..];
     }
-    const func_name = std.fmt.allocPrint(L.allocator, "{s}{s}", .{ LUA_POF, mname }) catch {
-        pushliteral(L, "out of memory");
-        return ERRFUNC;
-    };
+    const func_name = try std.fmt.allocPrint(L.allocator, "{s}{s}", .{ LUA_POF, mname });
     defer L.allocator.free(func_name);
-    return lookforfunc(L, filename, func_name);
+    return try lookforfunc(L, filename, func_name);
 }
 
 fn searcher_Lua(L: *lua.lua_State) anyerror!i32 {
@@ -308,7 +300,7 @@ fn searcher_Lua(L: *lua.lua_State) anyerror!i32 {
 fn searcher_C(L: *lua.lua_State) anyerror!i32 {
     const name = try lauxlib.luaL_checkstring(L, 1);
     const filename = try findfile(L, name, "cpath", luaconf.LUA_DIRSEP) orelse return 1;
-    return checkload(L, loadfunc(L, filename, name) == 0, filename);
+    return checkload(L, (try loadfunc(L, filename, name)) == 0, filename);
 }
 
 fn searcher_Croot(L: *lua.lua_State) anyerror!i32 {
@@ -317,7 +309,7 @@ fn searcher_Croot(L: *lua.lua_State) anyerror!i32 {
     const root_name = name[0..p];
     _ = lua.lua_pushlstring(L, root_name, root_name.len);
     const filename = try findfile(L, lua.lua_tostring(L, -1) orelse return 1, "cpath", luaconf.LUA_DIRSEP) orelse return 1;
-    const stat = loadfunc(L, filename, name);
+    const stat = try loadfunc(L, filename, name);
     if (stat != 0) {
         if (stat != ERRFUNC) return checkload(L, false, filename);
         const msg = std.fmt.allocPrint(L.allocator, "no module '{s}' in file '{s}'", .{ name, filename }) catch {
@@ -387,36 +379,38 @@ fn ll_require(L: *lua.lua_State) anyerror!i32 {
 
 fn setprogdir(_: *lua.lua_State) void {}
 
-fn setpath(L: *lua.lua_State, fieldname: []const u8, envname: []const u8, dft: []const u8) void {
-    const nver = std.fmt.allocPrint(L.allocator, "{s}{s}", .{ envname, LUA_VERSUFFIX }) catch {
-        _ = lua.lua_pushstring(L, dft);
-        setprogdir(L);
-        lua.lua_setfield(L, -2, fieldname) catch {};
-        return;
-    };
+fn setpath(L: *lua.lua_State, fieldname: []const u8, envname: []const u8, dft: []const u8) !void {
+    const nver = try std.fmt.allocPrint(L.allocator, "{s}{s}", .{ envname, LUA_VERSUFFIX });
     defer L.allocator.free(nver);
 
-    var path_opt: ?[]const u8 = lauxlib.luaL_getenv(L.allocator, nver);
+    var path_opt: ?[]const u8 = lauxlib.luaL_getenv(L, nver) catch |err| switch (err) {
+        error.OutOfMemory => return error.OutOfMemory,
+        else => null,
+    };
     if (path_opt == null) {
-        path_opt = lauxlib.luaL_getenv(L.allocator, envname);
+        path_opt = lauxlib.luaL_getenv(L, envname) catch |err| switch (err) {
+            error.OutOfMemory => return error.OutOfMemory,
+            else => null,
+        };
     }
 
     if (path_opt) |path| {
         defer L.allocator.free(path);
-        if (noenv(L)) {
+        if (try noenv(L)) {
             _ = lua.lua_pushstring(L, dft);
         } else {
             if (std.mem.indexOf(u8, path, ";;")) |dftmark_idx| {
                 var b = lauxlib.luaL_Buffer{};
                 lauxlib.luaL_buffinit(L, &b);
+                errdefer b.buf.deinit(L.allocator);
                 if (dftmark_idx > 0) {
-                    lauxlib.luaL_addlstring(L, &b, path[0..dftmark_idx]) catch {};
-                    lauxlib.luaL_addlstring(L, &b, ";") catch {};
+                    try lauxlib.luaL_addlstring(L, &b, path[0..dftmark_idx]);
+                    try lauxlib.luaL_addlstring(L, &b, ";");
                 }
-                lauxlib.luaL_addlstring(L, &b, dft) catch {};
+                try lauxlib.luaL_addlstring(L, &b, dft);
                 if (dftmark_idx + 2 < path.len) {
-                    lauxlib.luaL_addlstring(L, &b, ";") catch {};
-                    lauxlib.luaL_addlstring(L, &b, path[dftmark_idx + 2 ..]) catch {};
+                    try lauxlib.luaL_addlstring(L, &b, ";");
+                    try lauxlib.luaL_addlstring(L, &b, path[dftmark_idx + 2 ..]);
                 }
                 lauxlib.luaL_pushresult(L, &b);
             } else {
@@ -428,10 +422,10 @@ fn setpath(L: *lua.lua_State, fieldname: []const u8, envname: []const u8, dft: [
     }
 
     setprogdir(L);
-    lua.lua_setfield(L, -2, fieldname) catch {};
+    try lua.lua_setfield(L, -2, fieldname);
 }
 
-fn createsearcherstable(L: *lua.lua_State) void {
+fn createsearcherstable(L: *lua.lua_State) !void {
     const searchers = [_]lua.lua_CFunction{ searcher_preload, searcher_Lua, searcher_C, searcher_Croot };
     lua.lua_createtable(L, @intCast(searchers.len), 0);
     for (searchers, 1..) |s, i| {
@@ -439,7 +433,7 @@ fn createsearcherstable(L: *lua.lua_State) void {
         lua.lua_pushcclosure(L, s, 1);
         lua.lua_rawseti(L, -2, @intCast(i));
     }
-    lua.lua_setfield(L, -2, "searchers") catch {};
+    try lua.lua_setfield(L, -2, "searchers");
 }
 
 pub fn openloadlib(L: *lua.lua_State) !void {
@@ -458,16 +452,12 @@ pub fn openloadlib(L: *lua.lua_State) !void {
     };
     try lauxlib.luaL_newlib(L, &pk_funcs);
 
-    createsearcherstable(L);
+    try createsearcherstable(L);
 
-    setpath(L, "path", "LUA_PATH", luaconf.LUA_PATH_DEFAULT);
-    setpath(L, "cpath", "LUA_CPATH", luaconf.LUA_CPATH_DEFAULT);
+    try setpath(L, "path", "LUA_PATH", luaconf.LUA_PATH_DEFAULT);
+    try setpath(L, "cpath", "LUA_CPATH", luaconf.LUA_CPATH_DEFAULT);
 
-    const config = std.fmt.allocPrint(L.allocator, "{s}\n;\n?\n!\n-\n", .{luaconf.LUA_DIRSEP}) catch {
-        pushliteral(L, "");
-        lua.lua_pop(L, 1);
-        return;
-    };
+    const config = try std.fmt.allocPrint(L.allocator, "{s}\n;\n?\n!\n-\n", .{luaconf.LUA_DIRSEP});
     defer L.allocator.free(config);
     _ = lua.lua_pushlstring(L, config, config.len);
     try lua.lua_setfield(L, -2, "config");

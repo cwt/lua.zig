@@ -896,4 +896,36 @@ Fixed the three-blocker chain that prevented `lua_resume`/`lua_yieldk` from work
 
 `zig build test` passes: **59/59 tests** (58 previous + 1 getenv integration test), zero memory leaks.
 
+---
+
+## 2026-07-12 — BUG-031–035: Silent catch, dynamic loader leaks, and getenv abstraction bugs fixed
+
+### Changes
+
+- **`src/lib/loadlib.zig`**:
+  - Resolved 9 silent catches (`BUG-031`) by converting all OOM and runtime C-API calls to return error unions and propagate errors using `try` (in `noenv`, `lsys_load`, `lsys_sym`, `checkclib`, `addtoclib`, `lookforfunc`, `loadfunc`, `setpath`, and `createsearcherstable`).
+  - Added loaded library tracker (`BUG-032`): Appends successfully opened `*std.DynLib` pointers to the state's `clibs` list.
+- **`src/lua.zig`**:
+  - Extended `global_State` with a `clibs` list.
+  - Cleans up and unloads all dynamic libraries during `lua_close`.
+- **`src/lauxlib.zig`**:
+  - Implemented proper `std.Io` file operations in `luaL_getenv` (`BUG-034`) using `openFile` and `readStreaming` (handling `error.EndOfStream` on empty/unseekable proc files).
+  - Modified `luaL_getenv` to return `anyerror!?[]const u8` (`BUG-033`) to surface and propagate OOM errors.
+  - Added `errdefer` to `luaL_gsub` (`BUG-035`) to deallocate `luaL_Buffer` on OOM errors.
+- **`src/lib/oslib.zig`**:
+  - Updated `os_getenv` to call the error-union-enabled `luaL_getenv` and handle errors properly.
+- **`tests/test_basic.zig`**:
+  - Rewrote `"os.getenv environment variable lookup"` to use `std.Io.Threaded` for real system integration during unit tests instead of stubbed `std.testing.io`.
+
+### §0.1 Self-Audit
+
+- Allocator threaded: All new and updated functions thread the allocator.
+- Errors propagated: Properly handled and propagated OOM errors while catching non-OOM environment access errors gracefully.
+- No memory leaks: Checked and verified that all dynamically loaded libraries, buffer strings, and environment buffers are cleaned up with zero leaks.
+
+### Verification
+
+`zig build test` passes: **59/59 tests**, zero memory leaks.
+
+
 

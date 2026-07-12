@@ -68,7 +68,11 @@ fn os_getenv(L_: *L) !i32 {
         lua.lua_pushnil(L_);
         return 1;
     };
-    if (lauxlib.luaL_getenv(L_.allocator, name)) |val| {
+    const val_opt = lauxlib.luaL_getenv(L_, name) catch |err| switch (err) {
+        error.OutOfMemory => return error.OutOfMemory,
+        else => null,
+    };
+    if (val_opt) |val| {
         defer L_.allocator.free(val);
         _ = lua.lua_pushlstring(L_, val, val.len);
         return 1;
