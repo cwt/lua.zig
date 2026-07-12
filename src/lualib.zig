@@ -20,6 +20,8 @@ const utf8lib = @import("lib/utf8lib.zig");
 const stringlib = @import("lib/stringlib.zig");
 const tablib = @import("lib/tablib.zig");
 const corolib = @import("lib/corolib.zig");
+const iolib = @import("lib/iolib.zig");
+const oslib = @import("lib/oslib.zig");
 
 pub fn openbaselib(L: *lua.lua_State) !void {
     try baselib.openbaselib(L);
@@ -65,9 +67,8 @@ pub fn openmathlib(L: *lua.lua_State) !void {
 // ===================================================================
 
 pub fn openoslib(L: *lua.lua_State) !void {
-    const os = L;
-    _ = os;
-    // Register os library functions
+    try oslib.openoslib(L);
+    lua.lua_setglobal(L, "os");
 }
 
 // ===================================================================
@@ -75,9 +76,8 @@ pub fn openoslib(L: *lua.lua_State) !void {
 // ===================================================================
 
 pub fn openio(L: *lua.lua_State) !void {
-    const io = L;
-    _ = io;
-    // Register io library functions
+    try iolib.openio(L);
+    lua.lua_setglobal(L, "io");
 }
 
 // ===================================================================

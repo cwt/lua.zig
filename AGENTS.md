@@ -144,12 +144,13 @@ are available as a Git subrepo.
   have all been removed.
 - **juicy-main entry point** is in `src/luazig.zig` using `std.process.Init`.
 - **`build.zig`** builds exe (`luazig`) + library (`lua`). Test step works.
-- **44 passing tests** in `tests/test_basic.zig` covering nil/boolean/number/integer/
+- **50 passing tests** in `tests/test_basic.zig` covering nil/boolean/number/integer/
    string/table type checks, stack push/pop round-trip, string interning,
    table setfield/getfield, seti/geti + length, empty/remove length, hash-part
    string keys, `next` traversal, stack-key gettable/settable, bytecode loader,
    VM execution, **8 metamethod tests** (`__index`, `__newindex`, `__add`, `__eq`, `__lt`/`__le`),
-   error propagation/pcall, GC, all Phase F libraries, and coroutine yield/resume.
+   error propagation/pcall, GC, all Phase F libraries, coroutine yield/resume,
+   io library registration + type check, os library registration + time/clock/difftime.
 - **Phase B complete — Tables & string interning.**
    Real `lua_Table` (array part + chained-scatter hash part) in `src/ltable.zig`;
    string interning in `global_State.strt` (`std.array_hash_map.String`) in
@@ -177,7 +178,7 @@ are available as a Git subrepo.
 ### What is NOT done (blocking next phase)
 1. **No source text compilation.** Lexer (`llex.c`), parser (`lparser.c`), and code generator (`lcode.c`) are not implemented (we rely on precompiled bytecode). `luaL_dostring` is still a stub.
 2. **No debug API.** `lua/ldblib.c` (debug library) and `lua/ldebug.c` (hook infrastructure) are not ported.
-3. **`iolib`/`oslib` not wired to `std.Io`.** File I/O and OS libraries are present as stubs; `iolib` needs `std.Io` threading instead of C `FILE*`.
+3. **`debug`/`loadlib` not ported.** Debug library and loader library stubs remain.
 
 ---
 
@@ -256,10 +257,11 @@ and string interning in `global_State.strt` (`std.array_hash_map.String`) in
     - ✅ `tablelib`: All 8 functions (create, insert, remove, pack, unpack, concat, move, sort).
     - ✅ `utf8lib`: All 6 functions (char, codepoint, len, offset, codes) + charpattern.
     - ✅ `corolib`: All 8 functions (create, resume, running, status, wrap, yield, isyieldable, close).
-    - ✅ `bit32`: All 12 functions (band, bor, bxor, bnot, btest, shifts, rotates, extract, replace).
-    - ⬜ `oslib`, `iolib`: Present as stubs — need `std.Io` threading.
+    - ✅ `bit32`: All 12 functions (band, bor, bxor, bnot, btest, shifts, rotates, extract, remove).
+    - ✅ `iolib`: Full `io` library using `std.posix.openat`/`std.os.linux` syscalls; wires stdin/stdout in registry.
+    - ✅ `oslib`: Full `os` library using `std.os.linux.clock_gettime`/`rename`/`unlink`/`getrandom`.
     - ⬜ `debug`, `loadlib`: Not yet ported.
-16. Wire `iolib`/`oslib` to `std.Io`/`init.io` instead of raw C file APIs.
+16. Stale `src/lib/io.zig` removed (superseded by `src/lib/iolib.zig`).
 
 ---
 
@@ -268,7 +270,7 @@ and string interning in `global_State.strt` (`std.array_hash_map.String`) in
 | File | Status | Next action |
 |------|--------|-------------|
 | `build.zig` | ✅ exe+lib build OK; test step works | Expand when adding deps or test targets. |
-| `src/luazig.zig` | ✅ entry point, juicy-main | Thread `io` down to `iolib`/`oslib` when those are implemented. |
+| `src/luazig.zig` | ✅ entry point, juicy-main | Thread `io` down to `iolib`/`oslib` if syscall-based I/O needs replacement. |
 | `src/lua.zig` | ✅ type model, stack, global_State, table API, binary loader, error propagation, GC | Phase F — standard libraries. |
 | `src/lundump.zig` | ✅ `loadBinaryChunk` bytecode loader, alignment, varint, string intern | Keep as-is; test coverage is complete. |
 | `src/llimits.zig` | ✅ constants only, no types | Keep as-is. |
@@ -280,8 +282,8 @@ and string interning in `global_State.strt` (`std.array_hash_map.String`) in
 | `src/lvm.zig` | ✅ run execution loop, all table opcodes via metamethods | Phase E — arithmetic metamethods via `luaT_trybinTM`. |
 | `src/lauxlib.zig` | ✅ aux helpers, frame-relative getmetafield, checked option/checklstring | Complete missing helper functions when adding remaining standard libraries. |
 | `src/lualib.zig` | ✅ inline stubs for all libraries | Phase F — move to `src/lib/*.zig` bodies. |
-| `src/lib/*.zig` | ✅ All 10 libraries; `baselib`, `mathlib`, `stringlib`, `tablelib`, `utf8lib`, `corolib`, `bit32` fully implemented; `iolib`/`oslib` stubs | Phase F — wire `iolib`/`oslib` to `std.Io`; port `debug`, `loadlib`. |
-| `tests/test_basic.zig` | ✅ 44 passing tests | Ready for remaining Phase F libraries and iolib/std.Io wiring. |
+| `src/lib/*.zig` | ✅ All 10 libraries; `baselib`, `mathlib`, `stringlib`, `tablelib`, `utf8lib`, `corolib`, `bit32` fully implemented; `iolib`/`oslib` fully implemented; `debug`/`loadlib` stubs | Phase F — port `debug`, `loadlib`. |
+| `tests/test_basic.zig` | ✅ 50 passing tests | Ready for remaining Phase F libraries (`debug`, `loadlib`). |
 | `docs/` | ✅ OKF v0.1 bundle (architecture, log, glossary) | Update after every phase; see `docs/README.md`. |
 | `lua/` | ✅ Git subrepo tracking git@github.com:lua/lua.git | Reference source; update with `git pull` when needed. |
 | `.hgsub` | ✅ defines `lua = [git]git@github.com:lua/lua.git` | Add more subrepos if needed. |
@@ -309,6 +311,5 @@ and string interning in `global_State.strt` (`std.array_hash_map.String`) in
 
 ## 8. What to work on next
 
-Phase E (Error handling, GC, metatables) is **done**. The first library of Phase F (`baselib`) is also **done**.
-The immediate next task is to continue **Phase F — Standard libraries**: porting the remaining library bodies one by one (`mathlib`, `stringlib`, `tablelib`, `utf8lib`, `oslib`, `iolib`, `corolib`, `debug`, `loadlib`, `bit32`) in `src/lib/*.zig` and adding tests for each in `tests/test_basic.zig`.
+Phase E (Error handling, GC, metatables) is **done**. All 10 Phase F libraries are **done** (io, os, math, string, table, utf8, coroutine, bit32, base). The immediate next task is to **port `debug` and `loadlib` libraries** in `src/lib/*.zig` and add tests for each in `tests/test_basic.zig`.
 

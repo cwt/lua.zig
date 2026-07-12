@@ -2160,3 +2160,159 @@ test "coroutine yield/resume via C API" {
     try std.testing.expectEqual(@as(i32, lua.LUA_OK), status2);
     try std.testing.expectEqualStrings("done", lua.lua_tostring(co, -1).?);
 }
+
+test "io library opens and registers functions" {
+    const gpa = std.testing.allocator;
+    var L: lua.lua_State = undefined;
+    try lua.luaL_newstate(&L, gpa);
+    defer lua.lua_close(&L);
+
+    try lua.luaL_openlibs(&L);
+
+    _ = lua.lua_getglobal(&L, "io");
+    try std.testing.expectEqual(@as(i32, lua.LUA_TTABLE), lua.lua_type(&L, -1));
+
+    _ = try lua.lua_getfield(&L, -1, "type");
+    try std.testing.expectEqual(@as(i32, lua.LUA_TFUNCTION), lua.lua_type(&L, -1));
+    lua.lua_pop(&L, 1);
+
+    _ = try lua.lua_getfield(&L, -1, "open");
+    try std.testing.expectEqual(@as(i32, lua.LUA_TFUNCTION), lua.lua_type(&L, -1));
+    lua.lua_pop(&L, 1);
+
+    _ = try lua.lua_getfield(&L, -1, "close");
+    try std.testing.expectEqual(@as(i32, lua.LUA_TFUNCTION), lua.lua_type(&L, -1));
+    lua.lua_pop(&L, 1);
+
+    _ = try lua.lua_getfield(&L, -1, "write");
+    try std.testing.expectEqual(@as(i32, lua.LUA_TFUNCTION), lua.lua_type(&L, -1));
+    lua.lua_pop(&L, 1);
+
+    _ = try lua.lua_getfield(&L, -1, "read");
+    try std.testing.expectEqual(@as(i32, lua.LUA_TFUNCTION), lua.lua_type(&L, -1));
+    lua.lua_pop(&L, 1);
+
+    _ = try lua.lua_getfield(&L, -1, "lines");
+    try std.testing.expectEqual(@as(i32, lua.LUA_TFUNCTION), lua.lua_type(&L, -1));
+    lua.lua_pop(&L, 1);
+
+    _ = try lua.lua_getfield(&L, -1, "flush");
+    try std.testing.expectEqual(@as(i32, lua.LUA_TFUNCTION), lua.lua_type(&L, -1));
+    lua.lua_pop(&L, 1);
+
+    _ = try lua.lua_getfield(&L, -1, "tmpfile");
+    try std.testing.expectEqual(@as(i32, lua.LUA_TFUNCTION), lua.lua_type(&L, -1));
+    lua.lua_pop(&L, 1);
+
+    _ = try lua.lua_getfield(&L, -1, "input");
+    try std.testing.expectEqual(@as(i32, lua.LUA_TFUNCTION), lua.lua_type(&L, -1));
+    lua.lua_pop(&L, 1);
+
+    _ = try lua.lua_getfield(&L, -1, "output");
+    try std.testing.expectEqual(@as(i32, lua.LUA_TFUNCTION), lua.lua_type(&L, -1));
+    lua.lua_pop(&L, 2);
+}
+
+test "io.type on non-file returns nil" {
+    const gpa = std.testing.allocator;
+    var L: lua.lua_State = undefined;
+    try lua.luaL_newstate(&L, gpa);
+    defer lua.lua_close(&L);
+
+    try lua.luaL_openlibs(&L);
+
+    _ = lua.lua_getglobal(&L, "io");
+    _ = try lua.lua_getfield(&L, -1, "type");
+    lua.lua_pushnil(&L);
+    _ = lua.lua_pcall(&L, 1, 1, 0);
+    try std.testing.expectEqual(@as(i32, lua.LUA_TNIL), lua.lua_type(&L, -1));
+    lua.lua_pop(&L, 2);
+}
+
+test "os library opens and registers functions" {
+    const gpa = std.testing.allocator;
+    var L: lua.lua_State = undefined;
+    try lua.luaL_newstate(&L, gpa);
+    defer lua.lua_close(&L);
+
+    try lua.luaL_openlibs(&L);
+
+    _ = lua.lua_getglobal(&L, "os");
+    try std.testing.expectEqual(@as(i32, lua.LUA_TTABLE), lua.lua_type(&L, -1));
+
+    _ = try lua.lua_getfield(&L, -1, "clock");
+    try std.testing.expectEqual(@as(i32, lua.LUA_TFUNCTION), lua.lua_type(&L, -1));
+    lua.lua_pop(&L, 1);
+
+    _ = try lua.lua_getfield(&L, -1, "date");
+    try std.testing.expectEqual(@as(i32, lua.LUA_TFUNCTION), lua.lua_type(&L, -1));
+    lua.lua_pop(&L, 1);
+
+    _ = try lua.lua_getfield(&L, -1, "time");
+    try std.testing.expectEqual(@as(i32, lua.LUA_TFUNCTION), lua.lua_type(&L, -1));
+    lua.lua_pop(&L, 1);
+
+    _ = try lua.lua_getfield(&L, -1, "difftime");
+    try std.testing.expectEqual(@as(i32, lua.LUA_TFUNCTION), lua.lua_type(&L, -1));
+    lua.lua_pop(&L, 1);
+
+    _ = try lua.lua_getfield(&L, -1, "exit");
+    try std.testing.expectEqual(@as(i32, lua.LUA_TFUNCTION), lua.lua_type(&L, -1));
+    lua.lua_pop(&L, 1);
+
+    _ = try lua.lua_getfield(&L, -1, "getenv");
+    try std.testing.expectEqual(@as(i32, lua.LUA_TFUNCTION), lua.lua_type(&L, -1));
+    lua.lua_pop(&L, 2);
+}
+
+test "os.time returns an integer" {
+    const gpa = std.testing.allocator;
+    var L: lua.lua_State = undefined;
+    try lua.luaL_newstate(&L, gpa);
+    defer lua.lua_close(&L);
+
+    try lua.luaL_openlibs(&L);
+
+    _ = lua.lua_getglobal(&L, "os");
+    _ = try lua.lua_getfield(&L, -1, "time");
+    _ = lua.lua_pcall(&L, 0, 1, 0);
+    try std.testing.expectEqual(@as(i32, 1), lua.lua_isinteger(&L, -1));
+    const t = lua.lua_tointeger(&L, -1) orelse return error.Fail;
+    try std.testing.expect(t > 1700000000);
+    lua.lua_pop(&L, 2);
+}
+
+test "os.clock returns a number" {
+    const gpa = std.testing.allocator;
+    var L: lua.lua_State = undefined;
+    try lua.luaL_newstate(&L, gpa);
+    defer lua.lua_close(&L);
+
+    try lua.luaL_openlibs(&L);
+
+    _ = lua.lua_getglobal(&L, "os");
+    _ = try lua.lua_getfield(&L, -1, "clock");
+    _ = lua.lua_pcall(&L, 0, 1, 0);
+    try std.testing.expectEqual(@as(i32, 1), lua.lua_isnumber(&L, -1));
+    const c = lua.lua_tonumber(&L, -1) orelse return error.Fail;
+    try std.testing.expect(c >= 0);
+    lua.lua_pop(&L, 2);
+}
+
+test "os.difftime returns difference" {
+    const gpa = std.testing.allocator;
+    var L: lua.lua_State = undefined;
+    try lua.luaL_newstate(&L, gpa);
+    defer lua.lua_close(&L);
+
+    try lua.luaL_openlibs(&L);
+
+    _ = lua.lua_getglobal(&L, "os");
+    _ = try lua.lua_getfield(&L, -1, "difftime");
+    lua.lua_pushinteger(&L, 1000);
+    lua.lua_pushinteger(&L, 500);
+    _ = lua.lua_pcall(&L, 2, 1, 0);
+    const d = lua.lua_tonumber(&L, -1) orelse return error.Fail;
+    try std.testing.expectEqual(@as(f64, 500.0), d);
+    lua.lua_pop(&L, 2);
+}

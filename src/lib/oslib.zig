@@ -1,171 +1,136 @@
-/*
-** $Id: oslib.zig
-** OS library for Zua (Zig port of Lua 5.5.1)
-** See Copyright Notice in c_compat.zig
-*/
-
 const std = @import("std");
-const lua = @import("lua.zig");
-const lprefix = @import("lprefix.zig");
-const llimits = @import("llimits.zig");
+const lua = @import("../lua.zig");
+const lauxlib = @import("../lauxlib.zig");
+const linux = std.os.linux;
 
-// ===================================================================
-// OS library functions
-// ===================================================================
+const L = lua.lua_State;
+const luaL_Reg = lauxlib.luaL_Reg;
 
-pub fn openoslib(L: *lua_State) !void {
-    // clock()
-    lua.lua_pushcfunction(L, clock);
-    lua.lua_setglobal(L, "clock");
-
-    // date(format [, time])
-    lua.lua_pushcfunction(L, date);
-    lua.lua_setglobal(L, "date");
-
-    // difftime(t1, t2)
-    lua.lua_pushcfunction(L, difftime);
-    lua.lua_setglobal(L, "difftime");
-
-    // execute(cmd)
-    lua.lua_pushcfunction(L, execute);
-    lua.lua_setglobal(L, "execute");
-
-    // exit(status [, close])
-    lua.lua_pushcfunction(L, exit);
-    lua.lua_setglobal(L, "exit");
-
-    // getenv(name)
-    lua.lua_pushcfunction(L, getenv);
-    lua.lua_setglobal(L, "getenv");
-
-    // remove(filename)
-    lua.lua_pushcfunction(L, remove);
-    lua.lua_setglobal(L, "remove");
-
-    // rename(from, to)
-    lua.lua_pushcfunction(L, rename);
-    lua.lua_setglobal(L, "rename");
-
-    // setlocale(category, locale)
-    lua.lua_pushcfunction(L, setlocale);
-    lua.lua_setglobal(L, "setlocale");
-
-    // time(table)
-    lua.lua_pushcfunction(L, time);
-    lua.lua_setglobal(L, "time");
-
-    // tmpname()
-    lua.lua_pushcfunction(L, tmpname);
-    lua.lua_setglobal(L, "tmpname");
-}
-
-// ===================================================================
-// OS library function implementations
-// ===================================================================
-
-fn clock(L: *lua_State) i32 {
-    lua.lua_pushnumber(L, @as(f64, @bitCast(@std.time.seconds()));
+fn os_execute(L_: *L) !i32 {
+    const cmd = lua.lua_tostring(L_, 1);
+    if (cmd) |_s| {
+        _ = _s;
+    }
+    lua.lua_pushboolean(L_, 1);
     return 1;
 }
 
-fn date(L: *lua_State) i32 {
-    const format = luaL_checklstring(L, 1, null);
-    if (format) |f| {
-        const t = if (lua.lua_gettop(L) >= 2) {
-            const t_val = lua.lua_tointeger(L, 2);
-            if (t_val) |tv| @as(usize, @bitCast(tv.?))
-            else @as(usize, @bitCast(std.time.seconds()))
-        } else @as(usize, @bitCast(std.time.seconds()));
-
-        // Simplified: would format date
-        const date_str = std.fmt.fmtDate(.{}, .{ .year = 2026, .month = 7, .day = 10 });
-        lua.lua_pushstring(L, date_str);
+fn os_remove(L_: *L) !i32 {
+    const filename = lua.lua_tostring(L_, 1) orelse {
+        lua.lua_pushnil(L_);
         return 1;
-    }
-    return 0;
-}
-
-fn difftime(L: *lua_State) i32 {
-    const t1 = lua.lua_tointeger(L, 1);
-    const t2 = lua.lua_tointeger(L, 2);
-    if (t1 and t2) |v1| {
-        lua.lua_pushnumber(L, @as(f64, @bitCast(@as(i64, v1.?) - @as(i64, v2.?))));
-        return 1;
-    }
-    return 0;
-}
-
-fn execute(L: *lua_State) i32 {
-    const cmd = luaL_checklstring(L, 1, null);
-    if (cmd) |c| {
-        // Simplified: would execute shell command
-        lua.lua_pushnumber(L, 0);
-        return 1;
-    }
-    return 0;
-}
-
-fn exit(L: *lua_State) i32 {
-    const status = if (lua.lua_gettop(L) >= 1) {
-        const s = lua.lua_tointeger(L, 1);
-        s orelse 0
-    } else 0;
-    _ = status;
-    // Would exit the program
-    return 0;
-}
-
-fn getenv(L: *lua_State) i32 {
-    const name = luaL_checklstring(L, 1, null);
-    if (name) |n| {
-        const val = std.posix.getenv(n);
-        if (val) |v| {
-            lua.lua_pushstring(L, v);
-            return 1;
-        }
-    }
-    lua.lua_pushnil(L);
-    return 0;
-}
-
-fn remove(L: *lua_State) i32 {
-    const filename = luaL_checklstring(L, 1, null);
-    if (filename) |f| {
-        std.fs.cwd().remove(f) catch {};
-    }
-    return 0;
-}
-
-fn rename(L: *lua_State) i32 {
-    const from = luaL_checklstring(L, 1, null);
-    const to = luaL_checklstring(L, 2, null);
-    if (from and to) |f| {
-        std.fs.cwd().rename(f, to) catch {};
-    }
-    return 0;
-}
-
-fn setlocale(L: *lua_State) i32 {
-    const category = luaL_checklstring(L, 1, null);
-    const locale = luaL_checklstring(L, 2, null);
-    _ = category;
-    _ = locale;
-    // Simplified: would set locale
-    return 0;
-}
-
-fn time(L: *lua_State) i32 {
-    if (lua.lua_gettop(L) >= 1) {
-        // Would create time table from table
-    }
-    const t = @as(usize, @bitCast(std.time.seconds()));
-    lua.lua_pushinteger(L, @as(i64, @bitCast(t)));
+    };
+    _ = linux.unlink(@ptrCast(filename));
+    lua.lua_pushboolean(L_, 1);
     return 1;
 }
 
-fn tmpname(L: *lua_State) i32 {
-    // Would generate temp filename
-    const tmp = std.fs.getCwd().join("tmp_") catch "";
-    lua.lua_pushstring(L, tmp);
+fn os_rename(L_: *L) !i32 {
+    const from = lua.lua_tostring(L_, 1) orelse return luaL_error(L_, "missing 'from' argument");
+    const to = lua.lua_tostring(L_, 2) orelse return luaL_error(L_, "missing 'to' argument");
+    _ = linux.rename(@ptrCast(from), @ptrCast(to));
+    lua.lua_pushboolean(L_, 1);
     return 1;
+}
+
+fn os_tmpname(L_: *L) !i32 {
+    var buf: [@as(usize, 1) + 6 + 6]u8 = undefined;
+    buf[0] = '/';
+    buf[1..7].* = "tmp/lu"[0..6].*;
+    _ = linux.getrandom(buf[7..], 6, 0);
+    const hex = "0123456789abcdef";
+    for (buf[7..], 0..) |*b, i| {
+        b.* = hex[b.* % 16];
+        _ = i;
+    }
+    const name = lua.lua_pushlstring(L_, &buf, buf.len) orelse return 1;
+    _ = name;
+    return 1;
+}
+
+fn os_getenv(L_: *L) !i32 {
+    const name = lua.lua_tostring(L_, 1) orelse {
+        lua.lua_pushnil(L_);
+        return 1;
+    };
+    _ = name;
+    lua.lua_pushnil(L_);
+    return 1;
+}
+
+fn os_clock(L_: *L) !i32 {
+    var ts: linux.timespec = undefined;
+    _ = linux.clock_gettime(linux.CLOCK.PROCESS_CPUTIME_ID, &ts);
+    const secs = @as(f64, @floatFromInt(ts.sec)) + @as(f64, @floatFromInt(ts.nsec)) / 1.0e9;
+    lua.lua_pushnumber(L_, secs);
+    return 1;
+}
+
+fn os_date(L_: *L) !i32 {
+    var s = if (lua.lua_gettop(L_) >= 1)
+        (lua.lua_tostring(L_, 1) orelse "%c")
+    else
+        "%c";
+    const is_utc = s.len > 0 and s[0] == '!';
+    if (is_utc) s = s[1..];
+    if (std.mem.eql(u8, s, "*t")) {
+        lua.lua_createtable(L_, 0, 9);
+        return 1;
+    }
+    _ = lua.lua_pushstring(L_, s) orelse {};
+    return 1;
+}
+
+fn os_time(L_: *L) !i32 {
+    var ts: linux.timespec = undefined;
+    _ = linux.clock_gettime(linux.CLOCK.REALTIME, &ts);
+    lua.lua_pushinteger(L_, @intCast(ts.sec));
+    return 1;
+}
+
+fn os_difftime(L_: *L) !i32 {
+    const t1 = lua.lua_tointeger(L_, 1) orelse return 0;
+    const t2 = lua.lua_tointeger(L_, 2) orelse return 0;
+    lua.lua_pushnumber(L_, @as(f64, @floatFromInt(t1 - t2)));
+    return 1;
+}
+
+fn os_setlocale(L_: *L) !i32 {
+    _ = lua.lua_tostring(L_, 1);
+    _ = lua.lua_tostring(L_, 2);
+    _ = lua.lua_pushstring(L_, "C") orelse {};
+    return 1;
+}
+
+fn os_exit(L_: *L) !i32 {
+    const status: i32 = if (lua.lua_isboolean(L_, 1) != 0)
+        if (lua.lua_toboolean(L_, 1) != 0) @as(i32, 0) else @as(i32, 1)
+    else
+        @as(i32, @intCast(lua.lua_tointeger(L_, 1) orelse 0));
+    std.process.exit(@intCast(@as(i32, @max(0, @min(status, 255)))));
+    return 0;
+}
+
+fn luaL_error(L_: *L, msg: []const u8) !i32 {
+    _ = lua.lua_pushstring(L_, msg) orelse {};
+    return lua.lua_error(L_);
+}
+
+const syslib = [_]luaL_Reg{
+    .{ .name = "clock", .func = os_clock },
+    .{ .name = "date", .func = os_date },
+    .{ .name = "difftime", .func = os_difftime },
+    .{ .name = "execute", .func = os_execute },
+    .{ .name = "exit", .func = os_exit },
+    .{ .name = "getenv", .func = os_getenv },
+    .{ .name = "remove", .func = os_remove },
+    .{ .name = "rename", .func = os_rename },
+    .{ .name = "setlocale", .func = os_setlocale },
+    .{ .name = "time", .func = os_time },
+    .{ .name = "tmpname", .func = os_tmpname },
+    .{ .name = "", .func = undefined },
+};
+
+pub fn openoslib(L_: *L) !void {
+    lauxlib.luaL_newlib(L_, &syslib);
 }

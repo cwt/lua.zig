@@ -746,3 +746,48 @@ Fixed the three-blocker chain that prevented `lua_resume`/`lua_yieldk` from work
 
 ### Verification
 `zig build test` passes: **44/44 tests**, zero memory leaks.
+
+---
+
+## 2026-07-12 — Phase F: IO + OS Standard Libraries port
+
+### Changes
+
+- **`src/lib/iolib.zig`** (new, replaces `src/lib/io.zig`): Full port of `lua/liolib.c`
+  using Linux syscalls (`std.posix.openat` for `io_open`, `std.os.linux.lseek` for
+  `f_seek`, `std.os.linux.write` for `g_write`, `std.posix.read` for `read_chars`,
+  `std.ArrayList(u8)` for dynamic line reading). Metatable `"FILE*"` with
+  `__gc`/`__close`. Default stdin/stdout stored in registry under `"INPUT*"`/`"OUTPUT*"` keys.
+
+- **`src/lib/oslib.zig`** (new): Full port of `lua/loslib.c` using
+  `std.os.linux.clock_gettime(CLOCK.PROCESS_CPUTIME_ID)` for `os_clock`,
+  `CLOCK.REALTIME` for `os_time`, `linux.unlink` for `os_remove`,
+  `linux.rename` for `os_rename`, `linux.getrandom` for `os_tmpname`,
+  `std.process.exit` for `os_exit`.
+
+- **`src/lualib.zig`**: Wired `openio`/`openoslib` with `lua_setglobal`.
+
+- **`src/lauxlib.zig`**: Added `luaL_newmetatable`, `luaL_setmetatable`,
+  `luaL_testudata`, `luaL_checkudata`, `luaL_setfuncs`, `luaL_newlib`,
+  `luaL_fileresult`, `luaL_execresult`, `luaL_checkstring`, `luaL_optstring`.
+
+- **`src/lib/io.zig`**: Deleted (superseded by `iolib.zig`).
+
+- **`tests/test_basic.zig`**: Added 6 new tests covering io/os registration,
+  `io.type`, `os.time`, `os.clock`, `os.difftime`.
+
+### §0.1 Self-Audit
+
+- Allocator threaded: `luaL_newmetatable`/`newfile` use explicit allocator.
+  `std.ArrayList(u8)` initialized with `.empty`, deinitted with explicit allocator.
+- Errors propagated: IO errors return `nil, errmsg` via `luaL_fileresult`; build
+  errors fixed (removed `catch unreachable`, `lua_getfield` → `try`, `lua_error`
+  return propagation, `lua_toboolean` comptime cast).
+- No `@bitCast` for value conversion; `@intCast` used for status→u8 conversion
+  in `os_exit` with `@min`/`@max` clamping to `[0, 255]`.
+- Stack capacity growth checked: `newfile` calls `lua_newuserdatauv` (hardware OOM
+  falls through to `unreachable` — matches C convention for allocation failure).
+
+### Verification
+
+`zig build` and `zig build test` both pass: **50/50 tests**, zero memory leaks.

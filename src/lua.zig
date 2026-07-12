@@ -556,8 +556,7 @@ fn idxPtr(L: *lua_State, idx: i32) ?*TValue {
         const u = base + @as(usize, @intCast(idx - 1));
         if (u < L.top) return &L.stack[u];
     } else if (idx == LUA_REGISTRYINDEX) {
-        // Registry pseudo-index: not yet implemented (returns null).
-        return null;
+        return &G(L).registry;
     } else if (idx < LUA_REGISTRYINDEX) {
         // Upvalue pseudo-index: lua_upvalueindex(n) = LUA_REGISTRYINDEX - n
         // Decode n-1 (0-based) from the index.
@@ -1198,6 +1197,14 @@ pub fn lua_pop(L: *lua_State, n: i32) void {
         if (nn <= L.top) {
             L.top -= nn;
         }
+    }
+}
+
+pub fn lua_replace(L: *lua_State, idx: i32) void {
+    const abs = toAbsoluteIndex(L, idx);
+    if (abs < L.top) {
+        L.stack[abs] = L.stack[L.top - 1];
+        L.top -= 1;
     }
 }
 

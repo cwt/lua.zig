@@ -73,6 +73,15 @@ pub fn luaL_checklstring(L: *lua.lua_State, idx: i32, len: ?*usize) ![]const u8 
     return s orelse error.InvalidType;
 }
 
+pub fn luaL_checkstring(L: *lua.lua_State, idx: i32) ![]const u8 {
+    return luaL_checklstring(L, idx, null);
+}
+
+pub fn luaL_optstring(L: *lua.lua_State, idx: i32, def: ?[]const u8) ?[]const u8 {
+    if (lua.lua_isnoneornil(L, idx)) return def;
+    return lua.lua_tostring(L, idx);
+}
+
 pub fn luaL_checkany(L: *lua.lua_State, idx: i32) !void {
     if (lua.lua_type(L, idx) == lua.LUA_TNONE) {
         return luaL_argerror(L, idx, "value expected");
@@ -317,6 +326,82 @@ pub fn luaL_gsub(L: *lua.lua_State, s: []const u8, p: []const u8, r: []const u8)
     const result = lua.lua_tolstring(L, -1, null) orelse return error.NotAString;
     b.buf.deinit(L.allocator);
     return result;
+}
+
+pub fn luaL_newmetatable(L: *lua.lua_State, tname: []const u8) !i32 {
+    _ = lua.lua_rawgetp(L, lua.LUA_REGISTRYINDEX, @ptrCast(tname.ptr));
+    if (lua.lua_type(L, -1) != lua.LUA_TNIL) {
+        lua.lua_pop(L, 1);
+        return 0;  // already exists
+    }
+    lua.lua_pop(L, 1);
+    lua.lua_createtable(L, 0, 0);
+    _ = lua.lua_rawsetp(L, lua.LUA_REGISTRYINDEX, @constCast(@ptrCast(tname.ptr)));
+    return 1;
+}
+
+pub fn luaL_setmetatable(L: *lua.lua_State, tname: []const u8) !void {
+    _ = try lua.lua_getfield(L, lua.LUA_REGISTRYINDEX, tname);
+    _ = lua.lua_setmetatable(L, -2);
+}
+
+pub fn luaL_testudata(L: *lua.lua_State, idx: i32, tname: []const u8) ?*anyopaque {
+    const p = lua.lua_touserdata(L, idx) orelse return null;
+    if (lua.lua_getmetatable(L, idx) == 0) return null;
+    lua.lua_getfield(L, lua.LUA_REGISTRYINDEX, tname) catch return null;
+    const same = lua.lua_rawequal(L, -1, -2);
+    lua.lua_pop(L, 2);
+    return if (same != 0) p else null;
+}
+
+pub fn luaL_checkudata(L: *lua.lua_State, idx: i32, tname: []const u8) !*anyopaque {
+    const p = luaL_testudata(L, idx, tname) orelse {
+        return luaL_typeerror(L, idx, tname);
+    };
+    return p;
+}
+
+pub fn luaL_setfuncs(L: *lua.lua_State, reg: []const luaL_Reg, nup: i32) void {
+    _ = nup;
+    for (reg) |r| {
+        if (r.name.len == 0) continue;
+        lua.lua_pushcfunction(L, r.func);
+        lua.lua_setfield(L, -2, r.name) catch {};
+    }
+}
+
+pub fn luaL_newlib(L: *lua.lua_State, reg: []const luaL_Reg) void {
+    lua.lua_createtable(L, 0, @intCast(reg.len));
+    luaL_setfuncs(L, reg, 0);
+}
+
+pub fn luaL_fileresult(L: *lua.lua_State, stat: bool, fname: ?[]const u8) i32 {
+    if (stat) {
+        lua.lua_pushboolean(L, 1);
+        return 1;
+    } else {
+        lua.lua_pushnil(L);
+        if (fname) |fn_| {
+            var buf: [256]u8 = undefined;
+            const msg = std.fmt.bufPrint(&buf, "{s}: error", .{fn_}) catch "error";
+            _ = lua.lua_pushstring(L, msg);
+        } else {
+            _ = lua.lua_pushstring(L, "error");
+        }
+        return 2;
+    }
+}
+
+pub fn luaL_execresult(L: *lua.lua_State, stat: i32) i32 {
+    if (stat == 0) {
+        lua.lua_pushboolean(L, 1);
+        return 1;
+    } else {
+        lua.lua_pushnil(L);
+        _ = lua.lua_pushstring(L, "exit");
+        lua.lua_pushinteger(L, stat);
+        return 3;
+    }
 }
 
 // ===================================================================
