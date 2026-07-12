@@ -1041,14 +1041,15 @@ pub fn run(L: *lua.lua_State, active_ci: *lua.CallInfo) anyerror!void {
             .VARARG => {
                 const ra_idx = ci.base + @as(usize, @intCast(GETARG_A(instruction)));
                 const c = GETARG_C(instruction);
-                if (c > 1) {
-                    @memset(L.stack[ra_idx .. ra_idx + @as(usize, @intCast(c - 1))], .{ .nil = {} });
-                    L.top = ra_idx + @as(usize, @intCast(c - 1));
-                }
+                const k = GETARG_k(instruction);
+                const vatab: i32 = if (k != 0) GETARG_B(instruction) else -1;
+                const wanted: i32 = c - 1;
+                try ltm.luaT_getvarargs(L, ci, ra_idx, wanted, vatab);
             },
             .GETVARG => {
                 const ra_idx = ci.base + @as(usize, @intCast(GETARG_A(instruction)));
-                L.stack[ra_idx] = .{ .nil = {} };
+                const rc_idx = ci.base + @as(usize, @intCast(GETARG_C(instruction)));
+                try ltm.luaT_getvararg(L, ci, ra_idx, rc_idx);
             },
             .ERRNNIL => {
                 const ra_idx = ci.base + @as(usize, @intCast(GETARG_A(instruction)));
@@ -1056,7 +1057,9 @@ pub fn run(L: *lua.lua_State, active_ci: *lua.CallInfo) anyerror!void {
                     return error.RuntimeError;
                 }
             },
-            .VARARGPREP => {},
+            .VARARGPREP => {
+                try ltm.luaT_adjustvarargs(L, ci, cl);
+            },
             .EXTRAARG => {},
         }
     }

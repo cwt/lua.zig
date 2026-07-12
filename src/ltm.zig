@@ -329,3 +329,145 @@ pub fn luaV_settable(L: *lua.lua_State, t: lua.TValue, key: lua.TValue, val: lua
     }
     return error.RuntimeError; // __newindex chain too long
 }
+
+// ===================================================================
+// Vararg support (port of lua/ltm.c luaT_adjustvarargs / luaT_getvarargs /
+// luaT_getvararg). The C reference relocates the call frame for the
+// "hidden vararg" (PF_VAHID) case; this port keeps the frame in place and
+// reads hidden arguments directly from the stack just above the fixed
+// parameters, which is layout-equivalent and avoids frame surgery.
+// ===================================================================
+
+// Prototype flag bits (lua/lobject.h).
+const PF_VAHID = 1; // function has hidden vararg arguments
+const PF_VATAB = 2; // function has vararg table
+const PF_FIXED = 4; // prototype has parts in fixed memory
+
+fn currentNumParams(L: *lua.lua_State, ci: *lua.CallInfo) usize {
+    const fv = L.stack[ci.func];
+    if (fv == .function) {
+        if (fv.function) |clo| switch (clo.*) {
+            .lua => |lc| return lc.p.numParams,
+            else => {},
+        };
+    }
+    return 0;
+}
+
+fn varargTableAt(L: *lua.lua_State, ci: *lua.CallInfo, np: usize) ?*lua.lua_Table {
+    const tv = L.stack[ci.func + np + 1];
+    if (tv == .table) return tv.table;
+    return null;
+}
+
+fn createVarargTable(L: *lua.lua_State, first_extra: usize, n: usize) !*lua.lua_Table {
+    const t = ltable.createTable(L.allocator, n, 1) catch return error.OutOfMemory;
+    try lua.registerGC(L, t);
+    var i: usize = 0;
+    while (i < n) : (i += 1) {
+        try ltable.setInt(t, @intCast(i + 1), L.stack[first_extra + i]);
+    }
+    const g = L.l_G orelse return error.NoGlobalState;
+    const nkey = lua.TValue{ .string = try lstring.luaS_new(g.allocator, &g.strt, g.seed, "n") };
+    try ltable.set(t, nkey, lua.TValue{ .number = @as(f64, @floatFromInt(@as(i64, @intCast(n)))) });
+    return t;
+}
+
+fn getnumargs(L: *lua.lua_State, ci: *lua.CallInfo, h: ?*lua.lua_Table) !i32 {
+    if (h == null) return ci.nextraargs;
+    const g = L.l_G orelse return 0;
+    const nkey = lua.TValue{ .string = try lstring.luaS_new(g.allocator, &g.strt, g.seed, "n") };
+    const res = ltable.get(h.?, nkey);
+    if (res.typ() == lua.LUA_TNUMBER) {
+        const nval = res.number;
+        if (nval >= 0 and nval <= @as(f64, @floatFromInt(std.math.maxInt(i32) / 2))) {
+            return @intFromFloat(nval);
+        }
+    }
+    return 0;
+}
+
+// lua/ltm.c luaT_adjustvarargs
+pub fn luaT_adjustvarargs(L: *lua.lua_State, ci: *lua.CallInfo, cl: *lua.lua_LClosure) !void {
+    const p = cl.p;
+    const totalargs = @as(i32, @intCast(L.top)) - @as(i32, @intCast(ci.func)) - 1;
+    const nfixparams: usize = p.numParams;
+    const nextra = totalargs - @as(i32, @intCast(nfixparams));
+    if ((p.flag & PF_VATAB) != 0) {
+        const t = try createVarargTable(L, ci.func + nfixparams + 1, @intCast(nextra));
+        L.stack[ci.func + nfixparams + 1] = lua.TValue{ .table = t };
+    } else {
+        ci.nextraargs = nextra;
+    }
+}
+
+// lua/ltm.c luaT_getvarargs
+pub fn luaT_getvarargs(L: *lua.lua_State, ci: *lua.CallInfo, where_idx: usize, wanted_in: i32, vatab: i32) !void {
+    var wanted = wanted_in;
+    const h: ?*lua.lua_Table = if (vatab >= 0) varargTableAt(L, ci, @intCast(vatab)) else null;
+    const nargs = try getnumargs(L, ci, h);
+    var touse: i32 = 0;
+    if (wanted < 0) {
+        touse = nargs;
+        wanted = nargs;
+        const need = where_idx + @as(usize, @intCast(nargs)) + 1;
+        if (need > L.stack.len) {
+            const old_len = L.stack.len;
+            const new_len = @max(L.stack.len * 2, need);
+            L.stack = try L.allocator.realloc(L.stack, new_len);
+            @memset(L.stack[old_len..], .{ .nil = {} });
+            L.stack_last = L.stack.len - 1;
+        }
+        L.top = where_idx + @as(usize, @intCast(nargs));
+    } else {
+        touse = if (nargs > wanted) wanted else nargs;
+    }
+    if (h == null) {
+        const np = currentNumParams(L, ci);
+        var i: i32 = 0;
+        while (i < touse) : (i += 1) {
+            L.stack[where_idx + @as(usize, @intCast(i))] = L.stack[ci.func + np + 1 + @as(usize, @intCast(i))];
+        }
+    } else {
+        var i: i32 = 0;
+        while (i < touse) : (i += 1) {
+            L.stack[where_idx + @as(usize, @intCast(i))] = ltable.getInt(h.?, @intCast(i + 1));
+        }
+    }
+    var j = touse;
+    while (j < wanted) : (j += 1) {
+        L.stack[where_idx + @as(usize, @intCast(j))] = .{ .nil = {} };
+    }
+}
+
+// lua/ltm.c luaT_getvararg (single vararg: select('#', ...) or ...[k])
+pub fn luaT_getvararg(L: *lua.lua_State, ci: *lua.CallInfo, ra_idx: usize, rc_idx: usize) !void {
+    const rc = L.stack[rc_idx];
+    const np = currentNumParams(L, ci);
+    const is_vatab = varargTableAt(L, ci, np) != null;
+    if (rc.typ() == lua.LUA_TNUMBER) {
+        const n = rc.number;
+        const n_int: i64 = @intFromFloat(n);
+        if (@as(f64, @floatFromInt(n_int)) == n and n_int >= 1) {
+            const nextra = if (is_vatab) (try getnumargs(L, ci, varargTableAt(L, ci, np))) else ci.nextraargs;
+            if (n_int - 1 < @as(i64, nextra)) {
+                if (is_vatab) {
+                    const t = varargTableAt(L, ci, np).?;
+                    L.stack[ra_idx] = ltable.getInt(t, n_int);
+                } else {
+                    L.stack[ra_idx] = L.stack[ci.func + np + 1 + @as(usize, @intCast(n_int - 1))];
+                }
+                return;
+            }
+        }
+    } else if (rc.typ() == lua.LUA_TSTRING) {
+        if (rc.string) |ts| {
+            if (ts.s.len == 1 and ts.s[0] == 'n') {
+                const nextra = if (is_vatab) (try getnumargs(L, ci, varargTableAt(L, ci, np))) else ci.nextraargs;
+                L.stack[ra_idx] = lua.TValue{ .number = @as(f64, @floatFromInt(@as(i64, nextra))) };
+                return;
+            }
+        }
+    }
+    L.stack[ra_idx] = .{ .nil = {} };
+}

@@ -298,6 +298,7 @@ const LoadState = struct {
         // Decode the meaningful flags: a function is vararg if it has hidden
         // vararg arguments and/or a vararg table (lua/lobject.h isvararg()).
         f.isVarArg = (flag & (PF_VAHID | PF_VATAB)) != 0;
+        f.flag = flag;
         f.maxStackSize = try self.loadByte();
 
         try self.loadCode(f);

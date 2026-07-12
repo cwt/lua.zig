@@ -1050,3 +1050,34 @@ Fixed the three-blocker chain that prevented `lua_resume`/`lua_yieldk` from work
 ### Related
 
 - Filed **BUG-036** (MED): the VM execution path for vararg functions (`OP_VARARGPREP` is a no-op; no `luaT_adjustvarargs`/`luaT_getvarargs`) is still incomplete. Phase D scope, tracked separately.
+
+## 2026-07-12 — Phase D fix: VM vararg execution (BUG-036 FIXED, rev 43)
+
+### Changes
+
+- **`src/ltm.zig`**: Ported the vararg runtime helpers from `lua/ltm.c`/`lua/ldo.c`:
+  - `luaT_adjustvarargs(L, ci, cl)` — for `PF_VATAB` builds the `{...}` table (with `n = <count>`) at `func+nfixparams+1`; for `PF_VAHID` records the extra-arg count in `ci.nextraargs`.
+  - `luaT_getvarargs(L, ci, where, wanted, vatab)` — copies varargs into place, honoring the multi-return `wanted < 0` path (grows the stack when needed and sets `L.top`), padding with `nil` up to `wanted`, and reading from either the stack (hidden) or the vararg table (`vatab >= 0`).
+  - `luaT_getvararg(L, ci, ra, rc)` — single-vararg access: numeric index `...[k]` and the `"n"` count query.
+  - Added `PF_VAHID`/`PF_VATAB`/`PF_FIXED` flag-bit constants (`lua/lobject.h`).
+- **`src/lvm.zig`**: Wired the opcodes — `VARARGPREP` → `luaT_adjustvarargs`, `VARARG` → `luaT_getvarargs` (decoding `C`→`wanted` and the `k` flag→`vatab`), `GETVARG` → `luaT_getvararg`.
+- **`src/lua.zig`**: Added `lua_Proto.flag: u8 = 0` (populated by the loader) and `CallInfo.nextraargs: i32 = 0`.
+- **`tests/test_vararg.luac`**: New precompiled chunk (`local function f(a,b,...) return ... end; return f(1,2,3,4,5)`), compiled with the Lua 5.5.1 reference binary.
+- **`tests/test_basic.zig`**: New test "BUG-036: VM vararg execution" asserting the first returned vararg is `3`.
+
+### Design note
+
+The C reference relocates the call frame for hidden varargs (`buildhiddenargs`). This port keeps the frame in place and reads hidden varargs directly from the stack just above the fixed parameters — layout-equivalent, and avoids C-style frame surgery.
+
+### §0.1 Self-Audit
+
+- **Rule 1 (allocator threaded):** `createVarargTable` uses `L.allocator`/`g.allocator`; no `page_allocator`. ✅
+- **Rule 2/12 (error propagation):** all fallible paths use `try` / `!void`; no `catch unreachable`, no swallowed errors. ✅
+- **Rule 3 (no longjmp):** pure `!T` returns. ✅
+- **Rule 4 (numeric conversions):** `@intCast`/`@floatFromInt`/`@intFromFloat` only; no `@bitCast` for value conversion. ✅
+- **Rule 8/9 (type model):** operates on `TValue` union and the single `lua_Table`/`lua_LClosure`/`global_State`. ✅
+- **Rule 13 (stack growth checked):** multi-return path reallocs and re-sets `stack_last` before writing past `top`. ✅
+
+### Verification
+
+`zig build test --summary all` → **65/65 tests pass, zero memory leaks.** Result cross-checked against the Lua 5.5.1 reference binary (`./lua/lua`).

@@ -224,6 +224,7 @@ pub const lua_Proto = struct {
     lastLineDefined: i32,
     numParams: u8,
     isVarArg: bool,
+    flag: u8 = 0,
     maxStackSize: u8,
     code: []lvm.Instruction,
     k: []TValue,
@@ -243,6 +244,7 @@ pub fn createProto(allocator: std.mem.Allocator) !*lua_Proto {
         .lastLineDefined = 0,
         .numParams = 0,
         .isVarArg = false,
+        .flag = 0,
         .maxStackSize = 0,
         .code = &.{},
         .k = &.{},
@@ -449,6 +451,10 @@ pub const CallInfo = struct {
     k: ?lua_KFunction = null,
     ctx: lua_KContext = 0,
     nyield: i32 = 0,
+    // Number of "extra" (vararg) arguments passed to a vararg function.
+    // Set by luaT_adjustvarargs; read by OP_VARARG/OP_GETVARG in the
+    // hidden-vararg (PF_VAHID) path.
+    nextraargs: i32 = 0,
 };
 
 pub const GCColor = enum(u2) {
