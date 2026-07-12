@@ -1023,3 +1023,30 @@ Fixed the three-blocker chain that prevented `lua_resume`/`lua_yieldk` from work
 
 
 
+
+---
+
+## 2026-07-12 — Phase C loader fix: decode prototype `isVarArg` from flag byte (rev 41)
+
+### Changes
+
+- **`src/lundump.zig`**:
+  - Added `PF_VAHID` (1), `PF_VATAB` (2), `PF_FIXED` (4) flag-bit constants from `lua/lobject.h`.
+  - `loadFunction` previously discarded the prototype flag byte (`_ = try self.loadByte()`). It now reads the flag and decodes `f.isVarArg = (flag & (PF_VAHID | PF_VATAB)) != 0`, matching `lua/lobject.h` `isvararg(p)`. `PF_FIXED` is masked out (irrelevant to our allocator model), as C does.
+  - This makes `debug.getinfo` 'u' (`isvararg`) and `collectvalidlines` (first `lineinfo` skip) correct for vararg functions loaded from precompiled chunks.
+
+### §0.1 Self-Audit
+
+- Allocator threaded: unchanged (loader still threads `L.allocator`).
+- Errors propagated: unchanged (`!T` throughout).
+- No longjmp: unchanged.
+- Single type model: unchanged.
+- Numeric discipline: flag decode uses plain bit-AND on `u8`; no `@intCast`/`@bitCast` for value conversion.
+
+### Verification
+
+`zig build test` passes: **64/64 tests**, zero memory leaks. (No regression; the test corpus currently exercises only fixed-arity functions, so this is a latent-correctness fix.)
+
+### Related
+
+- Filed **BUG-036** (MED): the VM execution path for vararg functions (`OP_VARARGPREP` is a no-op; no `luaT_adjustvarargs`/`luaT_getvarargs`) is still incomplete. Phase D scope, tracked separately.

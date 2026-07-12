@@ -14,6 +14,12 @@ const LUAC_NUM = @as(f64, -370.5);
 const LUAC_VERSION = @as(u8, 5 * 16 + 5); // major * 16 + minor
 const LUAC_FORMAT = @as(u8, 0);
 
+// Prototype flag bits (lua/lobject.h). PF_FIXED means parts live in fixed
+// memory and is irrelevant to our allocator model, so we mask it out like C.
+const PF_VAHID = 1; // function has hidden vararg arguments
+const PF_VATAB = 2; // function has vararg table
+const PF_FIXED = 4; // prototype has parts in fixed memory
+
 const Zio = struct {
     L: *lua.lua_State,
     reader: lua.lua_Reader,
@@ -288,7 +294,10 @@ const LoadState = struct {
         f.lineDefined = try self.loadInt();
         f.lastLineDefined = try self.loadInt();
         f.numParams = try self.loadByte();
-        _ = try self.loadByte(); // flag (PF_FIXED etc. mask in C, ignore/discard)
+        const flag = try self.loadByte();
+        // Decode the meaningful flags: a function is vararg if it has hidden
+        // vararg arguments and/or a vararg table (lua/lobject.h isvararg()).
+        f.isVarArg = (flag & (PF_VAHID | PF_VATAB)) != 0;
         f.maxStackSize = try self.loadByte();
 
         try self.loadCode(f);

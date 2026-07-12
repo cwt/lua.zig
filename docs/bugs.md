@@ -352,3 +352,10 @@ Legend:
 - **Fix:** Added `errdefer b.buf.deinit(L.allocator);` after `luaL_buffinit`.
 
 
+
+## BUG-036 — VM: vararg functions not executed correctly (VARARGPREP no-op, no adjustvarargs)  [MED]
+- **Location:** `src/lvm.zig:1059` (`.VARARGPREP => {}`); missing `luaT_adjustvarargs` / `luaT_getvarargs` (cf. `src/ltm.zig`, `src/lua.zig`).
+- **Defect:** In Lua 5.5.1 (`lua/lvm.c`), `OP_VARARGPREP` calls `luaT_adjustvarargs(L, ci, cl->p)`, which inspects `p->is_vararg` to shift fixed arguments, build the vararg table (`vatab`), and rebase `ci`. The port's `VARARGPREP` is a no-op and no `luaT_adjustvarargs`/`luaT_getvarargs` exist, so a function declared with `...` never receives its extra arguments packaged correctly. `OP_VARARG`/`OP_GETVARG` in the port also ignore the vararg table and `is_vararg`.
+- **Impact:** Any program that defines or calls a vararg function (`function f(a, ...) ... end` or `f(...)`) receives wrong argument values or `nil`s where varargs should be. Not triggered by the current test suite (64/64 pass), but is incorrect behavior for ordinary Lua programs.
+- **Note:** Related Phase C fix (rev 41) correctly decodes `isVarArg` from the loaded prototype flag byte, so `p->is_vararg` is now accurate; this bug is purely in the VM execution path (Phase D).
+- **Recommended fix:** Port `luaT_adjustvarargs` and `luaT_getvarargs` from `lua/ltm.c`/`lua/ldo.c`, wire `OP_VARARGPREP` to `luaT_adjustvarargs`, and make `OP_VARARG`/`OP_GETVARG` consult the built vararg table via `ci`.
