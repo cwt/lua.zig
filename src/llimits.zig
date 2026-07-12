@@ -43,6 +43,9 @@ pub const LUA_ERRSYNTAX: i32 = 3;
 pub const LUA_ERRMEM: i32 = 4;
 pub const LUA_ERRERR: i32 = 5;
 
+// Maximum number of nested C calls (for yieldability)
+pub const LUAI_MAXCCALLS: u32 = 200;
+
 // Basic types
 pub const LUA_TNONE: i32 = -1;
 pub const LUA_TNIL: i32 = 0;

@@ -349,7 +349,8 @@ pub fn precall(L: *lua_State, func_idx: usize, nresults: i32) !?*CallInfo {
         .c => |cc| {
             if (lua_checkstack(L, 20) == 0) return error.StackOverflow;
             const old_ci = L.ci;
-            var new_ci = CallInfo{
+            const new_ci = try L.allocator.create(CallInfo);
+            new_ci.* = .{
                 .func = func_idx,
                 .base = func_idx + 1,
                 .top = L.top + 20,
@@ -359,20 +360,36 @@ pub fn precall(L: *lua_State, func_idx: usize, nresults: i32) !?*CallInfo {
                 .next = null,
             };
             if (old_ci) |prev| {
-                prev.next = &new_ci;
+                prev.next = new_ci;
             }
-            L.ci = &new_ci;
-            defer {
+            L.ci = new_ci;
+            const n = cc.f(L) catch |e| {
+                if (e == error.Yield) {
+                    return error.Yield;
+                }
                 L.ci = old_ci;
                 if (old_ci) |prev| {
                     prev.next = null;
                 }
+                L.allocator.destroy(new_ci);
+                return e;
+            };
+            if (n < 0) {
+                L.ci = old_ci;
+                if (old_ci) |prev| {
+                    prev.next = null;
+                }
+                L.allocator.destroy(new_ci);
+                return error.RuntimeError;
             }
-            const n = try cc.f(L);
-            if (n < 0) return error.RuntimeError;
             const num_returned = @as(usize, @intCast(n));
             const first_result = L.top - num_returned;
-            poscall(L, &new_ci, first_result, num_returned);
+            poscall(L, new_ci, first_result, num_returned);
+            L.ci = old_ci;
+            if (old_ci) |prev| {
+                prev.next = null;
+            }
+            L.allocator.destroy(new_ci);
             return null;
         },
         .lua => |lc| {
@@ -429,6 +446,9 @@ pub const CallInfo = struct {
     savedpc: usize,
     previous: ?*CallInfo,
     next: ?*CallInfo,
+    k: ?lua_KFunction = null,
+    ctx: lua_KContext = 0,
+    nyield: i32 = 0,
 };
 
 pub const GCColor = enum(u2) {
@@ -664,14 +684,14 @@ pub fn lua_checkstack(L: *lua_State, n: i32) i32 {
     return 1;
 }
 
-pub fn lua_xmove(L: *lua_State, from: *lua_State, n: i32) void {
+pub fn lua_xmove(from: *lua_State, to: *lua_State, n: i32) void {
     const nn = @as(usize, @intCast(n));
     if (nn > from.top) return;
-    const avail = L.stack.len - L.top;
+    const avail = to.stack.len - to.top;
     const to_copy = @min(nn, avail);
-    @memcpy(L.stack[L.top..][0..to_copy], from.stack[from.top - to_copy .. from.top]);
+    @memcpy(to.stack[to.top..][0..to_copy], from.stack[from.top - to_copy .. from.top]);
     from.top -= to_copy;
-    L.top += to_copy;
+    to.top += to_copy;
 }
 
 fn stackAt(L: *lua_State, idx: i32) TValue {
@@ -685,10 +705,6 @@ pub inline fn lua_isnoneornil(L: *lua_State, idx: i32) bool {
 
 pub fn lua_isnone(L: *lua_State, idx: i32) i32 {
     return if (lua_type(L, idx) == LUA_TNONE) 1 else 0;
-}
-
-pub fn lua_yield(L: *lua_State, nresults: i32) i32 {
-    return lua_yieldk(L, nresults, 0, null);
 }
 
 pub fn lua_isnil(L: *lua_State, idx: i32) i32 {
@@ -1126,7 +1142,7 @@ pub fn lua_newthread(L: *lua_State) !*lua_State {
         .gclist = null,
         .twups = null,
         .errorJmp = null,
-        .base_ci = .{ .func = 0, .base = 0, .top = LUA_MINSTACK, .nresults = 0, .savedpc = 0, .previous = null, .next = null },
+        .base_ci = .{ .func = 0, .base = 0, .top = LUA_MINSTACK, .nresults = 0, .savedpc = 0, .previous = null, .next = null, .k = null, .ctx = 0, .nyield = 0 },
         .hook = null,
         .errfunc = 0,
         .nCcalls = 0,
@@ -1500,8 +1516,12 @@ pub fn lua_setiuservalue(L: *lua_State, idx: i32, n: i32) i32 {
 }
 
 pub fn lua_callk(L: *lua_State, nargs: i32, nresults: i32, ctx: lua_KContext, k: ?lua_KFunction) !void {
-    _ = ctx;
-    _ = k;
+    if (k != null and lua_isyieldable(L) != 0) {
+        if (L.ci) |ci| {
+            ci.k = k;
+            ci.ctx = ctx;
+        }
+    }
     const func_idx = L.top - @as(usize, @intCast(nargs)) - 1;
     if (try precall(L, func_idx, nresults)) |new_ci| {
         try lvm.run(L, new_ci);
@@ -1513,14 +1533,21 @@ pub fn lua_call(L: *lua_State, nargs: i32, nresults: i32) !void {
 }
 
 pub fn lua_pcallk(L: *lua_State, nargs: i32, nresults: i32, errfunc: i32, ctx: lua_KContext, k: ?lua_KFunction) i32 {
-    _ = ctx;
-    _ = k;
+    if (k != null and lua_isyieldable(L) != 0) {
+        if (L.ci) |ci| {
+            ci.k = k;
+            ci.ctx = ctx;
+        }
+    }
     const old_ci = L.ci;
 
     const func_idx = L.top - @as(usize, @intCast(nargs)) - 1;
     
     var err_occurred = false;
     const new_ci = precall(L, func_idx, nresults) catch |err| b: {
+        if (err == error.Yield) {
+            return LUA_YIELD;
+        }
         err_occurred = true;
         if (err == error.NotAFunction) {
             const msg = "attempt to call a non-function value";
@@ -1538,7 +1565,10 @@ pub fn lua_pcallk(L: *lua_State, nargs: i32, nresults: i32, errfunc: i32, ctx: l
 
     if (!err_occurred) {
         if (new_ci) |ci| {
-            lvm.run(L, ci) catch {
+            lvm.run(L, ci) catch |err| {
+                if (err == error.Yield) {
+                    return LUA_YIELD;
+                }
                 err_occurred = true;
             };
         }
@@ -1682,19 +1712,86 @@ pub fn lua_dump(L: *lua_State, writer: lua_Writer, data: ?*anyopaque, strip: i32
     return LUA_OK;
 }
 
-pub fn lua_yieldk(L: *lua_State, nresults: i32, ctx: lua_KContext, k: ?lua_KFunction) i32 {
-    _ = L;
-    _ = nresults;
-    _ = ctx;
-    _ = k;
-    return LUA_YIELD;
+pub fn lua_yieldk(L: *lua_State, nresults: i32, ctx: lua_KContext, k: ?lua_KFunction) anyerror!i32 {
+    const ci = L.ci orelse return error.RuntimeError;
+    if (lua_isyieldable(L) == 0) {
+        return error.RuntimeError;
+    }
+    L.status = LUA_YIELD;
+    ci.nyield = nresults;
+    ci.k = k;
+    ci.ctx = ctx;
+    return error.Yield;
+}
+
+pub fn lua_yield(L: *lua_State, nresults: i32) anyerror!i32 {
+    return lua_yieldk(L, nresults, 0, null);
+}
+
+fn resume_error(_: *lua_State, _: []const u8, _: i32) i32 {
+    return LUA_ERRRUN;
+}
+
+fn do_resume(L: *lua_State, narg: i32) !void {
+    const n = @as(usize, @intCast(narg));
+    const firstArg = L.top - n;
+
+    if (L.status == LUA_OK) {
+        if (try precall(L, firstArg - 1, LUA_MULTRET)) |ci| {
+            try lvm.run(L, ci);
+        }
+    } else {
+        L.status = LUA_OK;
+        if (L.ci) |ci| {
+            const prev = ci.previous;
+            if (ci.k) |kf| {
+                const nres = try kf(L, LUA_YIELD, ci.ctx);
+                const u_nres = @as(usize, @intCast(nres));
+                poscall(L, ci, L.top - u_nres, u_nres);
+                L.ci = prev;
+                L.allocator.destroy(ci);
+            } else {
+                const func_idx = ci.func;
+                L.ci = prev;
+                L.allocator.destroy(ci);
+                if (try precall(L, func_idx, LUA_MULTRET)) |new_ci| {
+                    try lvm.run(L, new_ci);
+                }
+            }
+        } else {
+            return error.RuntimeError;
+        }
+    }
 }
 
 pub fn lua_resume(L: *lua_State, from: ?*lua_State, narg: i32, nresults: ?*i32) i32 {
-    _ = L;
-    _ = from;
-    _ = narg;
-    _ = nresults;
+    if (L.status == LUA_OK) {
+        if (L.ci != &L.base_ci) return resume_error(L, "cannot resume non-suspended coroutine", narg);
+    } else if (L.status != LUA_YIELD) {
+        return resume_error(L, "cannot resume dead coroutine", narg);
+    }
+    if (L.top == 0) return resume_error(L, "cannot resume dead coroutine", narg);
+
+    L.nCcalls = if (from) |f| f.nCcalls else 0;
+    L.nCcalls += 1;
+
+    do_resume(L, narg) catch |e| {
+        if (e == error.Yield) {} else {
+            L.status = 0;
+        }
+    };
+
+    if (nresults) |nr| {
+        if (L.status == LUA_YIELD) {
+            nr.* = if (L.ci) |ci| ci.nyield else 0;
+        } else if (L.ci) |ci| {
+            nr.* = @as(i32, @intCast(L.top)) - @as(i32, @intCast(ci.func + 1));
+        } else {
+            nr.* = 0;
+        }
+    }
+
+    if (L.status == LUA_YIELD) return LUA_YIELD;
     return LUA_OK;
 }
 
@@ -1704,7 +1801,7 @@ pub fn lua_status(L: *lua_State) i32 {
 
 pub fn lua_isyieldable(L: *lua_State) i32 {
     if (L.ci == &L.base_ci) return 0;
-    if (L.nCcalls > 0) return 0;
+    if (L.nCcalls >= llimits.LUAI_MAXCCALLS) return 0;
     return 1;
 }
 
@@ -2197,7 +2294,7 @@ pub fn luaL_newstate_io(L: *lua_State, gpa: std.mem.Allocator, io: std.Io) !void
         .gclist = null,
         .twups = null,
         .errorJmp = null,
-        .base_ci = .{ .func = 0, .base = 0, .top = LUA_MINSTACK, .nresults = 0, .savedpc = 0, .previous = null, .next = null },
+        .base_ci = .{ .func = 0, .base = 0, .top = LUA_MINSTACK, .nresults = 0, .savedpc = 0, .previous = null, .next = null, .k = null, .ctx = 0, .nyield = 0 },
         .hook = null,
         .errfunc = 0,
         .nCcalls = 0,

@@ -115,7 +115,19 @@ Functions: `clock`, `date`, `difftime`, `execute`, `exit`, `getenv`, `remove`, `
 
 Functions: `create`, `resume`, `yield`, `status`, `isyieldable`, `running`, `wrap`, `close`
 
-Depends on working coroutine support in `lua_State` (thread creation, resume/yield).
+Current `src/lib/corolib.zig` status: **fully implemented** — all 8 functions
+(`create`, `resume`, `running`, `status`, `wrap`, `yield`, `isyieldable`, `close`)
+ported from `lua/lcorolib.c`. Includes `luaB_auxwrap` (for `coroutine.wrap`),
+`auxresume` (shared resume helper), and `auxstatus` (shared status helper).
+
+Core C API functions fully implemented:
+- `lua_resume` / `lua_yieldk` / `lua_yield` — yield/resume cycle with C functions,
+  continuation support, and no-continuation restart.
+- `lua_newthread` / `lua_closethread` — thread lifecycle management.
+- `lua_isyieldable` / `lua_status` / `lua_pushthread` — coroutine predicates.
+- `lua_getstack` — frame introspection (used by `auxstatus`).
+
+Verified by 44 passing tests (1 dedicated coroutine yield/resume test).
 
 ### loadlib (`lua/loadlib.c`)
 

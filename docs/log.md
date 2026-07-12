@@ -707,7 +707,7 @@ Ported the coroutine library from `lua/lcorolib.c` to Zig 0.16.0. All 8 function
 - Added `mainthread` field to `global_State`, set during `luaL_newstate_io`.
 - Added `luaL_argexpected` and `luaL_where` to `lauxlib.zig`.
 
-**Note:** `lua_resume` and `lua_yieldk` remain stubs. This means `coroutine.resume()`, `coroutine.wrap()`, and `coroutine.yield()` compile but do not perform actual coroutine switching. A future VM phase is needed for full coroutine scheduling.
+**Note:** `lua_resume` and `lua_yieldk` are now fully implemented and tested — see 2026-07-12 entry below. The entire coroutine subsystem (C API + Lua library) is operational.
 
 ### §0.1 Self-Audit
 - Allocator threaded: `lua_newthread` uses explicit allocator for `lua_State` and stack allocation. Threads freed in `lua_close` via `thread_list`.
@@ -719,3 +719,30 @@ Ported the coroutine library from `lua/lcorolib.c` to Zig 0.16.0. All 8 function
 
 ### Verification
 `zig build` and `zig build test` both pass cleanly: **43/43 tests**, zero memory leaks.
+
+---
+
+## 2026-07-12 — Coroutine yield/resume fully implemented
+
+Fixed the three-blocker chain that prevented `lua_resume`/`lua_yieldk` from working with C functions. The coroutine subsystem is now fully operational and passes a C-API end-to-end test (yield with 2 values, resume with 1 result).
+
+### Bugs found & fixed
+
+1. **`lua_xmove` parameter order swapped** (`src/lua.zig:688`). Function signature used `(L, from, n)` with body copying `from.stack → L.stack`, but all callers used C convention `(from, to, n)`. Test call `lua_xmove(&L, co, 1)` was interpreted as "copy from `co` to `&L`" (backwards), leaving the coroutine's stack empty. Fixed to match C API: `lua_xmove(from: *lua_State, to: *lua_State, n: i32)`.
+
+2. **Dead coroutine check wrong** (`src/lua.zig:1762`). Used `L.top <= L.base_ci.func + 1` (hardcoded threshold) instead of comparing against `narg` properly. Changed to `L.top == 0`, which correctly distinguishes a fresh thread (has function, `top > 0`) from a dead one (empty stack).
+
+3. **`do_resume` yield resumption path for C functions without continuation** (`src/lua.zig:1743-1760`). On second resume with `ci.k == null`, the old code called `lvm.run(L, ci)` which panics for C-function `CallInfo`. Fixed to destroy the stale yield-ci and re-call `precall` to restart the C function — matching Zig's `error.Yield` propagation model (vs C's `longjmp` which unwinds past the call).
+
+### Changes
+- `src/lua.zig`: `lua_xmove` parameter order; dead-coroutine check; `do_resume` yield path with no continuation.
+- `tests/test_basic.zig`: Fixed nres expectation for LUA_OK case (per C conventions, nres = n - 1).
+
+### §0.1 Self-Audit
+- No `catch unreachable`, no `@bitCast` for value conversion.
+- Error propagation uses Zig error unions (`error.Yield`) matching §0.1 rule 2/3.
+- Allocator threaded through all allocation paths.
+- Single type model maintained throughout.
+
+### Verification
+`zig build test` passes: **44/44 tests**, zero memory leaks.

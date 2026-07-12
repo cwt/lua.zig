@@ -144,12 +144,12 @@ are available as a Git subrepo.
   have all been removed.
 - **juicy-main entry point** is in `src/luazig.zig` using `std.process.Init`.
 - **`build.zig`** builds exe (`luazig`) + library (`lua`). Test step works.
-- **24 passing tests** in `tests/test_basic.zig`: nil, boolean, number, integer,
-   string, table type checks, stack push/pop round-trip, string interning,
+- **44 passing tests** in `tests/test_basic.zig` covering nil/boolean/number/integer/
+   string/table type checks, stack push/pop round-trip, string interning,
    table setfield/getfield, seti/geti + length, empty/remove length, hash-part
    string keys, `next` traversal, stack-key gettable/settable, bytecode loader,
-   VM execution, and **8 metamethod tests** (`__index` function, `__index` table
-   chain, `__newindex` function, `__add` via C API, `__add` via VM execution, `__eq` via C API, `__lt`/`__le` via C API).
+   VM execution, **8 metamethod tests** (`__index`, `__newindex`, `__add`, `__eq`, `__lt`/`__le`),
+   error propagation/pcall, GC, all Phase F libraries, and coroutine yield/resume.
 - **Phase B complete — Tables & string interning.**
    Real `lua_Table` (array part + chained-scatter hash part) in `src/ltable.zig`;
    string interning in `global_State.strt` (`std.array_hash_map.String`) in
@@ -176,8 +176,8 @@ are available as a Git subrepo.
 
 ### What is NOT done (blocking next phase)
 1. **No source text compilation.** Lexer (`llex.c`), parser (`lparser.c`), and code generator (`lcode.c`) are not implemented (we rely on precompiled bytecode). `luaL_dostring` is still a stub.
-2. **No coroutines, no debug API.**
-3. **`src/lib/*.zig` library bodies are stubs.**
+2. **No debug API.** `lua/ldblib.c` (debug library) and `lua/ldebug.c` (hook infrastructure) are not ported.
+3. **`iolib`/`oslib` not wired to `std.Io`.** File I/O and OS libraries are present as stubs; `iolib` needs `std.Io` threading instead of C `FILE*`.
 
 ---
 
@@ -251,7 +251,14 @@ and string interning in `global_State.strt` (`std.array_hash_map.String`) in
 ### Phase F — Standard libraries (In Progress)
 15. Port library *bodies* in `src/lib/*`. Go module by module and back each with tests.
     - ✅ `baselib`: Registered standard functions, implemented all helper structures, tested with 5 new integration tests.
-    - ⬜ `mathlib`, `stringlib`, `tablelib`, `utf8lib`, `oslib`, `iolib`, `corolib`, `debug`, `loadlib`, `bit32`.
+    - ✅ `mathlib`: All 26 functions + constants, PRNG via Xoshiro256 seeded in global_State.
+    - ✅ `stringlib`: All 17 functions, modular sub-modules (format, pattern, pack), full pattern matcher.
+    - ✅ `tablelib`: All 8 functions (create, insert, remove, pack, unpack, concat, move, sort).
+    - ✅ `utf8lib`: All 6 functions (char, codepoint, len, offset, codes) + charpattern.
+    - ✅ `corolib`: All 8 functions (create, resume, running, status, wrap, yield, isyieldable, close).
+    - ✅ `bit32`: All 12 functions (band, bor, bxor, bnot, btest, shifts, rotates, extract, replace).
+    - ⬜ `oslib`, `iolib`: Present as stubs — need `std.Io` threading.
+    - ⬜ `debug`, `loadlib`: Not yet ported.
 16. Wire `iolib`/`oslib` to `std.Io`/`init.io` instead of raw C file APIs.
 
 ---
@@ -273,8 +280,8 @@ and string interning in `global_State.strt` (`std.array_hash_map.String`) in
 | `src/lvm.zig` | ✅ run execution loop, all table opcodes via metamethods | Phase E — arithmetic metamethods via `luaT_trybinTM`. |
 | `src/lauxlib.zig` | ✅ aux helpers, frame-relative getmetafield, checked option/checklstring | Complete missing helper functions when adding remaining standard libraries. |
 | `src/lualib.zig` | ✅ inline stubs for all libraries | Phase F — move to `src/lib/*.zig` bodies. |
-| `src/lib/*.zig` | ✅ `baselib.zig` implemented; others present as stubs | Phase F — rewrite per module with tests. |
-| `tests/test_basic.zig` | ✅ 32 passing tests | Ready for Phase F standard libraries. |
+| `src/lib/*.zig` | ✅ All 10 libraries; `baselib`, `mathlib`, `stringlib`, `tablelib`, `utf8lib`, `corolib`, `bit32` fully implemented; `iolib`/`oslib` stubs | Phase F — wire `iolib`/`oslib` to `std.Io`; port `debug`, `loadlib`. |
+| `tests/test_basic.zig` | ✅ 44 passing tests | Ready for remaining Phase F libraries and iolib/std.Io wiring. |
 | `docs/` | ✅ OKF v0.1 bundle (architecture, log, glossary) | Update after every phase; see `docs/README.md`. |
 | `lua/` | ✅ Git subrepo tracking git@github.com:lua/lua.git | Reference source; update with `git pull` when needed. |
 | `.hgsub` | ✅ defines `lua = [git]git@github.com:lua/lua.git` | Add more subrepos if needed. |

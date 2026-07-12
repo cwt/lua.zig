@@ -120,7 +120,7 @@ Implement library bodies in `src/lib/*.zig`:
 - utf8lib: UTF-8 character/byte iteration — **DONE** (2026-07-12, ported from `lua/lutf8lib.c`)
 - oslib: `os.clock`, `os.date`, `os.time`, `os.execute` etc.
 - iolib: file I/O via `std.Io` instead of C FILE*
-- corolib: coroutine creation/resume/yield
+- corolib: coroutine creation/resume/yield — **DONE** (2026-07-12, all 8 functions + C API)
 - loadlib: `require`, `package`, module loading
 - bit32: bitwise operations — **DONE** (2026-07-11, ported from Lua 5.3 `lbitlib.c`)
 - debug: debug API

@@ -2123,3 +2123,40 @@ test "coroutine infrastructure: newthread/pushthread/status/isyieldable/closethr
     try std.testing.expectEqual(@as(i32, lua.LUA_OK), lua.lua_closethread(co3, &L));
     lua.lua_pop(&L, 1);
 }
+
+var yield_resume_call_count: i32 = 0;
+
+fn yield_resume_cfunc(L2: *lua.lua_State) anyerror!i32 {
+    yield_resume_call_count += 1;
+    if (yield_resume_call_count == 1) {
+        _ = lua.lua_pushstring(L2, "hello");
+        _ = lua.lua_pushstring(L2, "world");
+        return lua.lua_yield(L2, 2);
+    }
+    _ = lua.lua_pushstring(L2, "done");
+    return 1;
+}
+
+test "coroutine yield/resume via C API" {
+    const gpa = std.testing.allocator;
+    var L: lua.lua_State = undefined;
+    try lua.luaL_newstate(&L, gpa);
+    defer lua.lua_close(&L);
+
+    yield_resume_call_count = 0;
+
+    const co = try lua.lua_newthread(&L);
+    lua.lua_pushcfunction(&L, yield_resume_cfunc);
+    lua.lua_xmove(&L, co, 1);
+
+    var nres: i32 = 0;
+    const status1 = lua.lua_resume(co, &L, 0, &nres);
+    try std.testing.expectEqual(@as(i32, lua.LUA_YIELD), status1);
+    try std.testing.expectEqual(@as(i32, 2), nres);
+    try std.testing.expectEqualStrings("hello", lua.lua_tostring(co, -2).?);
+    try std.testing.expectEqualStrings("world", lua.lua_tostring(co, -1).?);
+
+    const status2 = lua.lua_resume(co, &L, 0, &nres);
+    try std.testing.expectEqual(@as(i32, lua.LUA_OK), status2);
+    try std.testing.expectEqualStrings("done", lua.lua_tostring(co, -1).?);
+}

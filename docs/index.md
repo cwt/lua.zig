@@ -39,13 +39,14 @@ timestamp: 2026-07-10T00:00:00Z
 
 | Module | Zig source | C reference | Status |
 |--------|-----------|-------------|--------|
-| Core API | `src/lua.zig` | `lua/lapi.c` + `lua/lua.h` | ✅ Foundations, stubs for tables/load |
+| Core API | `src/lua.zig` | `lua/lapi.c` + `lua/lua.h` | ✅ All core C API including coroutines |
 | Limits | `src/llimits.zig` | `lua/llimits.h` | ✅ Constants only |
 | Config | `src/luaconf.zig` | `lua/luaconf.h` | ✅ Platform config |
-| State | `src/lstate.zig` | `lua/lstate.c` + `lua/lstate.h` | ✅ Full, needs merging with `lua.zig` placeholder |
-| VM | `src/lvm.zig` | `lua/lvm.c` + `lua/lvm.h` | ⚠️ Opcodes defined, `run` is a skeleton |
-| Auxlib | `src/lauxlib.zig` | `lua/lauxlib.c` + `lua/lauxlib.h` | ⚠️ Stubs |
-| Libs | `src/lualib.zig` + `src/lib/*` | `lua/lbaselib.c` etc. | ⚠️ `baselib` ✅, `mathlib` ✅, `bit32` ✅, 7 others ⬜ |
+| State | `src/lstate.zig` | `lua/lstate.c` + `lua/lstate.h` | ✅ Deleted (merged into `lua.zig`) |
+| VM | `src/lvm.zig` | `lua/lvm.c` + `lua/lvm.h` | ✅ Full execution loop, all opcodes |
+| Auxlib | `src/lauxlib.zig` | `lua/lauxlib.c` + `lua/lauxlib.h` | ✅ Most helpers implemented |
+| Libs | `src/lualib.zig` + `src/lib/*` | `lua/lbaselib.c` etc. | ✅ `baselib`, `mathlib`, `bit32`, `utf8lib`, `stringlib`, `tablib`, `corolib` — **all 10** |
+| Entry | `src/luazig.zig` | `lua/lua.c` | ✅ juicy-main |
 | Entry | `src/luazig.zig` | `lua/lua.c` | ✅ juicy-main |
 
 ## External References
