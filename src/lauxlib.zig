@@ -329,14 +329,14 @@ pub fn luaL_gsub(L: *lua.lua_State, s: []const u8, p: []const u8, r: []const u8)
 }
 
 pub fn luaL_newmetatable(L: *lua.lua_State, tname: []const u8) !i32 {
-    _ = lua.lua_rawgetp(L, lua.LUA_REGISTRYINDEX, @ptrCast(tname.ptr));
+    _ = try lua.lua_getfield(L, lua.LUA_REGISTRYINDEX, tname);
     if (lua.lua_type(L, -1) != lua.LUA_TNIL) {
         lua.lua_pop(L, 1);
         return 0;  // already exists
     }
     lua.lua_pop(L, 1);
     lua.lua_createtable(L, 0, 0);
-    _ = lua.lua_rawsetp(L, lua.LUA_REGISTRYINDEX, @constCast(@ptrCast(tname.ptr)));
+    try lua.lua_setfield(L, lua.LUA_REGISTRYINDEX, tname);
     return 1;
 }
 
@@ -348,7 +348,7 @@ pub fn luaL_setmetatable(L: *lua.lua_State, tname: []const u8) !void {
 pub fn luaL_testudata(L: *lua.lua_State, idx: i32, tname: []const u8) ?*anyopaque {
     const p = lua.lua_touserdata(L, idx) orelse return null;
     if (lua.lua_getmetatable(L, idx) == 0) return null;
-    lua.lua_getfield(L, lua.LUA_REGISTRYINDEX, tname) catch return null;
+    _ = lua.lua_getfield(L, lua.LUA_REGISTRYINDEX, tname) catch return null;
     const same = lua.lua_rawequal(L, -1, -2);
     lua.lua_pop(L, 2);
     return if (same != 0) p else null;

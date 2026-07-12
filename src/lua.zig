@@ -1484,6 +1484,10 @@ pub fn lua_rawsetp(L: *lua_State, idx: i32, p: ?*anyopaque) void {
 
 pub fn lua_setmetatable(L: *lua_State, objindex: i32) i32 {
     if (L.top == 0) return 0;
+
+    // Resolve idx before popping — negative indices shift after L.top changes.
+    const abs_idx = lua_absindex(L, objindex);
+
     const mt_val = L.stack[L.top - 1];
     const mt: ?*lua_Table = switch (mt_val) {
         .nil => null,
@@ -1492,7 +1496,7 @@ pub fn lua_setmetatable(L: *lua_State, objindex: i32) i32 {
     };
     L.top -= 1;
 
-    const val = idxPtr(L, objindex) orelse return 0;
+    const val = idxPtr(L, abs_idx) orelse return 0;
     switch (val.*) {
         .table => |t| {
             const tbl = t orelse return 0;
@@ -2347,6 +2351,10 @@ pub fn luaL_dostring(L: *lua_State, s: []const u8, name: []const u8) !i32 {
 }
 
 pub const luaL_openlibs = @import("lauxlib.zig").luaL_openlibs;
+pub const luaL_newmetatable = @import("lauxlib.zig").luaL_newmetatable;
+pub const luaL_setmetatable = @import("lauxlib.zig").luaL_setmetatable;
+pub const luaL_testudata = @import("lauxlib.zig").luaL_testudata;
+pub const luaL_checkudata = @import("lauxlib.zig").luaL_checkudata;
 
 pub const LUA_BASELIB: i32 = 1 << 0;
 pub const LUA_COLIB: i32 = 1 << 1;

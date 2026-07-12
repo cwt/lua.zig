@@ -283,14 +283,14 @@ Legend:
 - **Fix:** Replace `if (n > 0)` with `if (fmt > 0)` and read the format from
   `lua.lua_tointeger(L, n)` as the C reference does.
 
-## BUG-020 — `luaL_newmetatable` stores under pointer key but `setmetatable`/`testudata`/`io_type` read string key → FILE* metatable never attached  [HIGH] ❌ OPEN
+## BUG-020 — `luaL_newmetatable` stores under pointer key but `setmetatable`/`testudata`/`io_type` read string key → FILE* metatable never attached  [HIGH] ✅ FIXED
 - **Location:** `src/lauxlib.zig:331-341` (`luaL_newmetatable`, pointer key at
   `:340`); `:343-346` (`luaL_setmetatable`, string key at `:344`); `:348-362`
   (`luaL_testudata`); `src/lib/iolib.zig:76`/`:354` (`luaL_setmetatable` calls);
   `src/lib/iolib.zig:148-161` (`io_type`).
-- **Defect:** `luaL_newmetatable` registers the metatable with `lua.lua_rawsetp
+- **Defect:** `luaL_newmetatable` registered the metatable with `lua.lua_rawsetp
   (L, LUA_REGISTRYINDEX, tname.ptr)` (pointer key), but `luaL_setmetatable` and
-  `luaL_testudata` look it up with `lua.lua_getfield(L, LUA_REGISTRYINDEX,
+  `luaL_testudata` looked it up with `lua.lua_getfield(L, LUA_REGISTRYINDEX,
   tname)` (string key). The C reference uses the **string** key for both
   (`lua_setfield`/`lua_getfield`). Result: `luaL_setmetatable` retrieves `nil`
   and removes the metatable from the userdata.
@@ -298,9 +298,14 @@ Legend:
   returns `nil`; `luaL_checkudata(... "FILE*" ...)` always errors; any
   metatable-tagged library type is unusable. (Tests only check
   `io.type(nil) == nil`, masking this.)
-- **Fix:** In `luaL_newmetatable`, store with `lua.lua_setfield(L,
-  lua.LUA_REGISTRYINDEX, tname)` (string key) to match `luaL_setmetatable`/
-  `luaL_testudata` (and the C reference).
+- **Fix:** Changed `luaL_newmetatable` lookup/store from `lua_rawgetp`/`lua_rawsetp`
+  (pointer keys) to `lua_getfield`/`lua_setfield` (string keys), matching
+  `luaL_setmetatable`/`luaL_testudata` and the C reference. Also fixed
+  `lua_setmetatable` to resolve the `objindex` to an absolute index **before**
+  popping the metatable from the stack — negative indices shift after `L.top`
+  changes. Added test `BUG-020: luaL_newmetatable stores under string key for
+  luaL_setmetatable/luaL_testudata`.
+- **Files changed:** `src/lauxlib.zig`, `src/lua.zig`, `tests/test_basic.zig`.
 
 ## BUG-021 — `os.remove`/`os.rename` cast `[]const u8` to `[*:0]const u8` without a NUL terminator  [MED] ❌ OPEN
 - **Location:** `src/lib/oslib.zig:18-24` (`os_remove`, `@ptrCast(filename)` at

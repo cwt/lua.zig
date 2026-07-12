@@ -791,3 +791,29 @@ Fixed the three-blocker chain that prevented `lua_resume`/`lua_yieldk` from work
 ### Verification
 
 `zig build` and `zig build test` both pass: **50/50 tests**, zero memory leaks.
+
+---
+
+## 2026-07-12 — BUG-020: luaL_newmetatable key mismatch + lua_setmetatable index shift
+
+### Changes
+- **`src/lauxlib.zig`**: Changed `luaL_newmetatable` from `lua_rawgetp`/`lua_rawsetp`
+  (pointer keys) to `lua_getfield`/`lua_setfield` (string keys), matching the C
+  reference and the lookup methods in `luaL_setmetatable`/`luaL_testudata`.
+  Fixed `luaL_testudata` return-value discard on `lua_getfield`.
+- **`src/lua.zig`**: Fixed `lua_setmetatable` to resolve the target index via
+  `lua_absindex` **before** popping the metatable value from the stack, so
+  negative indices don't shift after `L.top` changes. Exported
+  `luaL_newmetatable`/`luaL_setmetatable`/`luaL_testudata`/`luaL_checkudata`
+  from `lauxlib.zig`.
+- **`tests/test_basic.zig`**: Added `BUG-020` test covering create, verify in
+  registry, setmetatable, getmetatable, testudata, checkudata, and re-creation.
+
+### §0.1 Self-Audit
+- Allocator threaded: `lua_setfield`/`lua_getfield` thread the state allocator.
+- Errors propagated: `lua_getfield`/`lua_setfield` return `!T` — callers use `try`.
+- No `catch unreachable`, no `@bitCast` for value conversion.
+- `luaL_testudata` fixed to discard `lua_getfield` return via `_ =`.
+
+### Verification
+`zig build test` passes: **51/51 tests** (50 previous + 1 BUG-020), zero memory leaks.

@@ -2316,3 +2316,49 @@ test "os.difftime returns difference" {
     try std.testing.expectEqual(@as(f64, 500.0), d);
     lua.lua_pop(&L, 2);
 }
+
+test "BUG-020: luaL_newmetatable stores under string key for luaL_setmetatable/luaL_testudata" {
+    const gpa = std.testing.allocator;
+    var L: lua.lua_State = undefined;
+    try lua.luaL_newstate(&L, gpa);
+    defer lua.lua_close(&L);
+
+    // Step 1: verify we can set and get a field in the registry
+    _ = lua.lua_pushstring(&L, "hello") orelse return error.Fail;
+    try lua.lua_setfield(&L, lua.LUA_REGISTRYINDEX, "mykey");
+    _ = try lua.lua_getfield(&L, lua.LUA_REGISTRYINDEX, "mykey");
+    try std.testing.expectEqual(@as(i32, lua.LUA_TSTRING), lua.lua_type(&L, -1));
+    try std.testing.expectEqualStrings("hello", lua.lua_tostring(&L, -1).?);
+    lua.lua_pop(&L, 1);
+
+    // Step 2: luaL_newmetatable creates and stores metatable
+    const created = try lua.luaL_newmetatable(&L, "TestMeta");
+    try std.testing.expectEqual(@as(i32, 1), created);
+
+    // Step 3: verify it's in the registry with getfield
+    _ = try lua.lua_getfield(&L, lua.LUA_REGISTRYINDEX, "TestMeta");
+    try std.testing.expectEqual(@as(i32, lua.LUA_TTABLE), lua.lua_type(&L, -1));
+    lua.lua_pop(&L, 1);
+
+    // Step 4: create userdata and set its metatable
+    const p = lua.lua_newuserdatauv(&L, @sizeOf(u8), 0) orelse return error.Fail;
+    @as(*u8, @ptrCast(@alignCast(p))).* = 42;
+    try lua.luaL_setmetatable(&L, "TestMeta");
+
+    // Step 5: verify metatable is attached
+    try std.testing.expectEqual(@as(i32, 1), lua.lua_getmetatable(&L, -1));
+    lua.lua_pop(&L, 1);
+
+    // Step 6: test luaL_testudata
+    const ud = lua.luaL_testudata(&L, -1, "TestMeta");
+    try std.testing.expect(ud != null);
+    try std.testing.expectEqual(@as(u8, 42), @as(*u8, @ptrCast(@alignCast(ud.?))).*);
+
+    // Step 7: test luaL_checkudata
+    _ = try lua.luaL_checkudata(&L, -1, "TestMeta");
+    lua.lua_pop(&L, 2);
+
+    // Step 8: creating again returns 0 (already exists)
+    const already_exists = try lua.luaL_newmetatable(&L, "TestMeta");
+    try std.testing.expectEqual(@as(i32, 0), already_exists);
+}
