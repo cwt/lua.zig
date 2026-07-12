@@ -3,9 +3,10 @@ const lprefix = @import("lprefix.zig");
 const llimits = @import("llimits.zig");
 pub const lvm = @import("lvm.zig");
 const ltable = @import("ltable.zig");
-const lstring = @import("lstring.zig");
+pub const lstring = @import("lstring.zig");
 const lundump = @import("lundump.zig");
 const ltm = @import("ltm.zig");
+pub const llex = @import("llex.zig");
 
 pub const lua_Number = llimits.lua_Number;
 pub const lua_Integer = llimits.lua_Integer;

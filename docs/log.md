@@ -1118,3 +1118,33 @@ The C reference relocates the call frame for hidden varargs (`buildhiddenargs`).
 ### Note
 
 This is a documentation-only changeset. No source/test changes; `zig build test` still 67/67 pass, zero leaks. Phase G itself is not yet implemented — only planned and documented.
+
+## 2026-07-12 — Phase G.1: Lexer implemented (`src/llex.zig`) (rev 46)
+
+### Changes
+
+- **`src/llex.zig`** (NEW, ~875 lines): Full Lua 5.5.1 lexer ported from `lua/llex.c` + number scanning from `lua/lobject.c`.
+  - Token set (`TK_AND=257` … `TK_STRING=294`, `FIRST_RESERVED=257`), `LexState` with explicit `allocator: std.mem.Allocator` (Rule 1).
+  - `luaX_setinput`, `luaX_next`, `luaX_lookahead`, `luaX_newstring` (interns via `lstring.luaS_new`), `luaX_init` (reserved-word table), `luaX_syntaxerror` (`LexError = error{SyntaxError}`, no longjmp — Rule 3), `token2str`.
+  - Number scanning: `str2num` / `l_str2int` / `lua_strx2number` / `l_str2d`, with a `normalizeDecimal` pass so Zig's `std.fmt.parseFloat` accepts Lua's trailing-`.` forms (`1.`, `1.e2`). Hex floats (`0x1p4`) via `lua_strx2number`.
+  - Strings / long strings / escapes (`read_string`, `read_long_string`, `skip_sep`), `\xHH` / `\u{...}` / decimal / `\n` `\t` etc.; `inclinenumber`, comments (`--`, long `---[[ ]]`).
+  - Reader/chunk streaming via `lua_Reader` wrapper (mirrors ZIO); buffer is an unmanaged `std.ArrayList(u8)` growing with `ls.allocator`, capped at `MAX_SIZE` (BUG-024 avoidance).
+- **`src/lua.zig`**: exposed `pub const llex = @import("llex.zig")` and `pub const lstring` so the lexer + its tests are reachable; no behavioral change to the runtime.
+- **`tests/test_basic.zig`**: 5 new lexer tests (basic tokens + numbers; integer/hex/float forms; long string + escapes + comments; error on unfinished string; reserved words + operators). Note: tests live in the test root (not in `llex.zig`) because a module built as a dependency of the test root is compiled without its own `test` declarations.
+- **`build.zig`**: no change required (lexer is part of the `lua` module).
+
+### Bug-avoidance self-audit (against `docs/bugs.md`)
+
+- **BUG-002 / 012 / 025 / 031 (swallowed errors):** lexer propagates `!void`/`!T` everywhere; no `catch {}`, no dummy `catch`. Syntax errors return `error.SyntaxError`.
+- **BUG-024 (hardcoded `page_allocator`):** buffer grows via `ls.allocator`; never `page_allocator`.
+- **BUG-010 / 013 (stack OOB / unchecked `lua_checkstack`):** lexer does not touch the Lua stack; `luaX_newstring` interns via the global string table (allocator-threaded).
+- **BUG-021 (`[]const u8` → `[*:0]` without NUL):** all string handling uses bounded slices; no fake C strings.
+- **BUG-001 (shift overflow):** no dynamic shifts in the lexer; numeric conversions use `std.fmt.parseFloat` / `@intCast` (Rule 4), never `@bitCast`.
+
+### Verification
+
+`zig build test --summary all` → **72/72 tests pass (was 67/67), zero memory leaks.** `zig build` produces the `luazig` executable. Lexer behavior cross-checked against the Lua 5.5.1 reference binary semantics for token classes, number forms, escapes, and long strings.
+
+### Related
+
+- Phase G.2 (parser, `src/lparser.zig`) and G.3 (codegen, `src/lcode.zig`) remain; G.4 wires `lua_load`'s text branch to `luaD_protectedparser`.

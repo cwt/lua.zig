@@ -182,7 +182,7 @@ are available as a Git subrepo.
    Ported `luaT_adjustvarargs`/`luaT_getvarargs`/`luaT_getvararg` into `src/ltm.zig` and wired `OP_VARARGPREP`/`OP_VARARG`/`OP_GETVARG` in `src/lvm.zig`. Vararg functions (`function f(a, ...) ... end`, `f(...)`, `select`, `{...}`) now execute correctly. Added `lua_Proto.flag` and `CallInfo.nextraargs`. Verified against the Lua 5.5.1 reference binary. **65/65 tests pass.**
 
 ### What is NOT done (future phases)
-1. **No source-text compilation (Phase G, not started).** Lexer (`llex.c`), parser (`lparser.c`), and code generator (`lcode.c`) are not implemented (we rely on precompiled bytecode). `luaL_dostring` is properly implemented (it loads the chunk via `lua_load` and runs it via `lua_pcallk`, mirroring the C reference); with no parser, text source still fails load with `LUA_ERRSYNTAX`, but binary chunks execute correctly. See §5 "Phase G" for the planned scope.
+ 1. **Partial source-text compilation (Phase G, lexer done).** The lexer (`src/llex.zig`) is implemented and tested, but the parser (`lparser.c`) and code generator (`lcode.c`) are not (we rely on precompiled bytecode). `luaL_dostring` is properly implemented (it loads the chunk via `lua_load` and runs it via `lua_pcallk`, mirroring the C reference); with no parser, text source still fails load with `LUA_ERRSYNTAX`, but binary chunks execute correctly. See §5 "Phase G" for the planned scope.
 2. **`loadlib` `require` loading** — dynamic `.so`/`.dll` loading via `package.loadlib` is functional but `package.path` search and `require()` chain is minimal.
 
 ---
@@ -315,13 +315,15 @@ and string interning in `global_State.strt` (`std.array_hash_map.String`) in
 
 ---
 
-### Phase G — Source-text compiler (lexer / parser / codegen) — NOT STARTED
+### Phase G — Source-text compiler (lexer / parser / codegen)
 
-Phases A–F are **complete**: the port runs precompiled Lua 5.5.1 bytecode through the full VM with all 10 standard libraries. The one remaining core gap is that **text source cannot be compiled** — there is no lexer, parser, or code generator. `luaL_dostring`/`luaL_loadstring` already delegate to `lua_load`, which only detects the `\x1b` binary signature; a real source path is missing.
+Phases A–F are **complete**: the port runs precompiled Lua 5.5.1 bytecode through the full VM with all 10 standard libraries. The one remaining core gap is that **text source cannot yet be compiled end-to-end** — the lexer is done, but the parser and code generator are not. `luaL_dostring`/`luaL_loadstring` already delegate to `lua_load`, which only detects the `\x1b` binary signature; the source path is partially built.
+
+**Status:** G.1 ✅ DONE (2026-07-12), G.2–G.4 NOT STARTED.
 
 **Scope (port of `lua/llex.c`, `lua/lparser.c`, `lua/lcode.c`, + `lua/ldo.c` parser glue):**
 
-17. **Lexer** (`src/llex.zig`): `LexState`, `luaX_init` (reserved words), `luaX_next`, `luaX_lookahead`, `luaX_newstring` (token → interned `lua_Table`/string), number/scanner. Thread the allocator; no C globals.
+17. **Lexer** (`src/llex.zig`) ✅ DONE: `LexState`, `luaX_init` (reserved words), `luaX_next`, `luaX_lookahead`, `luaX_newstring` (token → interned `lua_TString`), full number scanner (`str2num`/`l_str2int`/`lua_strx2number`/`l_str2d`), strings/long strings/escapes, comments, `luaX_syntaxerror`, `token2str`. Threads the allocator; no C globals. 5 unit tests in `tests/test_basic.zig` (72/72 pass).
 18. **Parser** (`src/lparser.zig`): `FuncState`, `expdesc`, `luaY_parser`, `luaD_protectedparser` (the `lua_load` text branch). Recursive descent for blocks, `if`/`while`/`repeat`/`for`, `local`/`global`, functions, varargs. Replace `luaD_throw`/`longjmp` with `!T` error returns.
 19. **Code generator** (`src/lcode.zig`): `expdesc`→instruction emission, register allocation (`luaK_dischargevars`, `luaK_storevar`), jump/patch lists (`luaK_concat`, `luaK_patchtohere`) for `and`/`or`/`goto`, upvalue handling. Produces the same `lua_Proto` shapes `lundump.zig` already builds, so the VM is **untouched**.
 20. Wire `lua_load`: when the first byte is not `\x1b`, call `luaD_protectedparser` instead of `lundump`.
@@ -331,5 +333,5 @@ Phases A–F are **complete**: the port runs precompiled Lua 5.5.1 bytecode thro
 
 ## 8. What to work on next
 
-All phases A–F are **done** (VM, runtime, and all 10 standard libraries, 67/67 tests passing, zero leaks). The next task is **Phase G — the source-text compiler** (`src/llex.zig` → `src/lparser.zig` → `src/lcode.zig`), starting with the lexer and validating each layer against the Lua 5.5.1 reference binary. `loadlib`'s `require()` chain remains a secondary, lower-priority gap.
+All phases A–F are **done** (VM, runtime, and all 10 standard libraries, 72/72 tests passing, zero leaks). **Phase G.1 (lexer) is complete** — `src/llex.zig` tokenizes Lua 5.5.1 source with full number/string/comment support and 5 passing tests. The next task is **Phase G.2 — the parser** (`src/lparser.zig` → `luaY_parser` → `luaD_protectedparser`), validating each layer against the Lua 5.5.1 reference binary, followed by G.3 (codegen) and G.4 (wire `lua_load`). `loadlib`'s `require()` chain remains a secondary, lower-priority gap.
 

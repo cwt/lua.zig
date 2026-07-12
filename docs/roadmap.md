@@ -129,14 +129,14 @@ Implement library bodies in `src/lib/*.zig`:
 
 Wire `iolib`/`oslib` to `std.Io`/`init.io`. **67/67 tests pass, zero memory leaks.**
 
-## Phase G -- Source-Text Compiler (NOT STARTED)
+## Phase G -- Source-Text Compiler (G.1 DONE, G.2–G.4 NOT STARTED)
 
-Phases A–F are complete: the port runs precompiled Lua 5.5.1 bytecode through the full VM with all 10 standard libraries. The one remaining core gap is that **text source cannot be compiled** — there is no lexer, parser, or code generator. `luaL_dostring`/`luaL_loadstring` already delegate to `lua_load`, which only detects the `\x1b` binary signature; a real source path is missing.
+Phases A–F are complete: the port runs precompiled Lua 5.5.1 bytecode through the full VM with all 10 standard libraries. The one remaining core gap is that **text source cannot yet be compiled end-to-end** — the lexer is done, but the parser and code generator are not. `luaL_dostring`/`luaL_loadstring` already delegate to `lua_load`, which only detects the `\x1b` binary signature; the source path is partially built.
 
 **Scope (port of `lua/llex.c`, `lua/lparser.c`, `lua/lcode.c`, + `lua/ldo.c` parser glue):**
 
-### Phase G.1 -- Lexer (`src/llex.zig`)
-Port `lua/llex.c` (604 lines). `LexState`, `luaX_init` (reserved words), `luaX_next`, `luaX_lookahead`, `luaX_newstring` (token → interned string), number/string scanners. Thread the allocator; no C globals.
+### Phase G.1 -- Lexer (`src/llex.zig`) — ✅ DONE (2026-07-12)
+Port `lua/llex.c` (604 lines). `LexState`, `luaX_init` (reserved words), `luaX_next`, `luaX_lookahead`, `luaX_newstring` (token → interned string), full number scanner (`str2num`/`l_str2int`/`lua_strx2number`/`l_str2d`), strings/long strings/escapes, comments, `luaX_syntaxerror`, `token2str`. Threads the allocator; no C globals. 5 unit tests in `tests/test_basic.zig` (72/72 pass).
 
 ### Phase G.2 -- Parser (`src/lparser.zig`)
 Port `lua/lparser.c` (2,202 lines). `FuncState`, `expdesc`, `luaY_parser`, `luaD_protectedparser` (the `lua_load` text branch). Recursive descent for blocks, `if`/`while`/`repeat`/`for`, `local`/`global`, functions, varargs. Replace `luaD_throw`/`longjmp` with `!T` error returns.

@@ -2774,3 +2774,230 @@ test "debug.traceback produces non-empty string" {
 }
 
 
+
+// ---------------------------------------------------------------------------
+// Lexer tests (Phase G.1) — see src/llex.zig for the implementation.
+// ---------------------------------------------------------------------------
+const LexerReaderData = struct {
+    src: []const u8,
+    pos: usize,
+};
+
+fn lexerStringReader(
+    _: *lua.lua_State,
+    data: ?*anyopaque,
+    size: ?*usize,
+) ?[]const u8 {
+    const st = @as(*LexerReaderData, @ptrCast(@alignCast(data orelse return null)));
+    if (st.pos >= st.src.len) {
+        size.?.* = 0;
+        return null;
+    }
+    const rest = st.src[st.pos..];
+    st.pos = st.src.len;
+    size.?.* = rest.len;
+    return rest;
+}
+
+fn newSource(L: *lua.lua_State, name: []const u8) !*lua.lua_TString {
+    return try lua.lstring.luaS_new(L.allocator, &L.l_G.?.strt, L.l_G.?.seed, name);
+}
+
+test "lex basic tokens and numbers" {
+    const gpa = std.testing.allocator;
+    var L: lua.lua_State = undefined;
+    try lua.luaL_newstate(&L, gpa);
+    defer lua.lua_close(&L);
+
+    const src = "local x = 1 + 2.5 -- comment\nprint('hi')";
+    var rd = LexerReaderData{ .src = src, .pos = 0 };
+    const source = try newSource(&L, "test");
+
+    var ls: lua.llex.LexState = undefined;
+    try lua.llex.luaX_setinput(&L, &ls, lexerStringReader, &rd, source);
+    defer ls.buff.deinit(ls.allocator);
+
+    try lua.llex.luaX_next(&ls);
+    try std.testing.expect(ls.t.token == lua.llex.TK_LOCAL);
+
+    try lua.llex.luaX_next(&ls);
+    try std.testing.expect(ls.t.token == lua.llex.TK_NAME);
+    try std.testing.expect(std.mem.eql(u8, ls.t.seminfo.ts.?.s, "x"));
+
+    try lua.llex.luaX_next(&ls);
+    try std.testing.expect(ls.t.token == '=');
+
+    try lua.llex.luaX_next(&ls);
+    try std.testing.expect(ls.t.token == lua.llex.TK_INT);
+    try std.testing.expectEqual(@as(i64, 1), ls.t.seminfo.i);
+
+    try lua.llex.luaX_next(&ls);
+    try std.testing.expect(ls.t.token == '+');
+
+    try lua.llex.luaX_next(&ls);
+    try std.testing.expect(ls.t.token == lua.llex.TK_FLT);
+    try std.testing.expect(std.math.approxEqAbs(f64, ls.t.seminfo.r, 2.5, 1e-9));
+
+    // skip the comment and 'print'
+    try lua.llex.luaX_next(&ls); // 'print' name
+    try std.testing.expect(ls.t.token == lua.llex.TK_NAME);
+    try lua.llex.luaX_next(&ls); // '('
+    try std.testing.expect(ls.t.token == '(');
+    try lua.llex.luaX_next(&ls); // string 'hi'
+    try std.testing.expect(ls.t.token == lua.llex.TK_STRING);
+    try std.testing.expect(std.mem.eql(u8, ls.t.seminfo.ts.?.s, "hi"));
+    try lua.llex.luaX_next(&ls); // ')'
+    try std.testing.expect(ls.t.token == ')');
+
+    try lua.llex.luaX_next(&ls);
+    try std.testing.expect(ls.t.token == lua.llex.TK_EOS);
+}
+
+test "lex integer and hex/float forms" {
+    const gpa = std.testing.allocator;
+    var L: lua.lua_State = undefined;
+    try lua.luaL_newstate(&L, gpa);
+    defer lua.lua_close(&L);
+
+    const src = "0 42 -7 0xff 3.14 1e10 0x1p4 1. .5";
+    var rd = LexerReaderData{ .src = src, .pos = 0 };
+    const source = try newSource(&L, "t2");
+
+    var ls: lua.llex.LexState = undefined;
+    try lua.llex.luaX_setinput(&L, &ls, lexerStringReader, &rd, source);
+    defer ls.buff.deinit(ls.allocator);
+
+    const expect_int = struct {
+        fn check(ls2: *lua.llex.LexState, v: i64) !void {
+            try lua.llex.luaX_next(ls2);
+            try std.testing.expect(ls2.t.token == lua.llex.TK_INT);
+            try std.testing.expectEqual(v, ls2.t.seminfo.i);
+        }
+    }.check;
+    const expect_flt = struct {
+        fn check(ls2: *lua.llex.LexState, v: f64) !void {
+            try lua.llex.luaX_next(ls2);
+            try std.testing.expect(ls2.t.token == lua.llex.TK_FLT);
+            try std.testing.expect(std.math.approxEqAbs(f64, v, ls2.t.seminfo.r, 1e-9));
+        }
+    }.check;
+
+    try expect_int(&ls, 0);
+    try expect_int(&ls, 42);
+    try lua.llex.luaX_next(&ls); // '-' is the unary-minus operator, not part of the numeral
+    try std.testing.expect(ls.t.token == '-');
+    try expect_int(&ls, 7);
+    try expect_int(&ls, 0xff);
+    try expect_flt(&ls, 3.14);
+    try expect_flt(&ls, 1e10);
+    try expect_flt(&ls, 0x1p4);
+    try expect_flt(&ls, 1.0);
+    try expect_flt(&ls, 0.5);
+
+    try lua.llex.luaX_next(&ls);
+    try std.testing.expect(ls.t.token == lua.llex.TK_EOS);
+}
+
+test "lex long string, escapes, and comments" {
+    const gpa = std.testing.allocator;
+    var L: lua.lua_State = undefined;
+    try lua.luaL_newstate(&L, gpa);
+    defer lua.lua_close(&L);
+
+    const src =
+        "s = [[line1\nline2]] .. 'a\\nb' .. \"\\x41\" .. '\\u{41}' --[[c]] -- d\n" ++
+        "t = 'tab\\tend'";
+    var rd = LexerReaderData{ .src = src, .pos = 0 };
+    const source = try newSource(&L, "t3");
+
+    var ls: lua.llex.LexState = undefined;
+    try lua.llex.luaX_setinput(&L, &ls, lexerStringReader, &rd, source);
+    defer ls.buff.deinit(ls.allocator);
+
+    try lua.llex.luaX_next(&ls); // s
+    try std.testing.expect(ls.t.token == lua.llex.TK_NAME);
+    try lua.llex.luaX_next(&ls); // =
+    try lua.llex.luaX_next(&ls); // [[...]] long string
+    try std.testing.expect(ls.t.token == lua.llex.TK_STRING);
+    try std.testing.expect(std.mem.eql(u8, ls.t.seminfo.ts.?.s, "line1\nline2"));
+    try lua.llex.luaX_next(&ls); // ..
+    try std.testing.expect(ls.t.token == lua.llex.TK_CONCAT);
+    try lua.llex.luaX_next(&ls); // 'a\nb'
+    try std.testing.expect(ls.t.token == lua.llex.TK_STRING);
+    try std.testing.expect(std.mem.eql(u8, ls.t.seminfo.ts.?.s, "a\nb"));
+    try lua.llex.luaX_next(&ls); // ..
+    try lua.llex.luaX_next(&ls); // "\x41"
+    try std.testing.expect(std.mem.eql(u8, ls.t.seminfo.ts.?.s, "A"));
+    try lua.llex.luaX_next(&ls); // ..
+    try lua.llex.luaX_next(&ls); // '\u{41}'
+    try std.testing.expect(std.mem.eql(u8, ls.t.seminfo.ts.?.s, "A"));
+    // comment '--[[c]]' and '-- d' skipped; then newline; then 't'
+    try lua.llex.luaX_next(&ls); // t
+    try std.testing.expect(ls.t.token == lua.llex.TK_NAME);
+    try lua.llex.luaX_next(&ls); // =
+    try lua.llex.luaX_next(&ls); // 'tab\tend'
+    try std.testing.expect(std.mem.eql(u8, ls.t.seminfo.ts.?.s, "tab\tend"));
+    try lua.llex.luaX_next(&ls);
+    try std.testing.expect(ls.t.token == lua.llex.TK_EOS);
+}
+
+test "lex error on unfinished string" {
+    const gpa = std.testing.allocator;
+    var L: lua.lua_State = undefined;
+    try lua.luaL_newstate(&L, gpa);
+    defer lua.lua_close(&L);
+
+    const src = "x = 'unterminated";
+    var rd = LexerReaderData{ .src = src, .pos = 0 };
+    const source = try newSource(&L, "t4");
+
+    var ls: lua.llex.LexState = undefined;
+    try lua.llex.luaX_setinput(&L, &ls, lexerStringReader, &rd, source);
+    defer ls.buff.deinit(ls.allocator);
+
+    // x
+    try lua.llex.luaX_next(&ls);
+    // =
+    try lua.llex.luaX_next(&ls);
+    // 'unterminated -> error
+    const got = lua.llex.luaX_next(&ls);
+    try std.testing.expectError(error.SyntaxError, got);
+}
+
+test "lex reserved words and operators" {
+    const gpa = std.testing.allocator;
+    var L: lua.lua_State = undefined;
+    try lua.luaL_newstate(&L, gpa);
+    defer lua.lua_close(&L);
+
+    const src = "if a <= b then return a ~= b end";
+    var rd = LexerReaderData{ .src = src, .pos = 0 };
+    const source = try newSource(&L, "t5");
+
+    var ls: lua.llex.LexState = undefined;
+    try lua.llex.luaX_setinput(&L, &ls, lexerStringReader, &rd, source);
+    defer ls.buff.deinit(ls.allocator);
+
+    try lua.llex.luaX_next(&ls);
+    try std.testing.expect(ls.t.token == lua.llex.TK_IF);
+    try lua.llex.luaX_next(&ls);
+    try std.testing.expect(ls.t.token == lua.llex.TK_NAME);
+    try lua.llex.luaX_next(&ls);
+    try std.testing.expect(ls.t.token == lua.llex.TK_LE);
+    try lua.llex.luaX_next(&ls);
+    try std.testing.expect(ls.t.token == lua.llex.TK_NAME);
+    try lua.llex.luaX_next(&ls);
+    try std.testing.expect(ls.t.token == lua.llex.TK_THEN);
+    try lua.llex.luaX_next(&ls);
+    try std.testing.expect(ls.t.token == lua.llex.TK_RETURN);
+    try lua.llex.luaX_next(&ls);
+    try std.testing.expect(ls.t.token == lua.llex.TK_NAME);
+    try lua.llex.luaX_next(&ls);
+    try std.testing.expect(ls.t.token == lua.llex.TK_NE);
+    try lua.llex.luaX_next(&ls);
+    try std.testing.expect(ls.t.token == lua.llex.TK_NAME);
+    try lua.llex.luaX_next(&ls);
+    try std.testing.expect(ls.t.token == lua.llex.TK_END);
+    try lua.llex.luaX_next(&ls);
+    try std.testing.expect(ls.t.token == lua.llex.TK_EOS);
+}
