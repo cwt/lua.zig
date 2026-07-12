@@ -11,7 +11,7 @@ timestamp: 2026-07-12T00:00:00Z
 > Working document tracking known defects in the `luazig` codebase. Bugs are
 > numbered `BUG-001` … in priority order. Severity reflects runtime impact.
 > Each entry records the location, the defect, the impact, and the recommended fix.
-> Last updated: 2026-07-11.
+> Last updated: 2026-07-12.
 
 Legend:
 - **[HIGH]** crashes, wrong control flow, or incorrect results on ordinary programs.
@@ -213,3 +213,162 @@ Legend:
 - **Impact:** Cosmetic — concatenated string differs from reference for
   edge-case float values that happen to round differently.
 - **Status:** Won't fix — cosmetic only, no correctness impact.
+
+---
+
+## BUG-015 — `getiofile` uses string-key `getfield` but default files are stored under pointer keys  [HIGH] ❌ OPEN
+- **Location:** `src/lib/iolib.zig:80-96` (`getiofile`); stores at `:101`/`:104` (`g_iofile`),
+  `:355` (`createstdfile`).
+- **Defect:** `getiofile` retrieves the default input/output file with
+  `lua.lua_getfield(L, LUA_REGISTRYINDEX, findex)` (string key `"INPUT*"`/
+  `"OUTPUT*"`), but those files are stored with `lua.lua_rawsetp(L,
+  LUA_REGISTRYINDEX, findex.ptr)` (pointer key) in `g_iofile`/`createstdfile`.
+  The C reference uses `lua_rawgetp(L, LUA_REGISTRYINDEX, findex)` here.
+- **Impact:** `getiofile` always gets `nil` → `f_read`/`f_write`/`io_read`/
+  `io_write`/`io_lines` raise `"default input/output file is closed"`. Every
+  `io.read()` / `io.write()` call fails at runtime, even though the library
+  opens and registers fine (so the tests pass).
+- **Fix:** Change `getiofile` to `lua.lua_rawgetp(L, lua.LUA_REGISTRYINDEX,
+  @ptrCast(findex.ptr))`, matching how the files are stored and the C
+  reference.
+
+## BUG-016 — `io.close()` with no arguments panics (`unreachable`)  [HIGH] ❌ OPEN
+- **Location:** `src/lib/iolib.zig:50-58` (`io_close`).
+- **Defect:** The no-argument branch fetches the default output file with
+  `lua.lua_getfield(L, LUA_REGISTRYINDEX, IO_OUTPUT)` (string key), but the
+  default file lives under the pointer key (see BUG-015). It gets `nil`, then
+  `tostream(nil)` hits `lua.lua_touserdata(...) orelse unreachable`.
+- **Impact:** Calling `io.close()` with no arguments crashes the interpreter.
+- **Fix:** Fetch the default file with `lua.lua_rawgetp(L, LUA_REGISTRYINDEX,
+  @ptrCast(IO_OUTPUT.ptr))` (consistent with `g_iofile`/`createstdfile`).
+
+## BUG-017 — `f_read`/`f_write` ignore `self` → `file:read()`/`file:write()` use the wrong file  [MED] ❌ OPEN
+- **Location:** `src/lib/iolib.zig:237-241` (`f_read`), `:281-285` (`f_write`).
+- **Defect:** Both call `getiofile(L, IO_INPUT/OUTPUT)` instead of reading the
+  file object from `self` (index 1). The C reference has separate `io_read`
+  (default input) and `f_read` (the file at index 1) functions; here `io_read`
+  just forwards to `f_read`, so `file:read()` operates on the **default** input,
+  not `file`.
+- **Impact:** `myfile:read()` / `myfile:write()` silently read/write the default
+  input/output stream instead of `myfile`. Wrong results, no error.
+- **Fix:** `f_read`/`f_write` should `luaL_checkudata(L, 1, LUA_FILEHANDLE)` to
+  obtain `self`'s `LStream` (the C reference `f_read` path), while `io_read`/
+  `io_write` keep using `getiofile`.
+
+## BUG-018 — `read_chars` over-reads: passes `buf.len` instead of `bytes_read`  [HIGH] ❌ OPEN
+- **Location:** `src/lib/iolib.zig:163-171` (`read_chars`), line 170.
+- **Defect:**
+  ```zig
+  const bytes_read = std.posix.read(fd, buf) catch return false;
+  if (bytes_read == 0) return false;
+  _ = lua.lua_pushlstring(L_, buf[0..bytes_read], buf.len) orelse {}; // buf.len != bytes_read
+  ```
+  `buf.len` is the allocated size `n`; the valid slice is `buf[0..bytes_read]`.
+- **Impact:** The returned string contains `n` bytes, of which
+  `n - bytes_read` are uninitialized arena garbage past the read. Corrupts
+  `io.read(n)` / `io.read("a")` output and any `*a`/`*l` buffer read.
+- **Fix:** Pass `bytes_read` as the length: `lua.lua_pushlstring(L_, buf[0..bytes_read], bytes_read)`.
+
+## BUG-019 — `g_read` format dispatch is dead code (`if (n > 0)` should be `if (fmt > 0)`)  [HIGH] ❌ OPEN
+- **Location:** `src/lib/iolib.zig:189-231` (`g_read`), line 200.
+- **Defect:** The loop guard is `if (n > 0)` where `n` is the **stack index**
+  (starts at `first`, i.e. ≥ 2 for `io.read`). Since `n > 0` is always true,
+  the function always calls `read_line` and the entire `else` branch — which
+  handles numeric counts (`io.read(n)`), `"a"` (all), `"L"` (line with\n),
+  and `"*n"` (number) — is unreachable. The correct guard is `if (fmt > 0)`
+  where `fmt = lua.lua_tointeger(L, n)`.
+- **Impact:** `io.read(n)`, `io.read("a")`, `io.read("L")`, `io.read("*n")` all
+  fall through to single-line reading (or never execute). Reading modes other
+  than a plain line are broken.
+- **Fix:** Replace `if (n > 0)` with `if (fmt > 0)` and read the format from
+  `lua.lua_tointeger(L, n)` as the C reference does.
+
+## BUG-020 — `luaL_newmetatable` stores under pointer key but `setmetatable`/`testudata`/`io_type` read string key → FILE* metatable never attached  [HIGH] ❌ OPEN
+- **Location:** `src/lauxlib.zig:331-341` (`luaL_newmetatable`, pointer key at
+  `:340`); `:343-346` (`luaL_setmetatable`, string key at `:344`); `:348-362`
+  (`luaL_testudata`); `src/lib/iolib.zig:76`/`:354` (`luaL_setmetatable` calls);
+  `src/lib/iolib.zig:148-161` (`io_type`).
+- **Defect:** `luaL_newmetatable` registers the metatable with `lua.lua_rawsetp
+  (L, LUA_REGISTRYINDEX, tname.ptr)` (pointer key), but `luaL_setmetatable` and
+  `luaL_testudata` look it up with `lua.lua_getfield(L, LUA_REGISTRYINDEX,
+  tname)` (string key). The C reference uses the **string** key for both
+  (`lua_setfield`/`lua_getfield`). Result: `luaL_setmetatable` retrieves `nil`
+  and removes the metatable from the userdata.
+- **Impact:** File userdata never gets its `FILE*` metatable. `io.type(real_file)`
+  returns `nil`; `luaL_checkudata(... "FILE*" ...)` always errors; any
+  metatable-tagged library type is unusable. (Tests only check
+  `io.type(nil) == nil`, masking this.)
+- **Fix:** In `luaL_newmetatable`, store with `lua.lua_setfield(L,
+  lua.LUA_REGISTRYINDEX, tname)` (string key) to match `luaL_setmetatable`/
+  `luaL_testudata` (and the C reference).
+
+## BUG-021 — `os.remove`/`os.rename` cast `[]const u8` to `[*:0]const u8` without a NUL terminator  [MED] ❌ OPEN
+- **Location:** `src/lib/oslib.zig:18-24` (`os_remove`, `@ptrCast(filename)` at
+  `:23`), `:28-32` (`os_rename`, `@ptrCast(from)`/`@ptrCast(to)` at `:31`).
+- **Defect:** `linux.unlink(@ptrCast(filename))` / `linux.rename(@ptrCast(from),
+  @ptrCast(to))` reinterpret a non-sentinel `[]const u8` slice as a
+  `[*:0]const u8`. `@ptrCast` does **not** append a NUL terminator, so the
+  syscall reads past the string until it hits a zero byte.
+- **Impact:** Unsound C-string ABI use — filenames may be corrupted or the
+  syscall may fail spuriously. Violates §0.1 rule 5 (no fake C null-terminated
+  strings).
+- **Fix:** Use `std.posix.unlink(filename)` / `std.posix.rename(from, to)`, which
+  take `[]const u8` and handle the terminator. (Or build a NUL-terminated copy.)
+
+## BUG-022 — `os.remove` ignores the syscall result and always returns `true`  [MED] ❌ OPEN
+- **Location:** `src/lib/oslib.zig:18-25` (`os_remove`).
+- **Defect:** After `linux.unlink(...)` the return value is discarded and the
+  function unconditionally does `lua.lua_pushboolean(L_, 1)` (success).
+- **Impact:** `os.remove("nonexistent")` wrongly returns `true` instead of
+  `nil, errmsg`, so callers cannot detect removal failure.
+- **Fix:** Check `linux.unlink`'s (or `std.posix.unlink`'s) result and return
+  `luaL_fileresult(L, stat, filename)` accordingly (mirror `os_rename`).
+
+## BUG-023 — `openio` leaks the FILE* metatable on the stack  [LOW] ❌ OPEN
+- **Location:** `src/lib/iolib.zig:386-390` (`openio`); consumed by
+  `src/lualib.zig` `openio` → `lua.lua_setglobal(L, "io")`.
+- **Defect:** `luaL_newmetatable` + `luaL_setfuncs(L, &flib, 0)` leave the FILE*
+  metatable on the stack; `lua_setglobal(L, "io")` only pops the io table.
+  The metatable is never popped.
+- **Impact:** One stack slot leaks after `luaL_openlibs`. The C reference does
+  `lua_pop(L, 1)` after populating the metatable's methods.
+- **Fix:** Add `lua.lua_pop(L_, 1)` after `luaL_setfuncs(L_, &flib, 0)`.
+
+## BUG-024 — Hardcoded `std.heap.page_allocator` in iolib read/line helpers  [LOW] ❌ OPEN
+- **Location:** `src/lib/iolib.zig:164-165` (`read_chars`), `:172-187`
+  (`read_line`), `:332-348` (`f_lines`), `:135-147` (`io_tmpfile`).
+- **Defect:** Buffers are allocated/freed via `std.heap.page_allocator` instead
+  of threading the state allocator `L.allocator`.
+- **Impact:** Violates §0.1 rule 1 (never hardcode `page_allocator`). Not a
+  crash, but inconsistent with the project's allocator-threading convention and
+  defeats the state's allocator for I/O buffers.
+- **Fix:** Thread `L.allocator` (or pass an explicit allocator) through
+  `read_chars`/`read_line`/`f_lines`/`io_tmpfile`.
+
+## BUG-025 — Empty `catch {}` in `luaL_setfuncs` / `luaL_fileresult`  [LOW] ❌ OPEN
+- **Location:** `src/lauxlib.zig:364-370` (`luaL_setfuncs`, `catch {}` at `:369`),
+  `:378-393` (`luaL_fileresult`, `catch {}` at `:391`).
+- **Defect:** Several `lua.*` calls are wrapped in `catch {}`, silently
+  discarding runtime errors.
+- **Impact:** Violates §0.1 rule 12 (never swallow runtime errors with empty
+  `catch`). On a genuine error (e.g. stack overflow during `setfield`),
+  `luaL_setfuncs` would leave the library partially populated with no signal.
+- **Fix:** Propagate errors via `try`/`!void` (or handle with a fallback),
+  consistent with §0.1. Also note `luaL_setfuncs` ignores `nup` (always 0),
+  so upvalue-bearing libraries won't work.
+
+## BUG-026 — Lua-function coroutines without continuation re-execute from the start  [MED] ❌ OPEN
+- **Location:** `src/lua.zig` `do_resume` (no-`k` branch, ~`:1757-1768`);
+  `lua_yieldk` (~`:1729-1738`).
+- **Defect:** On resuming a yielded coroutine whose `CallInfo.k == null`, the
+  code destroys the yielded `CallInfo` and re-runs `precall` from `ci.func`.
+  For a C function that is correct (matches the documented restart model).
+  For a **Lua-function** coroutine it discards the saved `pc` and re-executes
+  the function body from the top instead of resuming at the yield point.
+- **Impact:** Lua-function coroutines that yield without a continuation will
+  produce wrong results / re-run side effects on resume. Only C functions are
+  exercised by the current test (`coroutine yield/resume via C API`).
+- **Fix:** For Lua-function frames, resume by continuing `lvm.run` on the
+  preserved `CallInfo` (the savedpc already points past the yield), rather than
+  destroying and re-precalling it.
+
