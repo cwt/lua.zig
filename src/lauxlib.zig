@@ -250,12 +250,87 @@ pub fn luaL_where(L: *lua.lua_State, level: i32) void {
     _ = lua.lua_pushstring(L, "");
 }
 
+const LEVELS1 = 12;
+const LEVELS2 = 10;
+
+fn pushfuncname(L: *lua.lua_State, ar: *const lua.lua_Debug) !void {
+    if (ar.namewhat != null and ar.namewhat.?.len > 0) {
+        const name = ar.name orelse "?";
+        const fmt_str = try std.fmt.allocPrint(L.allocator, "{s} '{s}'", .{ar.namewhat.?, name});
+        defer L.allocator.free(fmt_str);
+        _ = lua.lua_pushlstring(L, fmt_str, fmt_str.len);
+    } else if (ar.what != null and ar.what.?.len > 0 and ar.what.?[0] == 'm') {
+        _ = lua.lua_pushstring(L, "main chunk");
+    } else if (ar.what != null and ar.what.?.len > 0 and !std.mem.eql(u8, ar.what.?, "C")) {
+        const src = ar.source orelse "?";
+        var short_src: [lua.LUA_IDSIZE]u8 = undefined;
+        lua.luaO_chunkid(&short_src, src);
+        const fmt_str = try std.fmt.allocPrint(L.allocator, "function <{s}:{}>", .{std.mem.sliceTo(&short_src, 0), ar.linedefined});
+        defer L.allocator.free(fmt_str);
+        _ = lua.lua_pushlstring(L, fmt_str, fmt_str.len);
+    } else {
+        _ = lua.lua_pushstring(L, "?");
+    }
+}
+
 pub fn luaL_traceback(L: *lua.lua_State, L2: *lua.lua_State, msg: []const u8, level: i32) !void {
-    _ = L;
-    _ = L2;
-    _ = msg;
-    _ = level;
-    return error.NotImplemented;
+    var b = luaL_Buffer{};
+    luaL_buffinit(L, &b);
+    errdefer b.buf.deinit(L.allocator);
+
+    if (msg.len > 0) {
+        try luaL_addlstring(L, &b, msg);
+        try luaL_addchar(L, &b, '\n');
+    }
+    try luaL_addlstring(L, &b, "stack traceback:");
+
+    var ar: lua.lua_Debug = undefined;
+    var last: i32 = 0;
+    while (lua.lua_getstack(L2, last, &ar) != 0) {
+        last += 1;
+    }
+
+    var lvl = level;
+    var limit2show: i32 = if (last - lvl > LEVELS1 + LEVELS2) LEVELS1 else -1;
+
+    while (lua.lua_getstack(L2, lvl, &ar) != 0) {
+        lvl += 1;
+        if (limit2show == 0) {
+            const n = last - lvl - LEVELS2 + 1;
+            const fmt_str = try std.fmt.allocPrint(L.allocator, "\n\t...\t(skipping {} levels)", .{n});
+            defer L.allocator.free(fmt_str);
+            try luaL_addlstring(L, &b, fmt_str);
+            lvl += n;
+            limit2show = -1;
+        } else {
+            if (limit2show > 0) {
+                limit2show -= 1;
+            }
+            _ = try lua.lua_getinfo(L2, "Slnt", &ar);
+            
+            const src = if (ar.source) |s| s else "?";
+            var short_src: [lua.LUA_IDSIZE]u8 = undefined;
+            lua.luaO_chunkid(&short_src, src);
+            const short_src_slice = std.mem.sliceTo(&short_src, 0);
+
+            var line_buf: [128]u8 = undefined;
+            const line_str = if (ar.currentline <= 0)
+                try std.fmt.bufPrint(&line_buf, "\n\t{s}: in ", .{short_src_slice})
+            else
+                try std.fmt.bufPrint(&line_buf, "\n\t{s}:{}: in ", .{short_src_slice, ar.currentline});
+            try luaL_addlstring(L, &b, line_str);
+
+            try pushfuncname(L, &ar);
+            const funcname_val = lua.lua_tostring(L, -1) orelse "?";
+            try luaL_addlstring(L, &b, funcname_val);
+            lua.lua_pop(L, 1);
+
+            if (ar.istailcall) {
+                try luaL_addlstring(L, &b, "\n\t(...tail calls...)");
+            }
+        }
+    }
+    luaL_pushresult(L, &b);
 }
 
 // ===================================================================

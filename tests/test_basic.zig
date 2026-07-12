@@ -2567,3 +2567,151 @@ test "os.getenv environment variable lookup" {
     lua.lua_pop(&L, 2);
 }
 
+test "debug library registration" {
+    const gpa = std.testing.allocator;
+    var L: lua.lua_State = undefined;
+    try lua.luaL_newstate(&L, gpa);
+    defer lua.lua_close(&L);
+    try lua.luaL_openlibs(&L);
+
+    // debug table is a global
+    _ = lua.lua_getglobal(&L, "debug");
+    try std.testing.expectEqual(@as(i32, lua.LUA_TTABLE), lua.lua_type(&L, -1));
+
+    // Check key functions exist
+    _ = try lua.lua_getfield(&L, -1, "getinfo");
+    try std.testing.expectEqual(@as(i32, lua.LUA_TFUNCTION), lua.lua_type(&L, -1));
+    lua.lua_pop(&L, 1);
+
+    _ = try lua.lua_getfield(&L, -1, "traceback");
+    try std.testing.expectEqual(@as(i32, lua.LUA_TFUNCTION), lua.lua_type(&L, -1));
+    lua.lua_pop(&L, 1);
+
+    _ = try lua.lua_getfield(&L, -1, "getupvalue");
+    try std.testing.expectEqual(@as(i32, lua.LUA_TFUNCTION), lua.lua_type(&L, -1));
+    lua.lua_pop(&L, 1);
+
+    _ = try lua.lua_getfield(&L, -1, "setupvalue");
+    try std.testing.expectEqual(@as(i32, lua.LUA_TFUNCTION), lua.lua_type(&L, -1));
+    lua.lua_pop(&L, 1);
+
+    _ = try lua.lua_getfield(&L, -1, "getlocal");
+    try std.testing.expectEqual(@as(i32, lua.LUA_TFUNCTION), lua.lua_type(&L, -1));
+    lua.lua_pop(&L, 1);
+
+    _ = try lua.lua_getfield(&L, -1, "sethook");
+    try std.testing.expectEqual(@as(i32, lua.LUA_TFUNCTION), lua.lua_type(&L, -1));
+    lua.lua_pop(&L, 1);
+
+    _ = try lua.lua_getfield(&L, -1, "getregistry");
+    try std.testing.expectEqual(@as(i32, lua.LUA_TFUNCTION), lua.lua_type(&L, -1));
+    lua.lua_pop(&L, 1);
+
+    lua.lua_pop(&L, 1); // pop debug table
+}
+
+test "debug.getupvalue on C closure" {
+    const gpa = std.testing.allocator;
+    var L: lua.lua_State = undefined;
+    try lua.luaL_newstate(&L, gpa);
+    defer lua.lua_close(&L);
+    try lua.luaL_openlibs(&L);
+
+    // Push a C closure with one upvalue
+    lua.lua_pushinteger(&L, 42);
+    const myfunc: lua.lua_CFunction = struct {
+        fn f(LS: *lua.lua_State) !i32 {
+            _ = LS;
+            return 0;
+        }
+    }.f;
+    lua.lua_pushcclosure(&L, myfunc, 1);
+
+    // getupvalue(closure, 1) → should return the upvalue
+    const name = lua.lua_getupvalue(&L, -1, 1);
+    // C closures return "" as name
+    try std.testing.expect(name != null);
+    // The upvalue value (42) was pushed on stack
+    try std.testing.expectEqual(@as(i32, lua.LUA_TNUMBER), lua.lua_type(&L, -1));
+    try std.testing.expectEqual(@as(i64, 42), lua.lua_tointeger(&L, -1).?);
+    lua.lua_pop(&L, 1); // pop upvalue
+    lua.lua_pop(&L, 1); // pop closure
+}
+
+test "debug.getinfo on C function" {
+    const gpa = std.testing.allocator;
+    var L: lua.lua_State = undefined;
+    try lua.luaL_newstate(&L, gpa);
+    defer lua.lua_close(&L);
+
+    const myfunc: lua.lua_CFunction = struct {
+        fn f(LS: *lua.lua_State) !i32 {
+            _ = LS;
+            return 0;
+        }
+    }.f;
+    lua.lua_pushcfunction(&L, myfunc);
+
+    var ar: lua.lua_Debug = std.mem.zeroes(lua.lua_Debug);
+    ar.i_ci = null;
+    // Use '>' prefix to query function from stack top
+    lua.lua_pushvalue(&L, -1); // push a copy for getinfo to consume
+    const status = try lua.lua_getinfo(&L, ">Su", &ar);
+    try std.testing.expectEqual(@as(i32, 1), status);
+    // C function should have linedefined = -1
+    try std.testing.expectEqual(@as(i32, -1), ar.linedefined);
+    try std.testing.expect(ar.what != null);
+    try std.testing.expect(std.mem.eql(u8, ar.what.?, "C"));
+    lua.lua_pop(&L, 1); // pop original closure
+}
+
+test "debug.sethook and gethook" {
+    const gpa = std.testing.allocator;
+    var L: lua.lua_State = undefined;
+    try lua.luaL_newstate(&L, gpa);
+    defer lua.lua_close(&L);
+
+    // Initially no hook
+    try std.testing.expect(lua.lua_gethook(&L) == null);
+    try std.testing.expectEqual(@as(i32, 0), lua.lua_gethookmask(&L));
+
+    // Set a hook via C API
+    const myhook: lua.lua_Hook = struct {
+        fn h(LS: *lua.lua_State, ar: ?*lua.lua_Debug) void {
+            _ = LS;
+            _ = ar;
+        }
+    }.h;
+    lua.lua_sethook(&L, myhook, @bitCast(lua.LUA_MASKLINE | lua.LUA_MASKCALL), 0);
+
+    try std.testing.expect(lua.lua_gethook(&L) != null);
+    const got_mask = lua.lua_gethookmask(&L);
+    try std.testing.expect((got_mask & @as(i32, @bitCast(lua.LUA_MASKLINE))) != 0);
+
+    // Remove hook
+    lua.lua_sethook(&L, null, 0, 0);
+    try std.testing.expect(lua.lua_gethook(&L) == null);
+}
+
+test "debug.traceback produces non-empty string" {
+    const gpa = std.testing.allocator;
+    var L: lua.lua_State = undefined;
+    try lua.luaL_newstate(&L, gpa);
+    defer lua.lua_close(&L);
+    try lua.luaL_openlibs(&L);
+
+    // Call debug.traceback() with an empty msg
+    _ = lua.lua_getglobal(&L, "debug");
+    _ = try lua.lua_getfield(&L, -1, "traceback");
+    _ = lua.lua_pushstring(&L, "test error");
+    const rc = lua.lua_pcall(&L, 1, 1, 0);
+    try std.testing.expectEqual(@as(i32, lua.LUA_OK), rc);
+    // Result should be a string
+    try std.testing.expectEqual(@as(i32, lua.LUA_TSTRING), lua.lua_type(&L, -1));
+    const tb = lua.lua_tostring(&L, -1).?;
+    // Should contain "stack traceback:"
+    try std.testing.expect(std.mem.indexOf(u8, tb, "stack traceback:") != null);
+    lua.lua_pop(&L, 2); // pop result and debug table
+}
+
+

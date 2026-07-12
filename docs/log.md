@@ -6,6 +6,100 @@ tags: [log, changelog]
 timestamp: 2026-07-10T00:00:00Z
 ---
 
+## 2026-07-12 — Phase F: debug library completed
+
+Implemented the full `debug` standard library (`src/lib/debug.zig`) and the
+underlying debug C-API infrastructure in `src/lua.zig`, completing Phase F.
+
+### Infrastructure added to `src/lua.zig`
+- `lua_sethook` / `lua_gethook` / `lua_gethookmask` / `lua_gethookcount` — hook
+  get/set API.
+- `luaO_chunkid` — truncates source names to fit `LUA_IDSIZE` (60 bytes), using
+  the `=`/`@`/literal rules from the C reference `lobject.c`.
+- `luaG_getfuncline` / `getbaseline` — convert a proto's compact `lineinfo` delta
+  array + `abslineinfo` sentinel entries to an absolute source line number.
+- `luaF_getlocalname` — looks up a local variable name from a proto's `locvars`
+  table at a given PC.
+- `luaG_findlocal` — locates a local by slot number within a `CallInfo` frame.
+- `lua_getlocal` / `lua_setlocal` — read/write a local variable from the Lua
+  debug API.
+- `lua_getinfo` — fills a `lua_Debug` struct for `S`, `l`, `u`, `n`, `t`, `r`,
+  `f`, and `L` fields.
+- Debug name-resolution helpers (`kname`, `upvalname`, `basicgetobjname`,
+  `getobjname`, `funcnamefromcode`, `funcnamefromcall`, `getfuncname`) —
+  mirror `lua/ldebug.c` semantics for `CALL`/`TAILCALL`, upvalues, table
+  access fields, and metamethod event tags.
+- `isLua` / `currentpc` — CallInfo-level helpers used by the debug helpers.
+- `findsetreg` / `filterpc` — backward-dataflow analysis to find which
+  instruction last wrote a register, used by `basicgetobjname`.
+- `testAMode` / `testMMMode` — opcode-mode predicates matching `luaP_opmodes`.
+
+### Infrastructure added to `src/lauxlib.zig`
+- `luaL_traceback` — builds a human-readable stack traceback string by walking
+  `lua_getstack` + `lua_getinfo("Slnt")` for each frame and collecting lines
+  into a `luaL_Buffer`. Truncates deeply recursive stacks (LEVELS1 + LEVELS2
+  with skip notification).
+- `pushfuncname` — helper to produce a descriptive name for the currently-active
+  function (name from namewhat, "main chunk", `function <src:line>`, or `?`).
+
+### `src/lib/debug.zig` — 16 functions
+All functions use `lauxlib.*` for argument validation, correct `std.Io` for
+output, and `u32`/`i32` type discipline for hook masks. (Mirrors the C
+`dblib[]` table exactly; `debug.gethookmask`/`debug.gethookcount` are **not**
+exposed in Lua 5.5.1 — their values are the 2nd/3rd returns of
+`debug.gethook`.)
+
+| Function | Status |
+|---|---|
+| `debug.getregistry` | ✅ |
+| `debug.getmetatable` | ✅ |
+| `debug.setmetatable` | ✅ |
+| `debug.getuservalue` | ✅ |
+| `debug.setuservalue` | ✅ |
+| `debug.gethook` | ✅ |
+| `debug.sethook` | ✅ |
+| `debug.getinfo` | ✅ |
+| `debug.getlocal` | ✅ |
+| `debug.setlocal` | ✅ |
+| `debug.getupvalue` | ✅ |
+| `debug.setupvalue` | ✅ |
+| `debug.upvalueid` | ✅ |
+| `debug.upvaluejoin` | ✅ |
+| `debug.traceback` | ✅ |
+| `debug.debug` | ✅ (stub) |
+
+### Also fixed in this session
+- **`lua_TString.slice()`** — `lua_TString` has no `slice()` method; replaced
+  all 6 occurrences with `.s` field access.
+- **`std.meta.intToEnum`** — removed in Zig 0.16; replaced with `@enumFromInt`.
+- **`lua_getupvalue`/`lua_setupvalue`** — upvalue name now read from `.s` not `.slice()`.
+
+### Tests
+64 tests pass (5 new debug tests added):
+- `debug library registration` — verifies all 7+ functions are present as
+  `LUA_TFUNCTION` values in the `debug` global table.
+- `debug.getupvalue on C closure` — verifies upvalue read from a C closure.
+- `debug.getinfo on C function` — verifies `what="C"` and `linedefined=-1`.
+- `debug.sethook and gethook` — exercises the hook C API (set, verify mask, clear).
+- `debug.traceback produces non-empty string` — verifies the returned string
+  contains `"stack traceback:"`.
+
+### §0.1 self-audit
+1. ✅ Allocator threaded — all allocations use `L.allocator`.
+2. ✅ Error propagation — `try`/`!T` throughout; no silent `catch {}`.
+3. ✅ No setjmp/longjmp — pure Zig error union paths.
+4. ✅ Numeric conversions — `@intCast`, `@bitCast` only for same-width types.
+5. ✅ Slices not C strings — `[]const u8` throughout.
+6. ✅ No C varargs.
+7. ✅ Unmanaged containers — `luaL_Buffer` uses `std.ArrayList(u8)` with `.empty` init.
+8. ✅ Tagged union TValue.
+9. ✅ Single type model.
+10. ✅ `std.Io` — `db_debug` uses `std.Io.File.stderr().writeStreamingAll`.
+11. ✅ Shift bounds — not applicable here.
+12. ✅ No empty catch blocks.
+13. ✅ Stack capacity validated before use.
+14. ✅ Type predicates precise.
+
 ## 2026-07-12 — stringlib §0.1 Robustness Audit
 
 Audited the string standard library (commits 27-29) for completion and

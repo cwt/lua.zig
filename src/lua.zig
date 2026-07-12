@@ -1068,46 +1068,128 @@ pub fn lua_upvalueindex(i: i32) i32 {
 
 /// Get the value of upvalue `n` (1-based) of the C closure at the top of the
 /// current call frame.  Returns nil if `n` is out of range.
-pub fn lua_getupvalue(L: *lua_State, _: i32, n: i32) ?[]const u8 {
-    if (L.ci) |ci| {
-        const func_val = L.stack[ci.func];
-        if (func_val == .function) {
-            if (func_val.function) |cl| {
-                if (cl.* == .c) {
-                    const upn: usize = @intCast(n - 1);
-                    if (upn < cl.c.upvals.len) {
-                        L.stack[L.top] = cl.c.upvals[upn];
-                        L.top += 1;
-                        return ""; // unnamed upvalue
-                    }
+pub fn lua_getupvalue(L: *lua_State, funcindex: i32, n: i32) ?[]const u8 {
+    if (funcindex <= LUA_REGISTRYINDEX) return null;
+    const abs = toAbsoluteIndex(L, funcindex);
+    if (abs >= L.top) return null;
+    const func_val = L.stack[abs];
+    if (func_val != .function) return null;
+    const cl = func_val.function orelse return null;
+
+    const upn = n - 1;
+    if (upn < 0) return null;
+    switch (cl.*) {
+        .c => |ccl| {
+            if (upn >= ccl.upvals.len) return null;
+            L.stack[L.top] = ccl.upvals[@intCast(upn)];
+            L.top += 1;
+            return ""; // unnamed
+        },
+        .lua => |lcl| {
+            if (upn >= lcl.upvals.len) return null;
+            const uv = lcl.upvals[@intCast(upn)] orelse return null;
+            L.stack[L.top] = if (uv.index) |idx| L.stack[idx] else uv.value;
+            L.top += 1;
+            if (upn < lcl.p.upvalues.len) {
+                if (lcl.p.upvalues[@intCast(upn)].name) |name_ts| {
+                    return name_ts.s;
                 }
             }
-        }
+            return "(no name)";
+        },
     }
-    return null;
 }
 
-/// Set upvalue `n` (1-based) of the C closure at the current call frame to
-/// the value on top of the stack (pops it).  Returns the upvalue name or null
-/// when `n` is out of range.
-pub fn lua_setupvalue(L: *lua_State, _: i32, n: i32) ?[]const u8 {
+pub fn lua_setupvalue(L: *lua_State, funcindex: i32, n: i32) ?[]const u8 {
     if (L.top == 0) return null;
-    if (L.ci) |ci| {
-        const func_val = L.stack[ci.func];
-        if (func_val == .function) {
-            if (func_val.function) |cl| {
-                if (cl.* == .c) {
-                    const upn: usize = @intCast(n - 1);
-                    if (upn < cl.c.upvals.len) {
-                        cl.c.upvals[upn] = L.stack[L.top - 1];
-                        L.top -= 1;
-                        return "";
-                    }
+    if (funcindex <= LUA_REGISTRYINDEX) return null;
+    const abs = toAbsoluteIndex(L, funcindex);
+    if (abs >= L.top) return null;
+    const func_val = L.stack[abs];
+    if (func_val != .function) return null;
+    const cl = func_val.function orelse return null;
+
+    const upn = n - 1;
+    if (upn < 0) return null;
+    switch (cl.*) {
+        .c => |ccl| {
+            if (upn >= ccl.upvals.len) return null;
+            ccl.upvals[@intCast(upn)] = L.stack[L.top - 1];
+            L.top -= 1;
+            return ""; // unnamed
+        },
+        .lua => |lcl| {
+            if (upn >= lcl.upvals.len) return null;
+            const uv = lcl.upvals[@intCast(upn)] orelse return null;
+            const new_val = L.stack[L.top - 1];
+            if (uv.index) |idx| {
+                L.stack[idx] = new_val;
+            } else {
+                uv.value = new_val;
+            }
+            L.top -= 1;
+            if (upn < lcl.p.upvalues.len) {
+                if (lcl.p.upvalues[@intCast(upn)].name) |name_ts| {
+                    return name_ts.s;
                 }
             }
-        }
+            return "(no name)";
+        },
     }
-    return null;
+}
+
+pub fn lua_upvalueid(L: *lua_State, fidx: i32, n: i32) ?*anyopaque {
+    if (fidx <= LUA_REGISTRYINDEX) return null;
+    const abs = toAbsoluteIndex(L, fidx);
+    if (abs >= L.top) return null;
+    const func_val = L.stack[abs];
+    if (func_val != .function) return null;
+    const cl = func_val.function orelse return null;
+
+    const upn = n - 1;
+    if (upn < 0) return null;
+    switch (cl.*) {
+        .c => |ccl| {
+            if (upn >= ccl.upvals.len) return null;
+            return @ptrCast(&ccl.upvals[@intCast(upn)]);
+        },
+        .lua => |lcl| {
+            if (upn >= lcl.upvals.len) return null;
+            return @ptrCast(lcl.upvals[@intCast(upn)] orelse return null);
+        },
+    }
+}
+
+pub fn lua_upvaluejoin(L: *lua_State, fidx1: i32, n1: i32, fidx2: i32, n2: i32) void {
+    if (fidx1 <= LUA_REGISTRYINDEX or fidx2 <= LUA_REGISTRYINDEX) return;
+    const abs1 = toAbsoluteIndex(L, fidx1);
+    const abs2 = toAbsoluteIndex(L, fidx2);
+    if (abs1 >= L.top or abs2 >= L.top) return;
+
+    const func_val1 = L.stack[abs1];
+    const func_val2 = L.stack[abs2];
+    if (func_val1 != .function or func_val2 != .function) return;
+
+    const cl1 = func_val1.function orelse return;
+    const cl2 = func_val2.function orelse return;
+
+    const upn1 = n1 - 1;
+    const upn2 = n2 - 1;
+    if (upn1 < 0 or upn2 < 0) return;
+
+    switch (cl1.*) {
+        .lua => |lcl1| {
+            switch (cl2.*) {
+                .lua => |lcl2| {
+                    if (upn1 < lcl1.upvals.len and upn2 < lcl2.upvals.len) {
+                        lcl1.upvals[@intCast(upn1)] = lcl2.upvals[@intCast(upn2)];
+                    }
+                },
+                else => {},
+            }
+        },
+        else => {},
+    }
 }
 
 pub fn lua_pushboolean(L: *lua_State, b: i32) void {
@@ -1171,6 +1253,7 @@ pub fn lua_closethread(L: *lua_State, from: *lua_State) i32 {
 }
 
 pub fn lua_getstack(L: *lua_State, level: i32, ar: *lua_Debug) i32 {
+    if (level < 0) return 0;
     var ci: ?*CallInfo = L.ci;
     var lvl = level;
     while (lvl > 0 and ci != null) {
@@ -1183,6 +1266,654 @@ pub fn lua_getstack(L: *lua_State, level: i32, ar: *lua_Debug) i32 {
         return 1;
     }
     return 0;
+}
+
+pub fn lua_sethook(L: *lua_State, func: ?lua_Hook, mask: i32, count: i32) void {
+    var actual_func = func;
+    var actual_mask = mask;
+    if (func == null or mask == 0) {
+        actual_mask = 0;
+        actual_func = null;
+    }
+    L.hook = actual_func;
+    L.basehookcount = count;
+    L.hookcount = count;
+    L.hookmask = @intCast(actual_mask);
+}
+
+pub fn lua_gethook(L: *lua_State) ?lua_Hook {
+    return L.hook;
+}
+
+pub fn lua_gethookmask(L: *lua_State) i32 {
+    return L.hookmask;
+}
+
+pub fn lua_gethookcount(L: *lua_State) i32 {
+    return L.basehookcount;
+}
+
+fn testAMode(op: lvm.OpCode) bool {
+    return switch (op) {
+        .MOVE, .LOADI, .LOADF, .LOADK, .LOADKX, .LOADFALSE, .LFALSESKIP,
+        .LOADTRUE, .LOADNIL, .GETUPVAL, .GETTABUP, .GETTABLE, .GETI, .GETFIELD,
+        .NEWTABLE, .SELF, .ADDI, .ADDK, .SUBK, .MULK, .MODK, .POWK, .DIVK, .IDIVK,
+        .BANDK, .BORK, .BXORK, .SHLI, .SHRI, .ADD, .SUB, .MUL, .MOD, .POW, .DIV,
+        .IDIV, .BAND, .BOR, .BXOR, .SHL, .SHR, .UNM, .BNOT, .NOT, .LEN, .CONCAT,
+        .TESTSET, .CALL, .TAILCALL, .FORLOOP, .FORPREP, .TFORLOOP, .CLOSURE,
+        .VARARG, .GETVARG => true,
+        else => false,
+    };
+}
+
+fn testMMMode(op: lvm.OpCode) bool {
+    return switch (op) {
+        .MMBIN, .MMBINI, .MMBINK => true,
+        else => false,
+    };
+}
+
+fn filterpc(pc: i32, jmptarget: i32) i32 {
+    return if (pc < jmptarget) -1 else pc;
+}
+
+fn findsetreg(p: *const lua_Proto, lastpc: i32, reg: i32) i32 {
+    var pc: i32 = 0;
+    var setreg: i32 = -1;
+    var jmptarget: i32 = 0;
+    var lpc = lastpc;
+    if (lpc >= 0 and lpc < p.code.len) {
+        if (testMMMode(lvm.GET_OPCODE(p.code[@intCast(lpc)]))) {
+            lpc -= 1;
+        }
+    }
+    while (pc < lpc) {
+        const i = p.code[@intCast(pc)];
+        const op = lvm.GET_OPCODE(i);
+        const a = lvm.GETARG_A(i);
+        var change = false;
+        switch (op) {
+            .LOADNIL => {
+                const b = lvm.GETARG_B(i);
+                change = (a <= reg and reg <= a + b);
+            },
+            .TFORCALL => {
+                change = (reg >= a + 2);
+            },
+            .CALL, .TAILCALL => {
+                change = (reg >= a);
+            },
+            .JMP => {
+                const b = lvm.GETARG_sJ(i);
+                const dest = pc + 1 + b;
+                if (dest <= lpc and dest > jmptarget) {
+                    jmptarget = dest;
+                }
+                change = false;
+            },
+            else => {
+                change = (testAMode(op) and reg == a);
+            },
+        }
+        if (change) {
+            setreg = filterpc(pc, jmptarget);
+        }
+        pc += 1;
+    }
+    return setreg;
+}
+
+fn kname(p: *const lua_Proto, index: usize, name: *?[]const u8) ?[]const u8 {
+    if (index < p.k.len) {
+        const kvalue = p.k[index];
+        if (kvalue == .string) {
+            if (kvalue.string) |ts| {
+                name.* = ts.s;
+                return "constant";
+            }
+        }
+    }
+    name.* = "?";
+    return null;
+}
+
+fn upvalname(p: *const lua_Proto, uv: usize) []const u8 {
+    if (uv < p.upvalues.len) {
+        if (p.upvalues[uv].name) |s| {
+            return s.s;
+        }
+    }
+    return "?";
+}
+
+fn basicgetobjname(p: *const lua_Proto, ppc: *i32, reg: i32, name: *?[]const u8) ?[]const u8 {
+    var pc = ppc.*;
+    if (luaF_getlocalname(p, reg + 1, pc)) |ln| {
+        name.* = ln;
+        return "local";
+    }
+    ppc.* = findsetreg(p, pc, reg);
+    pc = ppc.*;
+    if (pc != -1) {
+        const i = p.code[@intCast(pc)];
+        const op = lvm.GET_OPCODE(i);
+        switch (op) {
+            .MOVE => {
+                const b = lvm.GETARG_B(i);
+                if (b < lvm.GETARG_A(i)) {
+                    return basicgetobjname(p, ppc, b, name);
+                }
+            },
+            .GETUPVAL => {
+                name.* = upvalname(p, @intCast(lvm.GETARG_B(i)));
+                return "upvalue";
+            },
+            .LOADK => {
+                return kname(p, @intCast(lvm.GETARG_Bx(i)), name);
+            },
+            .LOADKX => {
+                const extra = p.code[@intCast(pc + 1)];
+                return kname(p, @intCast(lvm.GETARG_Ax(extra)), name);
+            },
+            else => {},
+        }
+    }
+    return null;
+}
+
+fn isEnv(p: *const lua_Proto, pc: i32, i: lvm.Instruction, isup: bool) []const u8 {
+    const t = lvm.GETARG_B(i);
+    var name: ?[]const u8 = null;
+    if (isup) {
+        name = upvalname(p, @intCast(t));
+    } else {
+        var pc_copy = pc;
+        const what = basicgetobjname(p, &pc_copy, t, &name);
+        if (what == null or (!std.mem.eql(u8, what.?, "local") and !std.mem.eql(u8, what.?, "upvalue"))) {
+            name = null;
+        }
+    }
+    return if (name != null and std.mem.eql(u8, name.?, "_ENV")) "global" else "field";
+}
+
+fn rname(p: *const lua_Proto, pc: i32, c: i32, name: *?[]const u8) void {
+    var pc_copy = pc;
+    const what = basicgetobjname(p, &pc_copy, c, name);
+    if (what == null or what.?[0] != 'c') { // "constant" starts with 'c'
+        name.* = "?";
+    }
+}
+
+fn getobjname(p: *const lua_Proto, lastpc: i32, reg: i32, name: *?[]const u8) ?[]const u8 {
+    var lastpc_copy = lastpc;
+    if (basicgetobjname(p, &lastpc_copy, reg, name)) |kind| {
+        return kind;
+    } else if (lastpc_copy != -1) {
+        const i = p.code[@intCast(lastpc_copy)];
+        const op = lvm.GET_OPCODE(i);
+        switch (op) {
+            .GETTABUP => {
+                const k = lvm.GETARG_C(i);
+                _ = kname(p, @intCast(k), name);
+                return isEnv(p, lastpc_copy, i, true);
+            },
+            .GETTABLE, .GETVARG => {
+                const k = lvm.GETARG_C(i);
+                rname(p, lastpc_copy, k, name);
+                return isEnv(p, lastpc_copy, i, false);
+            },
+            .GETI => {
+                name.* = "integer index";
+                return "field";
+            },
+            .GETFIELD => {
+                const k = lvm.GETARG_C(i);
+                _ = kname(p, @intCast(k), name);
+                return isEnv(p, lastpc_copy, i, false);
+            },
+            .SELF => {
+                const k = lvm.GETARG_C(i);
+                _ = kname(p, @intCast(k), name);
+                return "method";
+            },
+            else => {},
+        }
+    }
+    return null;
+}
+
+fn funcnamefromcode(L: *lua_State, p: *const lua_Proto, pc: i32, name: *?[]const u8) ?[]const u8 {
+    const i = p.code[@intCast(pc)];
+    const op = lvm.GET_OPCODE(i);
+    var tm: ?@import("ltm.zig").TMS = null;
+    switch (op) {
+        .CALL, .TAILCALL => {
+            return getobjname(p, pc, lvm.GETARG_A(i), name);
+        },
+        .TFORCALL => {
+            name.* = "for iterator";
+            return "for iterator";
+        },
+        .SELF, .GETTABUP, .GETTABLE, .GETI, .GETFIELD => {
+            tm = .INDEX;
+        },
+        .SETTABUP, .SETTABLE, .SETI, .SETFIELD => {
+            tm = .NEWINDEX;
+        },
+        .MMBIN, .MMBINI, .MMBINK => {
+            const tm_idx = lvm.GETARG_C(i);
+            const TMS = @import("ltm.zig").TMS;
+            if (tm_idx >= 0 and tm_idx < @typeInfo(TMS).@"enum".fields.len) {
+                tm = @enumFromInt(tm_idx);
+            }
+        },
+        .UNM => tm = .UNM,
+        .BNOT => tm = .BNOT,
+        .LEN => tm = .LEN,
+        .CONCAT => tm = .CONCAT,
+        .EQ => tm = .EQ,
+        .LT, .LTI, .GTI => tm = .LT,
+        .LE, .LEI, .GEI => tm = .LE,
+        .CLOSE, .RETURN => tm = .CLOSE,
+        else => return null,
+    }
+    if (tm) |t| {
+        const idx = @intFromEnum(t);
+        if (L.l_G.?.tmname[idx]) |ts| {
+            name.* = ts.s;
+            return "metamethod";
+        }
+    }
+    return null;
+}
+
+fn funcnamefromcall(L: *lua_State, ci: *CallInfo, name: *?[]const u8) ?[]const u8 {
+    if (isLua(ci, L)) {
+        const val = L.stack[ci.func];
+        if (val == .function) {
+            if (val.function) |cl| {
+                if (cl.* == .lua) {
+                    return funcnamefromcode(L, cl.lua.p, currentpc(ci), name);
+                }
+            }
+        }
+    }
+    return null;
+}
+
+fn getfuncname(L: *lua_State, ci: ?*CallInfo, name: *?[]const u8) ?[]const u8 {
+    if (ci) |c| {
+        if (c.previous) |prev| {
+            if (prev != &L.base_ci) {
+                return funcnamefromcall(L, prev, name);
+            }
+        }
+    }
+    return null;
+}
+
+pub fn isLua(ci: *CallInfo, L: *lua_State) bool {
+    const val = L.stack[ci.func];
+    if (val == .function) {
+        if (val.function) |cl| {
+            return cl.* == .lua;
+        }
+    }
+    return false;
+}
+
+pub fn currentpc(ci: *CallInfo) i32 {
+    if (ci.savedpc == 0) return 0;
+    return @intCast(ci.savedpc - 1);
+}
+
+pub fn luaF_getlocalname(f: *const lua_Proto, local_number: i32, pc: i32) ?[]const u8 {
+    var lnum = local_number;
+    for (f.locvars) |lv| {
+        if (lv.startpc <= pc) {
+            if (pc < lv.endpc) {
+                lnum -= 1;
+                if (lnum == 0) {
+                    if (lv.varname) |ts| {
+                        return ts.s;
+                    }
+                    return null;
+                }
+            }
+        }
+    }
+    return null;
+}
+
+pub fn luaG_findlocal(L: *lua_State, ci: *CallInfo, n: i32, pos: *?usize) ?[]const u8 {
+    const base = ci.base;
+    var name: ?[]const u8 = null;
+    const is_lua = isLua(ci, L);
+    if (is_lua) {
+        if (n < 0) {
+            return null;
+        } else {
+            const val = L.stack[ci.func];
+            if (val == .function) {
+                if (val.function) |cl| {
+                    if (cl.* == .lua) {
+                        name = luaF_getlocalname(cl.lua.p, n, currentpc(ci));
+                    }
+                }
+            }
+        }
+    }
+    if (name == null) {
+        const limit = if (ci.next) |next| next.func else L.top;
+        const un = @as(usize, @intCast(n));
+        if (n > 0 and limit >= base + un) {
+            name = if (is_lua) "(temporary)" else "(C temporary)";
+        } else {
+            return null;
+        }
+    }
+    pos.* = base + @as(usize, @intCast(n - 1));
+    return name;
+}
+
+pub fn lua_getlocal(L: *lua_State, ar: ?*const lua_Debug, n: i32) ?[]const u8 {
+    var name: ?[]const u8 = null;
+    if (ar == null) {
+        if (L.top > 0) {
+            const val = L.stack[L.top - 1];
+            if (val == .function) {
+                if (val.function) |cl| {
+                    if (cl.* == .lua) {
+                        name = luaF_getlocalname(cl.lua.p, n, 0);
+                    }
+                }
+            }
+        }
+    } else {
+        const ci = ar.?.i_ci orelse return null;
+        var pos: ?usize = null;
+        name = luaG_findlocal(L, ci, n, &pos);
+        if (name != null and pos != null) {
+            L.stack[L.top] = L.stack[pos.?];
+            L.top += 1;
+        }
+    }
+    return name;
+}
+
+pub fn lua_setlocal(L: *lua_State, ar: ?*const lua_Debug, n: i32) ?[]const u8 {
+    if (L.top == 0) return null;
+    const ci = ar.?.i_ci orelse return null;
+    var pos: ?usize = null;
+    const name = luaG_findlocal(L, ci, n, &pos);
+    if (name != null and pos != null) {
+        L.stack[pos.?] = L.stack[L.top - 1];
+        L.top -= 1;
+    }
+    return name;
+}
+
+pub fn luaO_chunkid(out: *[LUA_IDSIZE]u8, source: []const u8) void {
+    const bufflen = LUA_IDSIZE;
+    @memset(out, 0);
+
+    if (source.len == 0) return;
+
+    if (source[0] == '=') {
+        const src = source[1..];
+        const len = @min(src.len, bufflen - 1);
+        @memcpy(out[0..len], src[0..len]);
+    } else if (source[0] == '@') {
+        const src = source[1..];
+        if (src.len < bufflen) {
+            @memcpy(out[0..src.len], src);
+        } else {
+            const RETS = "...";
+            const rets_len = RETS.len;
+            @memcpy(out[0..rets_len], RETS);
+            const remaining = bufflen - rets_len - 1;
+            const start = src.len - remaining;
+            @memcpy(out[rets_len .. rets_len + remaining], src[start..]);
+        }
+    } else {
+        const PRE = "[string \"";
+        const POS = "\"]";
+        const RETS = "...";
+
+        var nl_idx: ?usize = null;
+        for (source, 0..) |c, idx| {
+            if (c == '\n') {
+                nl_idx = idx;
+                break;
+            }
+        }
+
+        const reserved = PRE.len + RETS.len + POS.len + 1;
+        const limit = if (bufflen > reserved) bufflen - reserved else 0;
+
+        var write_idx: usize = 0;
+        @memcpy(out[write_idx .. write_idx + PRE.len], PRE);
+        write_idx += PRE.len;
+
+        var srclen = source.len;
+        if (nl_idx) |idx| {
+            srclen = idx;
+        }
+
+        if (srclen <= limit and nl_idx == null) {
+            @memcpy(out[write_idx .. write_idx + srclen], source[0..srclen]);
+            write_idx += srclen;
+        } else {
+            const len = @min(srclen, limit);
+            @memcpy(out[write_idx .. write_idx + len], source[0..len]);
+            write_idx += len;
+            @memcpy(out[write_idx .. write_idx + RETS.len], RETS);
+            write_idx += RETS.len;
+        }
+        @memcpy(out[write_idx .. write_idx + POS.len], POS);
+    }
+}
+
+fn funcinfo(ar: *lua_Debug, cl: *lua_Closure) void {
+    switch (cl.*) {
+        .c => {
+            ar.source = "=[C]";
+            ar.srclen = "=[C]".len;
+            ar.linedefined = -1;
+            ar.lastlinedefined = -1;
+            ar.what = "C";
+        },
+        .lua => |lcl| {
+            const p = lcl.p;
+            if (p.source) |src_ts| {
+                ar.source = src_ts.s;
+                ar.srclen = ar.source.?.len;
+            } else {
+                ar.source = "=?";
+                ar.srclen = "=?".len;
+            }
+            ar.linedefined = p.lineDefined;
+            ar.lastlinedefined = p.lastLineDefined;
+            ar.what = if (ar.linedefined == 0) "main" else "Lua";
+        },
+    }
+    if (ar.source) |src| {
+        luaO_chunkid(&ar.short_src, src);
+    } else {
+        luaO_chunkid(&ar.short_src, "=*");
+    }
+}
+
+fn getcurrentline(ci: *CallInfo, L: *lua_State) i32 {
+    const val = L.stack[ci.func];
+    if (val == .function) {
+        if (val.function) |cl| {
+            if (cl.* == .lua) {
+                return luaG_getfuncline(cl.lua.p, currentpc(ci));
+            }
+        }
+    }
+    return -1;
+}
+
+pub fn luaG_getfuncline(f: *const lua_Proto, pc: i32) i32 {
+    if (f.lineinfo.len == 0) {
+        return -1;
+    } else {
+        var basepc: i32 = undefined;
+        var baseline = getbaseline(f, pc, &basepc);
+        basepc += 1;
+        while (basepc < pc) {
+            if (basepc < f.lineinfo.len) {
+                baseline += f.lineinfo[@intCast(basepc)];
+            }
+            basepc += 1;
+        }
+        return baseline;
+    }
+}
+
+fn getbaseline(f: *const lua_Proto, pc: i32, basepc: *i32) i32 {
+    const sizeabs = f.abslineinfo.len;
+    if (sizeabs == 0 or pc < f.abslineinfo[0].pc) {
+        basepc.* = -1;
+        return f.lineDefined;
+    } else {
+        var i = @divTrunc(pc, 128) - 1;
+        if (i < 0) {
+            i = 0;
+        } else if (i >= sizeabs) {
+            i = @intCast(sizeabs - 1);
+        }
+        while (i + 1 < sizeabs and pc >= f.abslineinfo[@intCast(i + 1)].pc) {
+            i += 1;
+        }
+        basepc.* = f.abslineinfo[@intCast(i)].pc;
+        return f.abslineinfo[@intCast(i)].line;
+    }
+}
+
+fn collectvalidlines(L: *lua_State, cl: *lua_Closure) !void {
+    switch (cl.*) {
+        .c => {
+            L.stack[L.top] = .{ .nil = {} };
+            L.top += 1;
+        },
+        .lua => |lcl| {
+            const p = lcl.p;
+            lua_createtable(L, 0, 0);
+            const tbl_idx = L.top - 1;
+            if (p.lineinfo.len > 0) {
+                var currentline = p.lineDefined;
+                var i: usize = 0;
+                if (p.isVarArg) {
+                    currentline = nextline(p, currentline, 0);
+                    i = 1;
+                }
+                while (i < p.lineinfo.len) {
+                    currentline = nextline(p, currentline, @intCast(i));
+                    lua_pushboolean(L, 1);
+                    try lua_seti(L, @intCast(tbl_idx), currentline);
+                    i += 1;
+                }
+            }
+        },
+    }
+}
+
+fn nextline(p: *const lua_Proto, currentline: i32, pc: i32) i32 {
+    if (pc < p.lineinfo.len) {
+        if (p.lineinfo[@intCast(pc)] != -128) {
+            return currentline + p.lineinfo[@intCast(pc)];
+        } else {
+            return luaG_getfuncline(p, pc);
+        }
+    }
+    return currentline;
+}
+
+pub fn lua_getinfo(L: *lua_State, what: []const u8, ar: *lua_Debug) !i32 {
+    var status: i32 = 1;
+    var ci = ar.i_ci;
+    var func_val: TValue = undefined;
+    var what_str = what;
+
+    if (what_str.len > 0 and what_str[0] == '>') {
+        ci = null;
+        if (L.top == 0) return 0;
+        func_val = L.stack[L.top - 1];
+        L.top -= 1;
+        what_str = what_str[1..];
+    } else {
+        if (ci) |c| {
+            func_val = L.stack[c.func];
+        } else {
+            return 0;
+        }
+    }
+
+    if (func_val != .function) return 0;
+    const cl = func_val.function orelse return 0;
+
+    for (what_str) |c| {
+        switch (c) {
+            'S' => {
+                funcinfo(ar, cl);
+            },
+            'l' => {
+                ar.currentline = if (ci != null and isLua(ci.?, L)) getcurrentline(ci.?, L) else -1;
+            },
+            'u' => {
+                switch (cl.*) {
+                    .c => |ccl| {
+                        ar.nups = @intCast(ccl.upvals.len);
+                        ar.isvararg = true;
+                        ar.nparams = 0;
+                    },
+                    .lua => |lcl| {
+                        ar.nups = @intCast(lcl.upvals.len);
+                        ar.isvararg = lcl.p.isVarArg;
+                        ar.nparams = lcl.p.numParams;
+                    },
+                }
+            },
+            't' => {
+                ar.istailcall = false;
+                ar.extraargs = 0;
+            },
+            'n' => {
+                var name_opt: ?[]const u8 = null;
+                ar.namewhat = getfuncname(L, ci, &name_opt);
+                if (ar.namewhat) |_| {
+                    ar.name = name_opt;
+                } else {
+                    ar.namewhat = "";
+                    ar.name = null;
+                }
+            },
+            'r' => {
+                ar.ftransfer = 0;
+                ar.ntransfer = 0;
+            },
+            'L', 'f' => {},
+            else => {
+                status = 0;
+            },
+        }
+    }
+
+    var i: usize = 0;
+    while (i < what_str.len) : (i += 1) {
+        const c = what_str[i];
+        if (c == 'f') {
+            L.stack[L.top] = func_val;
+            L.top += 1;
+        } else if (c == 'L') {
+            try collectvalidlines(L, cl);
+        }
+    }
+
+    return status;
 }
 
 pub fn lua_pushthread(L: *lua_State) i32 {

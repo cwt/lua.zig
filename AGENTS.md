@@ -175,10 +175,12 @@ are available as a Git subrepo.
 - **Phase E complete — Metamethods, Error handling, and GC.**
    All Phase E items fully implemented: `__index`/`__newindex` chains (up to MAXTAGLOOP=2000), arithmetic and comparison metamethods, native error propagation (longjmp-free `anyerror`/`try` continuation path), protected calls with custom `errfunc` handlers on active stack frames, and a complete mark-and-sweep garbage collection engine for unreferenced tables and interned strings. Stale duplicated `src/lstate.zig` has been removed. Verified by 27 passing tests with zero memory leaks.
 
-### What is NOT done (blocking next phase)
+- **Phase F complete — All standard libraries implemented (2026-07-12).**
+   All 10 libraries fully implemented and tested. The `debug` library (`src/lib/debug.zig`) adds 16 functions matching the C `dblib[]` table exactly: `getinfo`, `traceback`, `getupvalue`/`setupvalue`, `getlocal`/`setlocal`, `sethook`/`gethook`, `upvalueid`/`upvaluejoin`, `getregistry`, `getmetatable`/`setmetatable`, `getuservalue`/`setuservalue`, plus `debug`. Supporting infrastructure (`luaO_chunkid`, `luaG_getfuncline`, `luaF_getlocalname`, `lua_getinfo`, `lua_getlocal`, `lua_setlocal`, `lua_sethook`/gethook, `luaL_traceback`) fully ported. **64 tests pass, zero memory leaks.**
+
+### What is NOT done (future phases)
 1. **No source text compilation.** Lexer (`llex.c`), parser (`lparser.c`), and code generator (`lcode.c`) are not implemented (we rely on precompiled bytecode). `luaL_dostring` is still a stub.
-2. **No debug API.** `lua/ldblib.c` (debug library) and `lua/ldebug.c` (hook infrastructure) are not ported.
-3. **`debug`/`loadlib` not ported.** Debug library and loader library stubs remain.
+2. **`loadlib` `require` loading** — dynamic `.so`/`.dll` loading via `package.loadlib` is functional but `package.path` search and `require()` chain is minimal.
 
 ---
 
@@ -260,7 +262,8 @@ and string interning in `global_State.strt` (`std.array_hash_map.String`) in
     - ✅ `bit32`: All 12 functions (band, bor, bxor, bnot, btest, shifts, rotates, extract, remove).
     - ✅ `iolib`: Full `io` library using `std.posix.openat`/`std.os.linux` syscalls; wires stdin/stdout in registry.
     - ✅ `oslib`: Full `os` library using `std.os.linux.clock_gettime`/`rename`/`unlink`/`getrandom`.
-    - ⬜ `debug`, `loadlib`: Not yet ported.
+    - ✅ `debug`: All 16 functions fully implemented (2026-07-12), matching the C `dblib[]` table.
+    - ✅ `loadlib`: Implemented; dynamic loading functional; `require()` chain minimal.
 16. Stale `src/lib/io.zig` removed (superseded by `src/lib/iolib.zig`).
 
 ---

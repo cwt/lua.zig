@@ -22,6 +22,7 @@ const tablib = @import("lib/tablib.zig");
 const corolib = @import("lib/corolib.zig");
 const iolib = @import("lib/iolib.zig");
 const oslib = @import("lib/oslib.zig");
+const debug = @import("lib/debug.zig");
 
 pub fn openbaselib(L: *lua.lua_State) !void {
     try baselib.openbaselib(L);
@@ -95,9 +96,8 @@ pub fn openloadlib(L: *lua.lua_State) !void {
 // ===================================================================
 
 pub fn opendbalib(L: *lua.lua_State) !void {
-    const debug = L;
-    _ = debug;
-    // Register debug library functions
+    try debug.opendbalib(L);
+    lua.lua_setglobal(L, "debug");
 }
 
 // ===================================================================
