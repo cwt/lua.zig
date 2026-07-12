@@ -17,7 +17,7 @@ Zig rather than the C inverted bit-packed layout (per AGENTS.md §0.1):
 pub const Node = struct {
     key: TValue,
     val: TValue,
-    next: i32, // absolute node index, 0 = end of chain
+    next: i32, // absolute node index, -1 = end of chain
 };
 
 pub const lua_Table = struct {

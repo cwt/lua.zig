@@ -119,14 +119,14 @@ fn insertInto(list: []Node, key: TValue, val: TValue) bool {
     var n = mp;
     while (true) {
         if (list[n].key == .nil) {
-            list[n] = .{ .key = key, .val = val, .next = 0 };
+            list[n] = .{ .key = key, .val = val, .next = -1 };
             return true;
         }
         if (keyEquals(list[n].key, key)) {
             list[n].val = val;
             return true;
         }
-        if (list[n].next == 0) break;
+        if (list[n].next == -1) break;
         n = @intCast(list[n].next);
     }
     // search a free slot from the end
@@ -148,7 +148,7 @@ fn growNode(t: *Table) !void {
     var newlist = std.ArrayList(Node).empty;
     try newlist.ensureTotalCapacity(t.allocator, newlen);
     newlist.items.len = newlen;
-    @memset(newlist.items, Node{ .key = TValue{ .nil = {} }, .val = TValue{ .nil = {} }, .next = 0 });
+    @memset(newlist.items, Node{ .key = TValue{ .nil = {} }, .val = TValue{ .nil = {} }, .next = -1 });
     for (t.node.items) |nd| {
         if (nd.key != .nil and nd.val != .nil) {
             _ = insertInto(newlist.items, nd.key, nd.val);
@@ -172,10 +172,10 @@ fn removeFromHash(t: *Table, key: TValue) void {
             if (prev) |p| {
                 t.node.items[p].next = t.node.items[n].next;
             }
-            t.node.items[n] = .{ .key = TValue{ .nil = {} }, .val = TValue{ .nil = {} }, .next = 0 };
+            t.node.items[n] = .{ .key = TValue{ .nil = {} }, .val = TValue{ .nil = {} }, .next = -1 };
             return;
         }
-        if (t.node.items[n].next == 0) return;
+        if (t.node.items[n].next == -1) return;
         prev = n;
         n = @intCast(t.node.items[n].next);
     }
@@ -190,7 +190,7 @@ fn findNodeIndex(t: *Table, key: TValue) ?usize {
     while (true) {
         if (t.node.items[n].key == .nil) return null;
         if (keyEquals(t.node.items[n].key, key)) return n;
-        if (t.node.items[n].next == 0) return null;
+        if (t.node.items[n].next == -1) return null;
         n = @intCast(t.node.items[n].next);
     }
 }
@@ -210,7 +210,7 @@ pub fn createTable(allocator: std.mem.Allocator, narr: usize, nrec: usize) !*Tab
     const nhash = computeHashSize(nrec);
     var j: usize = 0;
     while (j < nhash) : (j += 1) {
-        try node.append(allocator, Node{ .key = TValue{ .nil = {} }, .val = TValue{ .nil = {} }, .next = 0 });
+        try node.append(allocator, Node{ .key = TValue{ .nil = {} }, .val = TValue{ .nil = {} }, .next = -1 });
     }
     t.* = .{
         .allocator = allocator,
@@ -255,7 +255,7 @@ fn getHash(t: *Table, key: TValue) TValue {
     while (true) {
         if (t.node.items[n].key == .nil) return TValue{ .nil = {} };
         if (keyEquals(t.node.items[n].key, key)) return t.node.items[n].val;
-        if (t.node.items[n].next == 0) return TValue{ .nil = {} };
+        if (t.node.items[n].next == -1) return TValue{ .nil = {} };
         n = @intCast(t.node.items[n].next);
     }
 }
@@ -311,7 +311,7 @@ fn setHash(t: *Table, key: TValue, val: TValue) !void {
                 t.node.items[n].val = val;
                 return;
             }
-            if (t.node.items[n].next == 0) break;
+            if (t.node.items[n].next == -1) break;
             n = @intCast(t.node.items[n].next);
         }
     }
@@ -326,7 +326,7 @@ fn setHash(t: *Table, key: TValue, val: TValue) !void {
     const newlen = t.node.items.len;
     const mp = hashKey(key, newlen);
     if (t.node.items[mp].key == .nil) {
-        t.node.items[mp] = .{ .key = key, .val = val, .next = 0 };
+        t.node.items[mp] = .{ .key = key, .val = val, .next = -1 };
     } else {
         t.node.items[f] = .{ .key = key, .val = val, .next = t.node.items[mp].next };
         t.node.items[mp].next = @intCast(f);

@@ -849,3 +849,51 @@ Fixed the three-blocker chain that prevented `lua_resume`/`lua_yieldk` from work
 
 ### Verification
 `zig build test` passes: **51/51 tests** (same count — no new tests added for these fixes, all covered by existing io/os/coroutine tests), zero memory leaks.
+
+---
+
+## 2026-07-12 — BUG-027–030: loadlib, require, and ltable chaining bugs fixed
+
+### Changes
+
+- **`src/ltable.zig`**: Changed `Node.next` sentinel value from `0` to `-1` (and all checks) because `0` is a valid node index in the scatter-table hash part. Using `0` as a sentinel prevented chaining/reachability of nodes placed at index `0` during collision resolution, causing colliding keys (such as `preload`) to return `nil` on lookup.
+- **`src/lib/loadlib.zig`**:
+  - Removed incorrect `defer lua_pop` statements in `findfile`, `searcher_preload`, and `searcher_Croot` that popped wrong stack elements on return.
+  - Registered `require` closure with the `package` table as its upvalue, matching the Lua reference, and updated `findloader` to retrieve searchers from this upvalue using `lua_upvalueindex(1)`.
+  - Resolved `path` memory leaks in `searchpath` by using `defer L.allocator.free(path)` and returning a GC-managed copy via `lua.lua_tostring(L, -1).?`.
+  - Corrected stack layout in `ll_require` using absolute stack index `2` for `_LOADED` instead of incorrect relative offsets.
+- **`tests/test_min.zig`** + **`tests/test_basic.zig`**: Updated the `require non-existent module fails` test to assert `lua_pcall` returns `LUA_ERRRUN` (2) on error instead of expecting `LUA_OK`.
+- **`build.zig`**: Restored the test root source file to `tests/test_basic.zig`.
+
+### §0.1 Self-Audit
+
+- Allocator threaded: Used `L.allocator` for memory management; resolved leaks in `searchpath`.
+- Errors propagated: Correctly preserved and propagated error returns from `lua_pcall`.
+- No memory leaks: Fully verified that `std.testing.allocator` reports 0 memory leaks across the entire test suite.
+
+### Verification
+
+`zig build test` passes: **58/58 tests** (51 previous + 7 package/require integration tests), zero memory leaks.
+
+---
+
+## 2026-07-12 — Phase F: Completed package/loadlib Environment variable lookup
+
+### Changes
+
+- **`src/lauxlib.zig`**: Implemented `luaL_getenv` which accesses `/proc/self/environ` directly under Linux to support thread-safe, global-state-free environment variable lookup matching Zig 0.16.0 constraints.
+- **`src/lib/loadlib.zig`**: Completed `setpath` implementation to query versioned (`LUA_PATH_5_5`/`LUA_CPATH_5_5`) and unversioned (`LUA_PATH`/`LUA_CPATH`) environment variables, falling back to defaults, and handling `;;` default path insertion replacement via `luaL_Buffer`.
+- **`src/lib/oslib.zig`**: Updated `os_getenv` to leverage the new `luaL_getenv` helper.
+- **`tests/test_basic.zig`**: Added a new integration test `"os.getenv environment variable lookup"` verifying correct retrieval of standard environment variables like `PATH` and return of `nil` on nonexistent variables.
+
+### §0.1 Self-Audit
+
+- Allocator threaded: `luaL_getenv` accepts an explicit allocator.
+- Errors propagated: Properly handled buffer allocation errors during path construction.
+- No memory leaks: Verified that `luaL_getenv` allocations are fully deallocated correctly.
+
+### Verification
+
+`zig build test` passes: **59/59 tests** (58 previous + 1 getenv integration test), zero memory leaks.
+
+

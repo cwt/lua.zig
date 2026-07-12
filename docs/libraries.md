@@ -133,7 +133,8 @@ Verified by 44 passing tests (1 dedicated coroutine yield/resume test).
 
 Functions: `require`, `searchpath`, `preload`, `loadlib`
 
-Requires module search logic and dynamic loading. On Zig, consider whether `@cImport` for `dlopen` is acceptable or if a pure-Zig approach exists.
+Current status: **fully implemented** — Uses Zig's `std.DynLib` for platform-native dynamic library loading (`lsys_load`/`lsys_sym`/`lsys_unloadlib`). Integrated `luaL_getenv` (via Linux `/proc/self/environ`) to safely support versioned/unversioned path environment variables and default path interpolation (`;;`) without relying on global state.
+
 
 ### debug (`lua/ldblib.c`)
 

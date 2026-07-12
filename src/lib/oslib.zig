@@ -68,7 +68,11 @@ fn os_getenv(L_: *L) !i32 {
         lua.lua_pushnil(L_);
         return 1;
     };
-    _ = name;
+    if (lauxlib.luaL_getenv(L_.allocator, name)) |val| {
+        defer L_.allocator.free(val);
+        _ = lua.lua_pushlstring(L_, val, val.len);
+        return 1;
+    }
     lua.lua_pushnil(L_);
     return 1;
 }

@@ -84,10 +84,10 @@ pub fn openio(L: *lua.lua_State) !void {
 // Loadlib
 // ===================================================================
 
+const loadlib = @import("lib/loadlib.zig");
+
 pub fn openloadlib(L: *lua.lua_State) !void {
-    const load = L;
-    _ = load;
-    // Register loadlib functions
+    try loadlib.openloadlib(L);
 }
 
 // ===================================================================

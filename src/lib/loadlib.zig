@@ -1,50 +1,504 @@
-/*
-** $Id: loadlib.zig
-** Load library functionality for Zua (Zig port of Lua 5.5.1)
-** See Copyright Notice in c_compat.zig
-*/
-
 const std = @import("std");
-const lua = @import("lua.zig");
-const lprefix = @import("lprefix.zig");
-const llimits = @import("llimits.zig");
+const lua = @import("../lua.zig");
+const lauxlib = @import("../lauxlib.zig");
+const luaconf = @import("../luaconf.zig");
+const llimits = @import("../llimits.zig");
 
-// ===================================================================
-// Load library functions
-// ===================================================================
+const CLIBS = "_CLIBS";
+const LUA_POF = "luaopen_";
+const LUA_OFSEP = "_";
+const LIB_FAIL = "open";
+const LUA_VERSUFFIX = "_5_5";
 
-pub fn openloadlib(L: *lua_State) !void {
-    // package.loadlib(path, init)
-    lua.lua_pushcfunction(L, loadlib);
-    lua.lua_setfield(L, -1, "loadlib");
+const ERRLIB = 1;
+const ERRFUNC = 2;
 
-    // package.searchpath(name, path [, sep [, dirsep]])
-    lua.lua_pushcfunction(L, searchpath);
-    lua.lua_setfield(L, -1, "searchpath");
+fn pushliteral(L: *lua.lua_State, s: []const u8) void {
+    _ = lua.lua_pushstring(L, s);
 }
 
-// ===================================================================
-// Load library function implementations
-// ===================================================================
-
-fn loadlib(L: *lua_State) i32 {
-    const path = luaL_checklstring(L, 1, null);
-    const init = luaL_checklstring(L, 2, null);
-    if (path and init) |p| {
-        // Would load dynamic library and return function
-        lua.lua_pushnil(L);
-        return 1;
-    }
-    return 0;
+fn readable(L: *lua.lua_State, filename: []const u8) bool {
+    const file = std.Io.Dir.cwd().openFile(L.l_G.?.io, filename, .{ .mode = .read_only }) catch return false;
+    file.close(L.l_G.?.io);
+    return true;
 }
 
-fn searchpath(L: *lua_State) i32 {
-    const name = luaL_checklstring(L, 1, null);
-    const path = luaL_checklstring(L, 2, null);
-    if (name and path) |n| {
-        // Would search for file on path
-        lua.lua_pushnil(L);
+fn noenv(L: *lua.lua_State) bool {
+    _ = lua.lua_getfield(L, lua.LUA_REGISTRYINDEX, "LUA_NOENV") catch return false;
+    const b = lua.lua_toboolean(L, -1) != 0;
+    lua.lua_pop(L, 1);
+    return b;
+}
+
+fn lsys_load(L: *lua.lua_State, path: []const u8, seeglb: bool) ?*std.DynLib {
+    _ = seeglb;
+    const path_z = L.allocator.allocSentinel(u8, path.len, 0) catch {
+        pushliteral(L, "out of memory");
+        return null;
+    };
+    defer L.allocator.free(path_z);
+    @memcpy(path_z[0..path.len], path);
+
+    const lib = L.allocator.create(std.DynLib) catch {
+        pushliteral(L, "out of memory");
+        return null;
+    };
+    lib.* = std.DynLib.open(path_z) catch |err| {
+        L.allocator.destroy(lib);
+        const msg = std.fmt.allocPrint(L.allocator, "cannot open library: {}", .{err}) catch {
+            pushliteral(L, "cannot open library");
+            return null;
+        };
+        defer L.allocator.free(msg);
+        _ = lua.lua_pushlstring(L, msg, msg.len);
+        return null;
+    };
+    return lib;
+}
+
+fn lsys_sym(L: *lua.lua_State, lib: *std.DynLib, sym: []const u8) ?lua.lua_CFunction {
+    const sym_z = L.allocator.allocSentinel(u8, sym.len, 0) catch {
+        pushliteral(L, "out of memory");
+        return null;
+    };
+    defer L.allocator.free(sym_z);
+    @memcpy(sym_z[0..sym.len], sym);
+
+    const ptr = lib.lookup(*anyopaque, sym_z) orelse {
+        pushliteral(L, "symbol not found");
+        return null;
+    };
+    return @ptrCast(@alignCast(ptr));
+}
+
+fn lsys_unloadlib(lib: *std.DynLib) void {
+    lib.close();
+}
+
+fn checkclib(L: *lua.lua_State, path: []const u8) ?*std.DynLib {
+    _ = lua.lua_getfield(L, lua.LUA_REGISTRYINDEX, CLIBS) catch return null;
+    defer lua.lua_pop(L, 1);
+    _ = lua.lua_getfield(L, -1, path) catch return null;
+    defer lua.lua_pop(L, 1);
+    const ud = lua.lua_touserdata(L, -1) orelse return null;
+    return @ptrCast(@alignCast(ud));
+}
+
+fn addtoclib(L: *lua.lua_State, path: []const u8, plib: *std.DynLib) void {
+    _ = lua.lua_getfield(L, lua.LUA_REGISTRYINDEX, CLIBS) catch return;
+    defer lua.lua_pop(L, 1);
+    lua.lua_pushlightuserdata(L, @ptrCast(plib));
+    lua.lua_setfield(L, -2, path) catch {};
+}
+
+fn lookforfunc(L: *lua.lua_State, path: []const u8, sym: []const u8) i32 {
+    const reg = checkclib(L, path);
+    const lib = if (reg) |r| r else blk: {
+        const loaded = lsys_load(L, path, sym.len > 0 and sym[0] == '*');
+        if (loaded) |l| {
+            addtoclib(L, path, l);
+            break :blk l;
+        }
+        return ERRLIB;
+    };
+    if (sym.len > 0 and sym[0] == '*') {
+        lua.lua_pushboolean(L, 1);
+        return 0;
+    } else {
+        const f = lsys_sym(L, lib, sym) orelse return ERRFUNC;
+        lua.lua_pushcfunction(L, f);
+        return 0;
+    }
+}
+
+fn ll_loadlib(L: *lua.lua_State) anyerror!i32 {
+    const path = try lauxlib.luaL_checkstring(L, 1);
+    const init = try lauxlib.luaL_checkstring(L, 2);
+    const stat = lookforfunc(L, path, init);
+    if (stat == 0) return 1;
+    lauxlib.luaL_pushfail(L);
+    lua.lua_insert(L, -2);
+    const errtype = if (stat == ERRLIB) LIB_FAIL else "init";
+    _ = lua.lua_pushstring(L, errtype);
+    return 3;
+}
+
+fn getnextfilename(path: *[]u8) ?[]const u8 {
+    if (path.*.len == 0) return null;
+    if (path.*[0] == 0) {
+        path.* = path.*[1..];
+    }
+    if (std.mem.indexOfScalar(u8, path.*, luaconf.LUA_PATH_SEP)) |pos| {
+        const name = path.*[0..pos];
+        path.* = path.*[pos + 1 ..];
+        return name;
+    } else {
+        const name = path.*;
+        path.* = path.*[0..0];
+        return name;
+    }
+}
+
+fn pusherrornotfound(L: *lua.lua_State, path_str: []const u8) void {
+    var parts = std.mem.splitScalar(u8, path_str, luaconf.LUA_PATH_SEP);
+    var first = true;
+    while (parts.next()) |part| {
+        if (first) {
+            _ = lua.lua_pushstring(L, "no file '");
+            _ = lua.lua_pushlstring(L, part, part.len);
+            _ = lua.lua_pushstring(L, "'");
+            first = false;
+        } else {
+            _ = lua.lua_pushstring(L, "'\n\tno file '");
+            _ = lua.lua_pushlstring(L, part, part.len);
+            _ = lua.lua_pushstring(L, "'");
+        }
+    }
+}
+
+fn searchpath(L: *lua.lua_State, name: []const u8, path_str: []const u8, sep: []const u8, dirsep: []const u8) ?[]const u8 {
+    const mark = luaconf.LUA_PATH_MARK;
+
+    var modname = name;
+    if (sep.len > 0 and std.mem.indexOf(u8, name, sep) != null) {
+        modname = lauxlib.luaL_gsub(L, name, sep, dirsep) catch name;
+    }
+
+    const path = std.mem.replaceOwned(u8, L.allocator, path_str, mark, modname) catch {
+        pushliteral(L, "path too long");
+        return null;
+    };
+    defer L.allocator.free(path);
+
+    var remaining = path;
+    while (getnextfilename(&remaining)) |filename| {
+        if (readable(L, filename)) {
+            _ = lua.lua_pushstring(L, filename);
+            return lua.lua_tostring(L, -1).?;
+        }
+    }
+    pusherrornotfound(L, path);
+    return null;
+}
+
+fn ll_searchpath(L: *lua.lua_State) anyerror!i32 {
+    const name = try lauxlib.luaL_checkstring(L, 1);
+    const path_str = try lauxlib.luaL_checkstring(L, 2);
+    const sep = try lauxlib.luaL_optlstring(L, 3, ".", null) orelse ".";
+    const dirsep = try lauxlib.luaL_optlstring(L, 4, luaconf.LUA_DIRSEP, null) orelse luaconf.LUA_DIRSEP;
+
+    const f = searchpath(L, name, path_str, sep, dirsep);
+    if (f != null) return 1;
+    lauxlib.luaL_pushfail(L);
+    lua.lua_insert(L, -2);
+    return 2;
+}
+
+fn searcher_preload(L: *lua.lua_State) anyerror!i32 {
+    const name = try lauxlib.luaL_checkstring(L, 1);
+    _ = try lua.lua_getfield(L, lua.LUA_REGISTRYINDEX, "_PRELOAD");
+    _ = try lua.lua_getfield(L, -1, name);
+    if (lua.lua_type(L, -1) == lua.LUA_TNIL) {
+        const msg = std.fmt.allocPrint(L.allocator, "no field package.preload['{s}']", .{name}) catch {
+            pushliteral(L, "not found");
+            return 1;
+        };
+        defer L.allocator.free(msg);
+        _ = lua.lua_pushlstring(L, msg, msg.len);
         return 1;
     }
-    return 0;
+    pushliteral(L, ":preload:");
+    return 2;
+}
+
+const FileReaderState = struct {
+    data: []const u8,
+    pos: usize,
+};
+
+fn fileReader(L: *lua.lua_State, data: ?*anyopaque, size: ?*usize) ?[]const u8 {
+    _ = L;
+    const state: *FileReaderState = @ptrCast(@alignCast(data.?));
+    if (state.pos >= state.data.len) {
+        if (size) |s| s.* = 0;
+        return &.{};
+    }
+    const chunk = state.data[state.pos..];
+    state.pos = state.data.len;
+    if (size) |s| s.* = chunk.len;
+    return chunk;
+}
+
+fn checkload(L: *lua.lua_State, stat: bool, filename: []const u8) !i32 {
+    if (stat) {
+        _ = lua.lua_pushstring(L, filename);
+        return 2;
+    }
+    const name = lua.lua_tostring(L, 1) orelse "?";
+    const err = lua.lua_tostring(L, -1) orelse "unknown";
+    const msg = std.fmt.allocPrint(L.allocator, "error loading module '{s}' from file '{s}':\n\t{s}", .{ name, filename, err }) catch {
+        pushliteral(L, "error loading module");
+        return lauxlib.luaL_error(L, "error loading module");
+    };
+    defer L.allocator.free(msg);
+    _ = lua.lua_pushlstring(L, msg, msg.len);
+    return lauxlib.luaL_error(L, msg);
+}
+
+fn findfile(L: *lua.lua_State, name: []const u8, pname: []const u8, dirsep: []const u8) !?[]const u8 {
+    _ = try lua.lua_getfield(L, lua.lua_upvalueindex(1), pname);
+    const path = lua.lua_tostring(L, -1) orelse {
+        const msg = std.fmt.allocPrint(L.allocator, "'package.{s}' must be a string", .{pname}) catch {
+            return null;
+        };
+        defer L.allocator.free(msg);
+        _ = lua.lua_pushlstring(L, msg, msg.len);
+        return lauxlib.luaL_error(L, msg);
+    };
+    return searchpath(L, name, path, ".", dirsep);
+}
+
+fn loadfunc(L: *lua.lua_State, filename: []const u8, modname: []const u8) i32 {
+    var mname = modname;
+    const gsub = lauxlib.luaL_gsub(L, mname, ".", LUA_OFSEP) catch mname;
+    mname = gsub;
+
+    if (std.mem.indexOf(u8, mname, luaconf.LUA_IGMARK)) |mark_pos| {
+        const openfunc = mname[0..mark_pos];
+        const pof_name = std.fmt.allocPrint(L.allocator, "{s}{s}", .{ LUA_POF, openfunc }) catch {
+            pushliteral(L, "out of memory");
+            return ERRFUNC;
+        };
+        defer L.allocator.free(pof_name);
+        const stat = lookforfunc(L, filename, pof_name);
+        if (stat != ERRFUNC) return stat;
+        mname = mname[mark_pos + 1 ..];
+    }
+    const func_name = std.fmt.allocPrint(L.allocator, "{s}{s}", .{ LUA_POF, mname }) catch {
+        pushliteral(L, "out of memory");
+        return ERRFUNC;
+    };
+    defer L.allocator.free(func_name);
+    return lookforfunc(L, filename, func_name);
+}
+
+fn searcher_Lua(L: *lua.lua_State) anyerror!i32 {
+    const name = try lauxlib.luaL_checkstring(L, 1);
+    const filename = try findfile(L, name, "path", luaconf.LUA_DIRSEP) orelse return 1;
+    const file_content = std.Io.Dir.cwd().readFileAlloc(L.l_G.?.io, filename, L.allocator, .unlimited) catch {
+        pushliteral(L, "cannot read file");
+        return 1;
+    };
+    defer L.allocator.free(file_content);
+    var state = FileReaderState{ .data = file_content, .pos = 0 };
+    const load_status = lua.lua_load(L, fileReader, &state, filename, "bt");
+    if (load_status != lua.LUA_OK) {
+        const err = lua.lua_tostring(L, -1) orelse "load error";
+        const msg = std.fmt.allocPrint(L.allocator, "error loading module '{s}' from file '{s}':\n\t{s}", .{ name, filename, err }) catch {
+            return lauxlib.luaL_error(L, "error loading module");
+        };
+        defer L.allocator.free(msg);
+        _ = lua.lua_pushlstring(L, msg, msg.len);
+        return 1;
+    }
+    _ = lua.lua_pushstring(L, filename);
+    return 2;
+}
+
+fn searcher_C(L: *lua.lua_State) anyerror!i32 {
+    const name = try lauxlib.luaL_checkstring(L, 1);
+    const filename = try findfile(L, name, "cpath", luaconf.LUA_DIRSEP) orelse return 1;
+    return checkload(L, loadfunc(L, filename, name) == 0, filename);
+}
+
+fn searcher_Croot(L: *lua.lua_State) anyerror!i32 {
+    const name = try lauxlib.luaL_checkstring(L, 1);
+    const p = std.mem.indexOfScalar(u8, name, '.') orelse return 0;
+    const root_name = name[0..p];
+    _ = lua.lua_pushlstring(L, root_name, root_name.len);
+    const filename = try findfile(L, lua.lua_tostring(L, -1) orelse return 1, "cpath", luaconf.LUA_DIRSEP) orelse return 1;
+    const stat = loadfunc(L, filename, name);
+    if (stat != 0) {
+        if (stat != ERRFUNC) return checkload(L, false, filename);
+        const msg = std.fmt.allocPrint(L.allocator, "no module '{s}' in file '{s}'", .{ name, filename }) catch {
+            pushliteral(L, "not found");
+            return 1;
+        };
+        defer L.allocator.free(msg);
+        _ = lua.lua_pushlstring(L, msg, msg.len);
+        return 1;
+    }
+    _ = lua.lua_pushstring(L, filename);
+    return 2;
+}
+
+fn findloader(L: *lua.lua_State, name: []const u8) !void {
+    _ = try lua.lua_getfield(L, lua.lua_upvalueindex(1), "searchers");
+    if (lua.lua_type(L, -1) != lua.LUA_TTABLE) {
+        return lauxlib.luaL_error(L, "'package.searchers' must be a table");
+    }
+
+    var i: i32 = 1;
+    while (true) : (i += 1) {
+        _ = lua.lua_rawgeti(L, -1, @intCast(i));
+        if (lua.lua_type(L, -1) == lua.LUA_TNIL) {
+            lua.lua_pop(L, 1);
+            const msg = std.fmt.allocPrint(L.allocator, "module '{s}' not found", .{name}) catch {
+                return lauxlib.luaL_error(L, "module not found");
+            };
+            defer L.allocator.free(msg);
+            _ = lua.lua_pushlstring(L, msg, msg.len);
+            return lauxlib.luaL_error(L, msg);
+        }
+        _ = lua.lua_pushstring(L, name);
+        try lua.lua_call(L, 1, 2);
+        if (lua.lua_type(L, -2) == lua.LUA_TFUNCTION) return;
+        // Not a loader; pop both results and try the next searcher.
+        lua.lua_pop(L, 2);
+    }
+}
+
+fn ll_require(L: *lua.lua_State) anyerror!i32 {
+    const name = try lauxlib.luaL_checkstring(L, 1);
+    lua.lua_settop(L, 1);
+    _ = try lua.lua_getfield(L, lua.LUA_REGISTRYINDEX, "_LOADED");
+    _ = try lua.lua_getfield(L, 2, name);
+    if (lua.lua_toboolean(L, -1) != 0) return 1;
+    lua.lua_pop(L, 1);
+    try findloader(L, name);
+    lua.lua_rotate(L, -2, 1);
+    lua.lua_pushvalue(L, 1);
+    lua.lua_pushvalue(L, -3);
+    try lua.lua_call(L, 2, 1);
+    if (lua.lua_isnil(L, -1) == 0) {
+        try lua.lua_setfield(L, 2, name);
+    } else {
+        lua.lua_pop(L, 1);
+    }
+    _ = try lua.lua_getfield(L, 2, name);
+    if (lua.lua_type(L, -1) == lua.LUA_TNIL) {
+        lua.lua_pushboolean(L, 1);
+        lua.lua_copy(L, -1, -2);
+        try lua.lua_setfield(L, 2, name);
+    }
+    lua.lua_rotate(L, -2, 1);
+    return 2;
+}
+
+fn setprogdir(_: *lua.lua_State) void {}
+
+fn setpath(L: *lua.lua_State, fieldname: []const u8, envname: []const u8, dft: []const u8) void {
+    const nver = std.fmt.allocPrint(L.allocator, "{s}{s}", .{ envname, LUA_VERSUFFIX }) catch {
+        _ = lua.lua_pushstring(L, dft);
+        setprogdir(L);
+        lua.lua_setfield(L, -2, fieldname) catch {};
+        return;
+    };
+    defer L.allocator.free(nver);
+
+    var path_opt: ?[]const u8 = lauxlib.luaL_getenv(L.allocator, nver);
+    if (path_opt == null) {
+        path_opt = lauxlib.luaL_getenv(L.allocator, envname);
+    }
+
+    if (path_opt) |path| {
+        defer L.allocator.free(path);
+        if (noenv(L)) {
+            _ = lua.lua_pushstring(L, dft);
+        } else {
+            if (std.mem.indexOf(u8, path, ";;")) |dftmark_idx| {
+                var b = lauxlib.luaL_Buffer{};
+                lauxlib.luaL_buffinit(L, &b);
+                if (dftmark_idx > 0) {
+                    lauxlib.luaL_addlstring(L, &b, path[0..dftmark_idx]) catch {};
+                    lauxlib.luaL_addlstring(L, &b, ";") catch {};
+                }
+                lauxlib.luaL_addlstring(L, &b, dft) catch {};
+                if (dftmark_idx + 2 < path.len) {
+                    lauxlib.luaL_addlstring(L, &b, ";") catch {};
+                    lauxlib.luaL_addlstring(L, &b, path[dftmark_idx + 2 ..]) catch {};
+                }
+                lauxlib.luaL_pushresult(L, &b);
+            } else {
+                _ = lua.lua_pushstring(L, path);
+            }
+        }
+    } else {
+        _ = lua.lua_pushstring(L, dft);
+    }
+
+    setprogdir(L);
+    lua.lua_setfield(L, -2, fieldname) catch {};
+}
+
+fn createsearcherstable(L: *lua.lua_State) void {
+    const searchers = [_]lua.lua_CFunction{ searcher_preload, searcher_Lua, searcher_C, searcher_Croot };
+    lua.lua_createtable(L, @intCast(searchers.len), 0);
+    for (searchers, 1..) |s, i| {
+        lua.lua_pushvalue(L, -2);
+        lua.lua_pushcclosure(L, s, 1);
+        lua.lua_rawseti(L, -2, @intCast(i));
+    }
+    lua.lua_setfield(L, -2, "searchers") catch {};
+}
+
+pub fn openloadlib(L: *lua.lua_State) !void {
+    _ = try lua.lua_getfield(L, lua.LUA_REGISTRYINDEX, CLIBS);
+    if (lua.lua_type(L, -1) != lua.LUA_TTABLE) {
+        lua.lua_pop(L, 1);
+        lua.lua_createtable(L, 0, 1);
+        try lua.lua_setfield(L, lua.LUA_REGISTRYINDEX, CLIBS);
+    } else {
+        lua.lua_pop(L, 1);
+    }
+
+    const pk_funcs = [_]lauxlib.luaL_Reg{
+        .{ .name = "loadlib", .func = ll_loadlib },
+        .{ .name = "searchpath", .func = ll_searchpath },
+    };
+    try lauxlib.luaL_newlib(L, &pk_funcs);
+
+    createsearcherstable(L);
+
+    setpath(L, "path", "LUA_PATH", luaconf.LUA_PATH_DEFAULT);
+    setpath(L, "cpath", "LUA_CPATH", luaconf.LUA_CPATH_DEFAULT);
+
+    const config = std.fmt.allocPrint(L.allocator, "{s}\n;\n?\n!\n-\n", .{luaconf.LUA_DIRSEP}) catch {
+        pushliteral(L, "");
+        lua.lua_pop(L, 1);
+        return;
+    };
+    defer L.allocator.free(config);
+    _ = lua.lua_pushlstring(L, config, config.len);
+    try lua.lua_setfield(L, -2, "config");
+
+    _ = try lua.lua_getfield(L, lua.LUA_REGISTRYINDEX, "_LOADED");
+    if (lua.lua_type(L, -1) != lua.LUA_TTABLE) {
+        lua.lua_pop(L, 1);
+        lua.lua_createtable(L, 0, 1);
+        try lua.lua_setfield(L, lua.LUA_REGISTRYINDEX, "_LOADED");
+        _ = try lua.lua_getfield(L, lua.LUA_REGISTRYINDEX, "_LOADED");
+    }
+    try lua.lua_setfield(L, -2, "loaded");
+
+    _ = try lua.lua_getfield(L, lua.LUA_REGISTRYINDEX, "_PRELOAD");
+    if (lua.lua_type(L, -1) != lua.LUA_TTABLE) {
+        lua.lua_pop(L, 1);
+        lua.lua_createtable(L, 0, 1);
+        try lua.lua_setfield(L, lua.LUA_REGISTRYINDEX, "_PRELOAD");
+        _ = try lua.lua_getfield(L, lua.LUA_REGISTRYINDEX, "_PRELOAD");
+    }
+    try lua.lua_setfield(L, -2, "preload");
+
+    // Set _G["package"] = package
+    lua.lua_pushvalue(L, -1);
+    lua.lua_setglobal(L, "package");
+
+    // Set _G["require"] = ll_require
+    lua.lua_pushvalue(L, -1);
+    lua.lua_pushcclosure(L, ll_require, 1);
+    lua.lua_setglobal(L, "require");
+
+    // Pop the package table to keep the stack balanced.
+    lua.lua_pop(L, 1);
 }

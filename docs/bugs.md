@@ -304,3 +304,24 @@ Legend:
   the yield). For C frames without a continuation, the original destroy+re-precall
   logic is correct.
 
+## BUG-027 — Table hash part Node.next collision sentinel bug  [HIGH] ✅ FIXED
+- **Location:** `src/ltable.zig` (multiple lines).
+- **Defect:** `0` was used as the sentinel value for the end of the collision chain. However, `0` is a valid index in the table's node array. Under collision conditions, any key placed at index `0` became unreachable from searches originating from other slots because the search stopped immediately on seeing `next == 0`.
+- **Fix:** Changed the sentinel value representing the end of a chain from `0` to `-1`.
+
+## BUG-028 — Stack-imbalance popping in `loadlib.zig` helper functions  [MED] ✅ FIXED
+- **Location:** `src/lib/loadlib.zig` (`findfile`, `searcher_preload`, `searcher_Croot`, `findloader`).
+- **Defect:** Invalid `defer lua_pop` statements were used to pop elements from the stack on function return, causing incorrect stack frames and misaligned indices.
+- **Fix:** Removed the invalid pops. Stack frames are naturally cleaned up by the VM upon returning from C/port library calls.
+
+## BUG-029 — `require` upvalue closure registration mismatch  [MED] ✅ FIXED
+- **Location:** `src/lib/loadlib.zig` (`openloadlib`, `ll_require`).
+- **Defect:** `require` was registered as a raw C function without upvalues. The Lua reference expects `require` to be registered as a closure with the `package` table bound as upvalue 1, which `findloader` uses to look up searchers.
+- **Fix:** Registered `require` via `lua_pushcclosure(L, ll_require, 1)` with `package` table bound as its first upvalue.
+
+## BUG-030 — Memory leak of dynamic `path` in `searchpath`  [LOW] ✅ FIXED
+- **Location:** `src/lib/loadlib.zig:159-183` (`searchpath`).
+- **Defect:** `path` allocated via `std.mem.replaceOwned` was leaked when returning from `searchpath`.
+- **Fix:** Added `defer L.allocator.free(path)` and returned a GC-managed copy pushed onto the stack via `lua.lua_tostring(L, -1).?`.
+
+

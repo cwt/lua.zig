@@ -2362,3 +2362,204 @@ test "BUG-020: luaL_newmetatable stores under string key for luaL_setmetatable/l
     const already_exists = try lua.luaL_newmetatable(&L, "TestMeta");
     try std.testing.expectEqual(@as(i32, 0), already_exists);
 }
+
+fn loadlib_test_loader(L: *lua.lua_State) anyerror!i32 {
+    _ = lua.lua_pushstring(L, "module_value");
+    return 1;
+}
+
+test "package table structure" {
+    const gpa = std.testing.allocator;
+    var L: lua.lua_State = undefined;
+    try lua.luaL_newstate(&L, gpa);
+    defer lua.lua_close(&L);
+
+    try lua.luaL_openlibs(&L);
+
+    _ = lua.lua_getglobal(&L, "package");
+    try std.testing.expectEqual(@as(i32, lua.LUA_TTABLE), lua.lua_type(&L, -1));
+
+    _ = try lua.lua_getfield(&L, -1, "config");
+    try std.testing.expectEqual(@as(i32, lua.LUA_TSTRING), lua.lua_type(&L, -1));
+    lua.lua_pop(&L, 1);
+
+    _ = try lua.lua_getfield(&L, -1, "path");
+    try std.testing.expectEqual(@as(i32, lua.LUA_TSTRING), lua.lua_type(&L, -1));
+    lua.lua_pop(&L, 1);
+
+    _ = try lua.lua_getfield(&L, -1, "cpath");
+    try std.testing.expectEqual(@as(i32, lua.LUA_TSTRING), lua.lua_type(&L, -1));
+    lua.lua_pop(&L, 1);
+
+    _ = try lua.lua_getfield(&L, -1, "loaded");
+    try std.testing.expectEqual(@as(i32, lua.LUA_TTABLE), lua.lua_type(&L, -1));
+    lua.lua_pop(&L, 1);
+
+    _ = try lua.lua_getfield(&L, -1, "preload");
+    try std.testing.expectEqual(@as(i32, lua.LUA_TTABLE), lua.lua_type(&L, -1));
+    lua.lua_pop(&L, 1);
+
+    _ = try lua.lua_getfield(&L, -1, "searchers");
+    try std.testing.expectEqual(@as(i32, lua.LUA_TTABLE), lua.lua_type(&L, -1));
+    const n = lua.lua_rawlen(&L, -1);
+    try std.testing.expectEqual(@as(usize, 4), n);
+    lua.lua_pop(&L, 1);
+
+    lua.lua_pop(&L, 1);
+}
+
+test "package.searchpath returns error for nonexistent module" {
+    const gpa = std.testing.allocator;
+    var L: lua.lua_State = undefined;
+    try lua.luaL_newstate(&L, gpa);
+    defer lua.lua_close(&L);
+
+    try lua.luaL_openlibs(&L);
+
+    _ = lua.lua_getglobal(&L, "package");
+    _ = try lua.lua_getfield(&L, -1, "searchpath");
+    _ = lua.lua_pushstring(&L, "nonexistent_module_xyz_123");
+    _ = lua.lua_pushstring(&L, "/nonexistent/?.lua");
+    const status = lua.lua_pcall(&L, 2, 2, 0);
+    try std.testing.expectEqual(@as(i32, lua.LUA_OK), status);
+    try std.testing.expectEqual(@as(i32, lua.LUA_TSTRING), lua.lua_type(&L, -1));
+    lua.lua_pop(&L, 2);
+    lua.lua_pop(&L, 1);
+}
+
+test "require function exists in global namespace" {
+    const gpa = std.testing.allocator;
+    var L: lua.lua_State = undefined;
+    try lua.luaL_newstate(&L, gpa);
+    defer lua.lua_close(&L);
+
+    try lua.luaL_openlibs(&L);
+
+    _ = lua.lua_getglobal(&L, "require");
+    try std.testing.expectEqual(@as(i32, lua.LUA_TFUNCTION), lua.lua_type(&L, -1));
+    lua.lua_pop(&L, 1);
+}
+
+test "package.loadlib exists" {
+    const gpa = std.testing.allocator;
+    var L: lua.lua_State = undefined;
+    try lua.luaL_newstate(&L, gpa);
+    defer lua.lua_close(&L);
+
+    try lua.luaL_openlibs(&L);
+
+    _ = lua.lua_getglobal(&L, "package");
+    _ = try lua.lua_getfield(&L, -1, "loadlib");
+    try std.testing.expectEqual(@as(i32, lua.LUA_TFUNCTION), lua.lua_type(&L, -1));
+    lua.lua_pop(&L, 2);
+}
+
+test "require with preloaded C module" {
+    const gpa = std.testing.allocator;
+    var L: lua.lua_State = undefined;
+    try lua.luaL_newstate(&L, gpa);
+    defer lua.lua_close(&L);
+
+    try lua.luaL_openlibs(&L);
+
+    _ = lua.lua_getglobal(&L, "package");
+    _ = try lua.lua_getfield(&L, -1, "preload");
+    lua.lua_pushcfunction(&L, loadlib_test_loader);
+    try lua.lua_setfield(&L, -2, "mymod");
+    lua.lua_pop(&L, 2);
+
+    _ = lua.lua_getglobal(&L, "require");
+    _ = lua.lua_pushstring(&L, "mymod");
+    const status = lua.lua_pcall(&L, 1, 1, 0);
+    try std.testing.expectEqual(@as(i32, lua.LUA_OK), status);
+    try std.testing.expectEqual(@as(i32, lua.LUA_TSTRING), lua.lua_type(&L, -1));
+    try std.testing.expectEqualStrings("module_value", lua.lua_tostring(&L, -1).?);
+    lua.lua_pop(&L, 1);
+}
+
+test "require caches module in package.loaded" {
+    const gpa = std.testing.allocator;
+    var L: lua.lua_State = undefined;
+    try lua.luaL_newstate(&L, gpa);
+    defer lua.lua_close(&L);
+
+    try lua.luaL_openlibs(&L);
+
+    _ = lua.lua_getglobal(&L, "package");
+    _ = try lua.lua_getfield(&L, -1, "preload");
+    lua.lua_pushcfunction(&L, loadlib_test_loader);
+    try lua.lua_setfield(&L, -2, "mymod");
+    lua.lua_pop(&L, 2);
+
+    // First require
+    _ = lua.lua_getglobal(&L, "require");
+    _ = lua.lua_pushstring(&L, "mymod");
+    var status = lua.lua_pcall(&L, 1, 1, 0);
+    try std.testing.expectEqual(@as(i32, lua.LUA_OK), status);
+    lua.lua_pop(&L, 1);
+
+    // Check package.loaded["mymod"]
+    _ = lua.lua_getglobal(&L, "package");
+    _ = try lua.lua_getfield(&L, -1, "loaded");
+    _ = try lua.lua_getfield(&L, -1, "mymod");
+    try std.testing.expectEqual(@as(i32, lua.LUA_TSTRING), lua.lua_type(&L, -1));
+    try std.testing.expectEqualStrings("module_value", lua.lua_tostring(&L, -1).?);
+    lua.lua_pop(&L, 3);
+
+    // Second require should return the cached value
+    _ = lua.lua_getglobal(&L, "require");
+    _ = lua.lua_pushstring(&L, "mymod");
+    status = lua.lua_pcall(&L, 1, 1, 0);
+    try std.testing.expectEqual(@as(i32, lua.LUA_OK), status);
+    try std.testing.expectEqualStrings("module_value", lua.lua_tostring(&L, -1).?);
+    lua.lua_pop(&L, 1);
+}
+
+test "require non-existent module fails" {
+    const gpa = std.testing.allocator;
+    var L: lua.lua_State = undefined;
+    try lua.luaL_newstate(&L, gpa);
+    defer lua.lua_close(&L);
+
+    try lua.luaL_openlibs(&L);
+
+    _ = lua.lua_getglobal(&L, "require");
+    _ = lua.lua_pushstring(&L, "definitely_not_a_real_module_xyz");
+    const status = lua.lua_pcall(&L, 1, 1, 0);
+    // pcall catches the error raised by require, returning LUA_ERRRUN
+    try std.testing.expectEqual(@as(i32, lua.LUA_ERRRUN), status);
+    try std.testing.expectEqual(@as(i32, lua.LUA_TSTRING), lua.lua_type(&L, -1));
+    const err = lua.lua_tostring(&L, -1).?;
+    try std.testing.expect(std.mem.indexOf(u8, err, "not found") != null);
+    lua.lua_pop(&L, 1);
+}
+
+test "os.getenv environment variable lookup" {
+    const gpa = std.testing.allocator;
+    var L: lua.lua_State = undefined;
+    try lua.luaL_newstate(&L, gpa);
+    defer lua.lua_close(&L);
+
+    try lua.luaL_openlibs(&L);
+
+    // Test a variable that should exist (e.g., PATH)
+    _ = lua.lua_getglobal(&L, "os");
+    _ = try lua.lua_getfield(&L, -1, "getenv");
+    _ = lua.lua_pushstring(&L, "PATH");
+    var status = lua.lua_pcall(&L, 1, 1, 0);
+    try std.testing.expectEqual(@as(i32, lua.LUA_OK), status);
+    try std.testing.expectEqual(@as(i32, lua.LUA_TSTRING), lua.lua_type(&L, -1));
+    const path_val = lua.lua_tostring(&L, -1).?;
+    try std.testing.expect(path_val.len > 0);
+    lua.lua_pop(&L, 2); // pop result and os table
+
+    // Test a nonexistent variable
+    _ = lua.lua_getglobal(&L, "os");
+    _ = try lua.lua_getfield(&L, -1, "getenv");
+    _ = lua.lua_pushstring(&L, "THIS_VARIABLE_DOES_NOT_EXIST_XYZ");
+    status = lua.lua_pcall(&L, 1, 1, 0);
+    try std.testing.expectEqual(@as(i32, lua.LUA_OK), status);
+    try std.testing.expectEqual(@as(i32, lua.LUA_TNIL), lua.lua_type(&L, -1));
+    lua.lua_pop(&L, 2);
+}
+

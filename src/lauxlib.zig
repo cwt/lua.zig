@@ -448,3 +448,32 @@ pub fn luaL_openselectedlibs(L: *lua.lua_State, openmask: i32, closedmask: i32) 
         try lualib.openutf8lib(L);
     }
 }
+
+pub fn luaL_getenv(allocator: std.mem.Allocator, name: []const u8) ?[]const u8 {
+    const flags: std.posix.O = .{ .ACCMODE = .RDONLY };
+    const fd = std.posix.openat(std.posix.AT.FDCWD, "/proc/self/environ", flags, 0) catch return null;
+    defer _ = std.os.linux.close(fd);
+
+    var list = std.ArrayList(u8).empty;
+    defer list.deinit(allocator);
+    var buf: [4096]u8 = undefined;
+    while (true) {
+        const n = std.posix.read(fd, &buf) catch return null;
+        if (n == 0) break;
+        list.appendSlice(allocator, buf[0..n]) catch return null;
+    }
+
+    var it = std.mem.splitScalar(u8, list.items, 0);
+    while (it.next()) |var_str| {
+        if (var_str.len == 0) continue;
+        if (std.mem.indexOfScalar(u8, var_str, '=')) |eq_idx| {
+            const var_name = var_str[0..eq_idx];
+            if (std.mem.eql(u8, var_name, name)) {
+                const var_val = var_str[eq_idx + 1 ..];
+                return allocator.dupe(u8, var_val) catch null;
+            }
+        }
+    }
+    return null;
+}
+
