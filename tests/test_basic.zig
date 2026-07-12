@@ -1887,3 +1887,239 @@ test "string library: byte/char/len/sub/reverse/case/rep/match/gmatch/pack cover
     // location (instead of being swallowed by a pcall wrapper).
     _ = try testfn(&L);
 }
+
+test "table library: create/insert/remove/pack/unpack/concat/move/sort" {
+    const gpa = std.testing.allocator;
+    var L: lua.lua_State = undefined;
+    try lua.luaL_newstate(&L, gpa);
+    defer lua.lua_close(&L);
+    try lua.luaL_openlibs(&L);
+
+    const testfn = struct {
+        fn setTestTab(Ls: *lua.lua_State) void {
+            lua.lua_setglobal(Ls, "_tabtest");
+        }
+        fn getTestTab(Ls: *lua.lua_State) void {
+            _ = lua.lua_getglobal(Ls, "_tabtest");
+        }
+
+        fn f(Ls: *lua.lua_State) anyerror!i32 {
+            // ----- table.create -----
+            lua.lua_settop(Ls, 0);
+            _ = lua.lua_getglobal(Ls, "table");
+            _ = try lua.lua_getfield(Ls, -1, "create");
+            _ = lua.lua_pushinteger(Ls, 3);
+            _ = lua.lua_pushinteger(Ls, 0);
+            try lua.lua_call(Ls, 2, 1);
+            try std.testing.expectEqual(@as(i32, lua.LUA_TTABLE), lua.lua_type(Ls, -1));
+            lua.lua_pop(Ls, 1);
+
+            // ----- table.insert at end -----
+            lua.lua_settop(Ls, 0);
+            lua.lua_createtable(Ls, 1, 0);
+            setTestTab(Ls);
+            _ = lua.lua_getglobal(Ls, "table");
+            _ = try lua.lua_getfield(Ls, -1, "insert");
+            lua.lua_remove(Ls, -2);
+            getTestTab(Ls);
+            _ = lua.lua_pushinteger(Ls, 10);
+            try lua.lua_call(Ls, 2, 0);
+            getTestTab(Ls);
+            _ = try lua.lua_geti(Ls, -1, 1);
+            try std.testing.expectEqual(@as(i64, 10), lua.lua_tointeger(Ls, -1) orelse 0);
+            lua.lua_pop(Ls, 1);
+
+            // ----- table.insert at position -----
+            lua.lua_settop(Ls, 0);
+            lua.lua_createtable(Ls, 2, 0);
+            _ = lua.lua_pushinteger(Ls, 10);
+            lua.lua_rawseti(Ls, -2, 1);
+            _ = lua.lua_pushinteger(Ls, 20);
+            lua.lua_rawseti(Ls, -2, 2);
+            setTestTab(Ls);
+            _ = lua.lua_getglobal(Ls, "table");
+            _ = try lua.lua_getfield(Ls, -1, "insert");
+            lua.lua_remove(Ls, -2);
+            getTestTab(Ls);
+            _ = lua.lua_pushinteger(Ls, 1); // position
+            _ = lua.lua_pushinteger(Ls, 5); // value
+            try lua.lua_call(Ls, 3, 0);
+            getTestTab(Ls);
+            _ = try lua.lua_geti(Ls, -1, 1);
+            try std.testing.expectEqual(@as(i64, 5), lua.lua_tointeger(Ls, -1) orelse 0);
+            _ = try lua.lua_geti(Ls, -2, 3);
+            try std.testing.expectEqual(@as(i64, 20), lua.lua_tointeger(Ls, -1) orelse 0);
+            lua.lua_pop(Ls, 2);
+
+            // ----- table.remove -----
+            lua.lua_settop(Ls, 0);
+            lua.lua_createtable(Ls, 2, 0);
+            _ = lua.lua_pushinteger(Ls, 10);
+            lua.lua_rawseti(Ls, -2, 1);
+            _ = lua.lua_pushinteger(Ls, 20);
+            lua.lua_rawseti(Ls, -2, 2);
+            setTestTab(Ls);
+            _ = lua.lua_getglobal(Ls, "table");
+            _ = try lua.lua_getfield(Ls, -1, "remove");
+            lua.lua_remove(Ls, -2);
+            getTestTab(Ls);
+            _ = lua.lua_pushinteger(Ls, 1);
+            try lua.lua_call(Ls, 2, 1);
+            try std.testing.expectEqual(@as(i64, 10), lua.lua_tointeger(Ls, -1) orelse 0);
+            lua.lua_pop(Ls, 1);
+
+            // ----- table.pack -----
+            lua.lua_settop(Ls, 0);
+            _ = lua.lua_getglobal(Ls, "table");
+            _ = try lua.lua_getfield(Ls, -1, "pack");
+            _ = lua.lua_pushinteger(Ls, 1);
+            _ = lua.lua_pushinteger(Ls, 2);
+            _ = lua.lua_pushinteger(Ls, 3);
+            try lua.lua_call(Ls, 3, 1);
+            _ = try lua.lua_geti(Ls, -1, 1);
+            try std.testing.expectEqual(@as(i64, 1), lua.lua_tointeger(Ls, -1) orelse 0);
+            lua.lua_pop(Ls, 1);
+            _ = try lua.lua_geti(Ls, -1, 3);
+            try std.testing.expectEqual(@as(i64, 3), lua.lua_tointeger(Ls, -1) orelse 0);
+            lua.lua_pop(Ls, 1);
+            _ = try lua.lua_getfield(Ls, -1, "n");
+            try std.testing.expectEqual(@as(i64, 3), lua.lua_tointeger(Ls, -1) orelse 0);
+            lua.lua_pop(Ls, 2);
+
+            // ----- table.unpack -----
+            lua.lua_settop(Ls, 0);
+            lua.lua_createtable(Ls, 2, 0);
+            _ = lua.lua_pushinteger(Ls, 10);
+            lua.lua_rawseti(Ls, -2, 1);
+            _ = lua.lua_pushinteger(Ls, 20);
+            lua.lua_rawseti(Ls, -2, 2);
+            _ = lua.lua_getglobal(Ls, "table");
+            _ = try lua.lua_getfield(Ls, -1, "unpack");
+            lua.lua_remove(Ls, -2);
+            lua.lua_insert(Ls, -2);
+            try lua.lua_call(Ls, 1, 2);
+            try std.testing.expectEqual(@as(i64, 10), lua.lua_tointeger(Ls, -2) orelse 0);
+            try std.testing.expectEqual(@as(i64, 20), lua.lua_tointeger(Ls, -1) orelse 0);
+            lua.lua_pop(Ls, 2);
+
+            // ----- table.concat -----
+            lua.lua_settop(Ls, 0);
+            lua.lua_createtable(Ls, 3, 0);
+            _ = lua.lua_pushstring(Ls, "a");
+            lua.lua_rawseti(Ls, -2, 1);
+            _ = lua.lua_pushstring(Ls, "b");
+            lua.lua_rawseti(Ls, -2, 2);
+            _ = lua.lua_pushstring(Ls, "c");
+            lua.lua_rawseti(Ls, -2, 3);
+            _ = lua.lua_getglobal(Ls, "table");
+            _ = try lua.lua_getfield(Ls, -1, "concat");
+            lua.lua_remove(Ls, -2);
+            lua.lua_insert(Ls, -2);
+            try lua.lua_call(Ls, 1, 1);
+            try std.testing.expectEqualStrings("abc", lua.lua_tostring(Ls, -1) orelse "");
+            lua.lua_pop(Ls, 1);
+
+            // ----- table.concat with separator -----
+            lua.lua_settop(Ls, 0);
+            lua.lua_createtable(Ls, 3, 0);
+            _ = lua.lua_pushstring(Ls, "a");
+            lua.lua_rawseti(Ls, -2, 1);
+            _ = lua.lua_pushstring(Ls, "b");
+            lua.lua_rawseti(Ls, -2, 2);
+            _ = lua.lua_pushstring(Ls, "c");
+            lua.lua_rawseti(Ls, -2, 3);
+            _ = lua.lua_getglobal(Ls, "table");
+            _ = try lua.lua_getfield(Ls, -1, "concat");
+            lua.lua_remove(Ls, -2);
+            lua.lua_insert(Ls, -2);
+            _ = lua.lua_pushstring(Ls, ",");
+            try lua.lua_call(Ls, 2, 1);
+            try std.testing.expectEqualStrings("a,b,c", lua.lua_tostring(Ls, -1) orelse "");
+            lua.lua_pop(Ls, 1);
+
+            // ----- table.sort -----
+            lua.lua_settop(Ls, 0);
+            lua.lua_createtable(Ls, 3, 0);
+            _ = lua.lua_pushinteger(Ls, 3);
+            lua.lua_rawseti(Ls, -2, 1);
+            _ = lua.lua_pushinteger(Ls, 1);
+            lua.lua_rawseti(Ls, -2, 2);
+            _ = lua.lua_pushinteger(Ls, 2);
+            lua.lua_rawseti(Ls, -2, 3);
+            setTestTab(Ls);
+            _ = lua.lua_getglobal(Ls, "table");
+            _ = try lua.lua_getfield(Ls, -1, "sort");
+            lua.lua_remove(Ls, -2);
+            getTestTab(Ls);
+            try lua.lua_call(Ls, 1, 0);
+            getTestTab(Ls);
+            _ = try lua.lua_geti(Ls, -1, 1);
+            try std.testing.expectEqual(@as(i64, 1), lua.lua_tointeger(Ls, -1) orelse 0);
+            _ = try lua.lua_geti(Ls, -2, 2);
+            try std.testing.expectEqual(@as(i64, 2), lua.lua_tointeger(Ls, -1) orelse 0);
+            _ = try lua.lua_geti(Ls, -3, 3);
+            try std.testing.expectEqual(@as(i64, 3), lua.lua_tointeger(Ls, -1) orelse 0);
+            lua.lua_pop(Ls, 3);
+
+            // ----- table.move -----
+            lua.lua_settop(Ls, 0);
+            lua.lua_createtable(Ls, 4, 0);
+            _ = lua.lua_pushinteger(Ls, 10);
+            lua.lua_rawseti(Ls, -2, 1);
+            _ = lua.lua_pushinteger(Ls, 20);
+            lua.lua_rawseti(Ls, -2, 2);
+            setTestTab(Ls);
+            _ = lua.lua_getglobal(Ls, "table");
+            _ = try lua.lua_getfield(Ls, -1, "move");
+            lua.lua_remove(Ls, -2);
+            getTestTab(Ls);
+            _ = lua.lua_pushinteger(Ls, 1); // f
+            _ = lua.lua_pushinteger(Ls, 2); // e
+            _ = lua.lua_pushinteger(Ls, 3); // t
+            _ = lua.lua_pushnil(Ls); // same table
+            try lua.lua_call(Ls, 5, 1);
+            lua.lua_pop(Ls, 1); // result: source table
+            getTestTab(Ls);
+            _ = try lua.lua_geti(Ls, -1, 3);
+            try std.testing.expectEqual(@as(i64, 10), lua.lua_tointeger(Ls, -1) orelse 0);
+            _ = try lua.lua_geti(Ls, -2, 4);
+            try std.testing.expectEqual(@as(i64, 20), lua.lua_tointeger(Ls, -1) orelse 0);
+            lua.lua_pop(Ls, 2);
+
+            return 0;
+        }
+    }.f;
+
+    _ = try testfn(&L);
+}
+
+test "coroutine infrastructure: newthread/pushthread/status/isyieldable/closethread" {
+    const gpa = std.testing.allocator;
+    var L: lua.lua_State = undefined;
+    try lua.luaL_newstate(&L, gpa);
+    defer lua.lua_close(&L);
+
+    // lua_newthread creates a new thread, pushes it on the stack
+    const co = try lua.lua_newthread(&L);
+    try std.testing.expect(lua.lua_type(&L, -1) == lua.LUA_TTHREAD);
+    try std.testing.expect(lua.lua_tothread(&L, -1) == co);
+    lua.lua_pop(&L, 1);
+
+    // lua_pushthread pushes current thread
+    _ = lua.lua_pushthread(&L);
+    try std.testing.expect(lua.lua_type(&L, -1) == lua.LUA_TTHREAD);
+    lua.lua_pop(&L, 1);
+
+    // lua_status on a fresh thread returns LUA_OK
+    const co2 = try lua.lua_newthread(&L);
+    try std.testing.expectEqual(@as(i32, lua.LUA_OK), lua.lua_status(co2));
+    lua.lua_pop(&L, 1);
+
+    // lua_isyieldable on main thread (no active C call → not yieldable when ci == base_ci)
+    try std.testing.expectEqual(@as(i32, 0), lua.lua_isyieldable(&L));
+
+    // lua_closethread
+    const co3 = try lua.lua_newthread(&L);
+    try std.testing.expectEqual(@as(i32, lua.LUA_OK), lua.lua_closethread(co3, &L));
+    lua.lua_pop(&L, 1);
+}

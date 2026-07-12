@@ -1,3 +1,11 @@
+---
+type: lessons_learned
+title: Bug Report — luazig (Zig port of Lua 5.5.1)
+description: Working document tracking known defects in the luazig codebase, ordered by priority.
+tags: [bugs, defects, tracking]
+timestamp: 2026-07-12T00:00:00Z
+---
+
 # Bug Report — luazig (Zig port of Lua 5.5.1)
 
 > Working document tracking known defects in the `luazig` codebase. Bugs are

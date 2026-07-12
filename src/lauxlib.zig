@@ -29,6 +29,16 @@ pub fn luaL_checktype(L: *lua.lua_State, idx: i32, t: i32) !void {
     }
 }
 
+pub fn luaL_argexpected(L: *lua.lua_State, cond: bool, arg: i32, tname: []const u8) !void {
+    if (!cond) {
+        const actual_type = lua.lua_type(L, arg);
+        const actual_name = lua.lua_typename(actual_type);
+        var buf: [256]u8 = undefined;
+        const msg = std.fmt.bufPrint(&buf, "{s} expected, got {s}", .{ tname, actual_name }) catch "type mismatch";
+        return luaL_argerror(L, arg, msg);
+    }
+}
+
 pub fn luaL_typename(L: *lua.lua_State, idx: i32) ![]const u8 {
     const actual_type = lua.lua_type(L, idx);
     return switch (actual_type) {
@@ -47,9 +57,9 @@ pub fn luaL_typename(L: *lua.lua_State, idx: i32) ![]const u8 {
 }
 
 pub fn luaL_len(L: *lua.lua_State, idx: i32) !usize {
-    _ = L;
-    _ = idx;
-    return 0;
+    const l = lua.lua_rawlen(L, idx);
+    if (l > 0) return l;
+    return l;
 }
 
 pub fn luaL_checkinteger(L: *lua.lua_State, idx: i32) !i64 {
@@ -224,6 +234,11 @@ pub fn luaL_tolstring(L: *lua.lua_State, idx: i32, len: ?*usize) ?[]const u8 {
             return lua.lua_tolstring(L, -1, len);
         },
     }
+}
+
+pub fn luaL_where(L: *lua.lua_State, level: i32) void {
+    _ = level;
+    _ = lua.lua_pushstring(L, "");
 }
 
 pub fn luaL_traceback(L: *lua.lua_State, L2: *lua.lua_State, msg: []const u8, level: i32) !void {

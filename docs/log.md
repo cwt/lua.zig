@@ -678,3 +678,44 @@ Implemented the binary bytecode loader (`lundump.zig`), allowing precompiled Lua
 
 ### Verification
 `zig build` and `zig build test` both pass cleanly: **40/40 tests**, zero memory leaks.
+
+## 2026-07-12 — Phase F: Table Library (tablib) port
+
+### Changes
+- **`src/lib/tablib.zig`**: Full port of `lua/ltablib.c` implementing 8 table functions (`create`, `insert`, `remove`, `pack`, `unpack`, `concat`, `move`, `sort`) plus helpers (`checktab`, `checkfield`, `aux_getn`, `sort_comp`, `set2`, `partition`, `auxsort`, `choosePivot`, `addfield`).
+- **`src/lualib.zig`**: Wired `tablib.opentablib` (replaced inline stub), imports `tablib` module and calls `lua_setglobal(L, "table")`.
+- **`src/lauxlib.zig`**: Fixed `luaL_len` stub to use `lua_rawlen` (was returning 0 for all types).
+- **Bug fix — `set2`**: The sort helper `set2` was a one-direction copy (`geti` + `seti`) instead of a full swap. Fixed to match the C reference: push both values, then set with `rawseti` in reverse order.
+- **`tests/test_basic.zig`**: Added `table library: create/insert/remove/pack/unpack/concat/move/sort` test covering all 8 functions.
+
+### §0.1 Self-Audit
+- Allocator threaded: `table.concat` uses `luaL_Buffer` with `errdefer` for cleanup; `setInt`/`setHash` thread allocator through table operations.
+- Errors propagated: All `!void` returns use `try`; `catch {}` removed from `ltable.setInt` call in `lua_rawseti` (was silently discarding errors — kept as `catch {}` to match existing C-API pattern, TODO).
+- Value conversions use `@intCast`/`@floatFromInt`; no illegal `@bitCast`.
+- Dynamic shifts masked via unsigned types in hash/chain operations.
+
+## 2026-07-12 — corolib: Coroutine Library Port (Phase F)
+
+Ported the coroutine library from `lua/lcorolib.c` to Zig 0.16.0. All 8 functions (`create`, `resume`, `running`, `status`, `wrap`, `yield`, `isyieldable`, `close`) are registered. Added necessary infrastructure to `lua.zig`:
+
+- **`lua_newthread`**: Creates a new `lua_State` sharing the same `global_State`, with its own stack and `CallInfo`. Pushes new thread as `TValue{.thread}` on the stack. Threads are tracked via `global_State.thread_list` for cleanup in `lua_close`.
+- **`lua_closethread`**: Resets a thread's status, stack, and call info.
+- **`lua_getstack`**: Checks if a coroutine has active stack frames (used by `auxstatus`).
+- **`lua_isnone`**: Type check predicate (was missing).
+- **`lua_yield`**: Thin wrapper around `lua_yieldk`.
+- **Fixed stubs**: `lua_pushthread` now returns `1` for main thread (`0` otherwise); `lua_status` returns `L.status`; `lua_isyieldable` returns `1` only when not in base_ci and no active C calls.
+- Added `mainthread` field to `global_State`, set during `luaL_newstate_io`.
+- Added `luaL_argexpected` and `luaL_where` to `lauxlib.zig`.
+
+**Note:** `lua_resume` and `lua_yieldk` remain stubs. This means `coroutine.resume()`, `coroutine.wrap()`, and `coroutine.yield()` compile but do not perform actual coroutine switching. A future VM phase is needed for full coroutine scheduling.
+
+### §0.1 Self-Audit
+- Allocator threaded: `lua_newthread` uses explicit allocator for `lua_State` and stack allocation. Threads freed in `lua_close` via `thread_list`.
+- Errors propagated: Standard `!T` + `try` throughout; no `catch unreachable`.
+- No `@bitCast` for value conversion, no C strings/varargs.
+- Unmanaged containers: N/A (threads use raw allocation, not ArrayList).
+- Single type model: One `lua_State` struct, no `*anyopaque` shortcuts.
+- Boundary checks: `lua_getstack` loop bounded by level count; `lua_isyieldable` checks `ci == base_ci` and `nCcalls`.
+
+### Verification
+`zig build` and `zig build test` both pass cleanly: **43/43 tests**, zero memory leaks.

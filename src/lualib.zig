@@ -18,6 +18,8 @@ const mathlib = @import("lib/mathlib.zig");
 const bit32 = @import("lib/bit32.zig");
 const utf8lib = @import("lib/utf8lib.zig");
 const stringlib = @import("lib/stringlib.zig");
+const tablib = @import("lib/tablib.zig");
+const corolib = @import("lib/corolib.zig");
 
 pub fn openbaselib(L: *lua.lua_State) !void {
     try baselib.openbaselib(L);
@@ -28,9 +30,8 @@ pub fn openbaselib(L: *lua.lua_State) !void {
 // ===================================================================
 
 pub fn opencorolib(L: *lua.lua_State) !void {
-    const coro = L;
-    _ = coro;
-    // Register coroutine library functions
+    try corolib.opencorolib(L);
+    lua.lua_setglobal(L, "coroutine");
 }
 
 // ===================================================================
@@ -38,9 +39,8 @@ pub fn opencorolib(L: *lua.lua_State) !void {
 // ===================================================================
 
 pub fn opentablib(L: *lua.lua_State) !void {
-    const tab = L;
-    _ = tab;
-    // Register table library functions
+    _ = try tablib.opentablib(L);
+    lua.lua_setglobal(L, "table");
 }
 
 // ===================================================================

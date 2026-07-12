@@ -85,7 +85,7 @@ pub const lua_Debug = struct {
     ftransfer: i32,
     ntransfer: i32,
     short_src: [LUA_IDSIZE]u8,
-    i_ci: ?*lua_State,
+    i_ci: ?*CallInfo,
 };
 
 pub const LUA_IDSIZE: usize = llimits.LUA_IDSIZE;
@@ -462,6 +462,8 @@ pub const global_State = struct {
     io_backend: ?std.Io.Threaded = null,
     io: std.Io,
     prng: std.Random.Xoshiro256,
+    mainthread: ?*lua_State = null,
+    thread_list: ?*lua_State = null,
 };
 
 inline fn G(L: *lua_State) *global_State {
@@ -679,6 +681,14 @@ fn stackAt(L: *lua_State, idx: i32) TValue {
 
 pub inline fn lua_isnoneornil(L: *lua_State, idx: i32) bool {
     return lua_type(L, idx) <= 0;
+}
+
+pub fn lua_isnone(L: *lua_State, idx: i32) i32 {
+    return if (lua_type(L, idx) == LUA_TNONE) 1 else 0;
+}
+
+pub fn lua_yield(L: *lua_State, nresults: i32) i32 {
+    return lua_yieldk(L, nresults, 0, null);
 }
 
 pub fn lua_isnil(L: *lua_State, idx: i32) i32 {
@@ -1094,10 +1104,76 @@ pub fn lua_pushlightuserdata(L: *lua_State, p: ?*anyopaque) void {
     L.top += 1;
 }
 
+pub fn lua_newthread(L: *lua_State) !*lua_State {
+    const g = G(L);
+    const L1 = try L.allocator.create(lua_State);
+    errdefer L.allocator.destroy(L1);
+    const stack = try L.allocator.alloc(TValue, LUA_MINSTACK + 1);
+    errdefer L.allocator.free(stack);
+    L1.* = .{
+        .tt = 0,
+        .marked = 0,
+        .gch = 0,
+        .allowhook = 0,
+        .status = 0,
+        .top = 0,
+        .l_G = g,
+        .ci = null,
+        .stack = stack,
+        .stack_last = stack.len - 1,
+        .openupval = null,
+        .tbclist = 0,
+        .gclist = null,
+        .twups = null,
+        .errorJmp = null,
+        .base_ci = .{ .func = 0, .base = 0, .top = LUA_MINSTACK, .nresults = 0, .savedpc = 0, .previous = null, .next = null },
+        .hook = null,
+        .errfunc = 0,
+        .nCcalls = 0,
+        .oldpc = 0,
+        .nci = 0,
+        .basehookcount = 0,
+        .hookcount = 0,
+        .hookmask = 0,
+        .transferinfo = .{ .ftransfer = 0, .ntransfer = 0 },
+        .allocator = L.allocator,
+    };
+    L1.ci = &L1.base_ci;
+    L1.twups = g.thread_list;
+    g.thread_list = L1;
+    L.stack[L.top] = TValue{ .thread = L1 };
+    L.top += 1;
+    return L1;
+}
+
+pub fn lua_closethread(L: *lua_State, from: *lua_State) i32 {
+    _ = from;
+    L.status = 0;
+    L.top = 0;
+    L.ci = &L.base_ci;
+    return LUA_OK;
+}
+
+pub fn lua_getstack(L: *lua_State, level: i32, ar: *lua_Debug) i32 {
+    var ci: ?*CallInfo = L.ci;
+    var lvl = level;
+    while (lvl > 0 and ci != null) {
+        if (ci.? == &L.base_ci) break;
+        ci = ci.?.previous;
+        lvl -= 1;
+    }
+    if (lvl == 0 and ci != null and ci.? != &L.base_ci) {
+        ar.i_ci = ci;
+        return 1;
+    }
+    return 0;
+}
+
 pub fn lua_pushthread(L: *lua_State) i32 {
     L.stack[L.top] = TValue{ .thread = L };
     L.top += 1;
-    return 1;
+    const g = G(L);
+    return if (g.mainthread == L) 1 else 0;
 }
 
 pub fn lua_pop(L: *lua_State, n: i32) void {
@@ -1623,13 +1699,13 @@ pub fn lua_resume(L: *lua_State, from: ?*lua_State, narg: i32, nresults: ?*i32) 
 }
 
 pub fn lua_status(L: *lua_State) i32 {
-    _ = L;
-    return LUA_OK;
+    return L.status;
 }
 
 pub fn lua_isyieldable(L: *lua_State) i32 {
-    _ = L;
-    return 0;
+    if (L.ci == &L.base_ci) return 0;
+    if (L.nCcalls > 0) return 0;
+    return 1;
 }
 
 pub fn lua_setwarnf(L: *lua_State, f: lua_WarnFunction, ud: ?*anyopaque) void {
@@ -2139,7 +2215,8 @@ pub fn luaL_newstate_io(L: *lua_State, gpa: std.mem.Allocator, io: std.Io) !void
     const registry_tab = try ltable.createTable(gpa, 3, 0);
     try registerGC(L, registry_tab);
     g.registry = TValue{ .table = registry_tab };
-    try ltable.setInt(registry_tab, 1, TValue{ .thread = L });
+    g.mainthread = L;
+    try ltable.setInt(registry_tab, llimits.LUA_RIDX_MAINTHREAD, TValue{ .thread = L });
     const globals_tab = try ltable.createTable(gpa, 0, 0);
     try registerGC(L, globals_tab);
     try ltable.setInt(registry_tab, 2, TValue{ .table = globals_tab });
@@ -2219,6 +2296,16 @@ pub fn lua_close(L: *lua_State) void {
         if (g.io_backend) |*threaded| {
             threaded.deinit();
         }
+        // Free all created threads
+        var curr_thread = g.thread_list;
+        while (curr_thread) |t| {
+            const next_thread = t.twups;
+            t.allocator.free(t.stack);
+            t.allocator.destroy(t);
+            curr_thread = next_thread;
+        }
+        g.thread_list = null;
+
         L.allocator.destroy(g);
     }
     L.allocator.free(L.stack);
