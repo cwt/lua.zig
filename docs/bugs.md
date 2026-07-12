@@ -11,7 +11,7 @@ timestamp: 2026-07-12T00:00:00Z
 > Working document tracking known defects in the `luazig` codebase. Bugs are
 > numbered `BUG-001` … in priority order. Severity reflects runtime impact.
 > Each entry records the location, the defect, the impact, and the recommended fix.
-> Last updated: 2026-07-12.
+> Last updated: 2026-07-12 (BUG-031–035 appended after audit of rev 37 — the loadlib port).
 
 Legend:
 - **[HIGH]** crashes, wrong control flow, or incorrect results on ordinary programs.
@@ -324,4 +324,41 @@ Legend:
 - **Defect:** `path` allocated via `std.mem.replaceOwned` was leaked when returning from `searchpath`.
 - **Fix:** Added `defer L.allocator.free(path)` and returned a GC-managed copy pushed onto the stack via `lua.lua_tostring(L, -1).?`.
 
+---
+
+## BUG-031 — `loadlib.zig`: 9 silent `catch {}` swallow errors (§0.1 rule 12)  [HIGH] ❌ OPEN
+- **Location:** `src/lib/loadlib.zig` — L91 (`addtoclib`), L394 & L431 (`setpath`), L413/L414/L416/L418/L419 (`setpath` `luaL_addlstring`), L442 (`createsearcherstable`).
+- **Defect:** Every one of these sites wraps a fallible C-API call in `catch {}`, discarding the error and continuing as if it succeeded. This directly violates §0.1 rule 12 ("Never swallow runtime errors with empty or dummy `catch` blocks"). Note: the §0.1 self-audit in rev 37's commit message claims "No empty catches" — this is **false** for the new `loadlib.zig`.
+- **Impact:**
+  - In `setpath`, if any `luaL_addlstring` fails (OOM), `luaL_pushresult` still pushes the partial buffer, so the `;;` default-path expansion silently yields a **corrupted `package.path`/`package.cpath`** with no error surfaced.
+  - In `addtoclib`, a swallowed `lua_setfield` means a freshly `dlopen`'d library is **not cached** in the `CLIBS` registry; the next `require` re-opens it (and re-leaks it — see BUG-032).
+  - In `createsearcherstable`, a swallowed `setfield` could leave `package.searchers` unset, breaking all module loading.
+- **Fix:** Make `setpath` and `createsearcherstable` return `!void` and `try` the inner calls (propagating as a Lua error via `luaL_error` where appropriate). In `addtoclib`, `try` the `setfield` or `luaL_error` on failure. Likewise audit the pre-existing `catch {}` in `lua.zig`/`iolib.zig` for the same rule.
+
+## BUG-032 — `loadlib.zig`: heap-allocated `std.DynLib` handle is never freed (latent leak)  [MED] ❌ OPEN
+- **Location:** `src/lib/loadlib.zig:64-82` (`lsys_load` does `L.allocator.create(std.DynLib)`); `:74` `lsys_unloadlib` is **defined but never called anywhere** in `src/`; `src/lua.zig` `lua_close`/`freeGCObject` only frees GC-tracked objects, not the light-userdata handle stored in `CLIBS`.
+- **Defect:** `lsys_load` heap-allocates a `*std.DynLib` and stores `&lib` as a light userdata in the `CLIBS` registry table. Nothing ever calls `lib.close()` or `allocator.destroy(lib)`, so the handle (and the OS mapping of the shared object) leaks for the lifetime of the VM.
+- **Impact:** Every `require` of a C module (or `package.loadlib` of a C library) leaks one `std.DynLib` struct; `lib.close()` is never invoked, so the `.so` stays mapped. Not caught by the current test suite because no test loads a real C library that survives to `lua_close`, but it is a genuine leak under §0.1 ("zero leaks verified by `std.testing.allocator`").
+- **Fix:** Either (a) keep the `std.DynLib` by value in a GC-tracked `lua_Udata` and free it in `freeGCObject`, or (b) call `lsys_unloadlib(lib)` (which does `lib.close()`) and `allocator.destroy(lib)` when the `CLIBS` entry is dropped / at `lua_close`. The reference keeps the handle in a userdata and never heap-allocates a `DynLib` *struct*.
+
+## BUG-033 — `luaL_getenv`: Linux-only `/proc/self/environ`, exec-time snapshot, swallows I/O errors  [MED] ❌ OPEN
+- **Location:** `src/lauxlib.zig` `luaL_getenv` (reads `/proc/self/environ`).
+- **Defect:** The helper opens `/proc/self/environ` with `std.posix.openat` and reads it, `splitScalar(0)` to parse `KEY=VALUE` pairs.
+  - **Linux-only:** on non-Linux platforms (or a sandbox where `/proc` is unavailable) `openat` fails and the function returns `null` for *every* variable — so `os.getenv` returns `nil` even for variables that exist, and `setpath` silently ignores `LUA_PATH`/`LUA_CPATH` and falls back to the compiled-in defaults.
+  - **Exec-time snapshot:** `/proc/self/environ` reflects the environment **at process exec**, not the live environment. Changes made via `os.setenv`/C `setenv` are not reflected, diverging from the reference `getenv`/`setpath` semantics.
+  - **Swallowed errors:** every `read`/`open` failure is `catch return null`, conflating a transient I/O hiccup with "variable not found".
+- **Impact:** `os.getenv` and `package.path`/`package.cpath` can be silently wrong on non-Linux hosts, in sandboxes, or after the process mutates its environment. The current `os.getenv PATH` test only checks a variable present at exec, so it cannot catch this.
+- **Fix:** Prefer `std.process.getEnvMap(allocator)` (allocated with the explicit allocator) for a portable, live view of the environment; fall back to `/proc/self/environ` only when that is unavailable, and surface I/O errors instead of returning `null`.
+
+## BUG-034 — `luaL_getenv` bypasses `std.Io` (§0.1 rule 10)  [LOW] ❌ OPEN
+- **Location:** `src/lauxlib.zig` `luaL_getenv` (uses `std.posix.openat`/`std.posix.read` directly).
+- **Defect:** All file I/O is supposed to flow through the `io: std.Io` obtained from `std.process.Init` (§0.1 rule 10 / AGENTS.md §0.1.10). `luaL_getenv` instead opens `/proc/self/environ` with raw `std.posix.*` calls, sidestepping the `io` abstraction.
+- **Impact:** Minor — `environ` is a read-only special file and the bypass is contained, but it is a deliberate deviation from the project's I/O directive and is the root cause of the portability gap in BUG-033.
+- **Fix:** Route the read through `L.l_G.?.io` (e.g. `std.Io.File`/`std.Io.Dir`), or replace with `std.process.getEnvMap` (BUG-033), which removes the manual file I/O entirely.
+
+## BUG-035 — `luaL_gsub` leaks its `luaL_Buffer` on OOM  [LOW] ❌ OPEN
+- **Location:** `src/lauxlib.zig` `luaL_gsub` (the `var b = luaL_Buffer{}` has no `errdefer b.buf.deinit(...)`).
+- **Defect:** If any `luaL_addlstring`/`luaL_addchar` allocation fails, the function returns the error **before** `b.buf.deinit` (which only runs on the success path), leaking the partially-grown buffer.
+- **Impact:** Latent — only triggered on OOM. Notably, `luaL_gsub` is called from `searchpath` (with `sep`/`.`) and `loadfunc` (`.` → `_`), so an OOM there leaks. Not currently exercised by the test suite.
+- **Fix:** Add `errdefer b.buf.deinit(L.allocator);` after `luaL_buffinit`.
 
