@@ -13,7 +13,7 @@ timestamp: 2026-07-10T00:00:00Z
 - [Type Model](type-model.md) — Complete type mapping from C to Zig (`TValue`, `lua_State`, `global_State`, closures)
 - [Stack Design](stack.md) — Stack as `[]TValue` slice, growth strategy, indexing semantics
 
-### Phase B — Tables (next implementation priority)
+### Data Structures
 - [Tables](tables.md) — Table implementation: array + hash part, open-addressing, metatable cache
 - [String Interning](string-interning.md) — String deduplication, hash table, short vs long strings
 
@@ -44,7 +44,7 @@ timestamp: 2026-07-10T00:00:00Z
 | Config | `src/luaconf.zig` | `lua/luaconf.h` | ✅ Platform config |
 | State | `src/lstate.zig` | `lua/lstate.c` + `lua/lstate.h` | ✅ Deleted (merged into `lua.zig`) |
 | VM | `src/lvm.zig` | `lua/lvm.c` + `lua/lvm.h` | ✅ Full execution loop, all opcodes |
-| Auxlib | `src/lauxlib.zig` | `lua/lauxlib.c` + `lua/lauxlib.h` | ✅ Most helpers implemented |
+| Auxlib | `src/lauxlib.zig` | `lua/lauxlib.c` + `lua/lauxlib.h` | ✅ All core helpers + Phase H.1 (`luaL_newtable`, `luaL_len`, `luaL_where`); `luaL_ref`/`luaL_unref` + buffer fns pending (H.4/H.5) |
 | Libs | `src/lualib.zig` + `src/lib/*` | `lua/lbaselib.c` etc. | ✅ `baselib`, `mathlib`, `bit32`, `utf8lib`, `stringlib`, `tablib`, `corolib` — **all 10** |
 | Entry | `src/luazig.zig` | `lua/lua.c` | ✅ juicy-main |
 | Entry | `src/luazig.zig` | `lua/lua.c` | ✅ juicy-main |
