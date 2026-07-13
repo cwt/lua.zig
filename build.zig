@@ -22,6 +22,7 @@ pub fn build(b: *std.Build) void {
         .name = "luazig",
         .root_module = root_module,
     });
+    exe.lto = .thin;
 
     b.installArtifact(exe);
 
@@ -29,6 +30,7 @@ pub fn build(b: *std.Build) void {
         .name = "lua",
         .root_module = root_module,
     });
+    lib.lto = .thin;
 
     b.installArtifact(lib);
 

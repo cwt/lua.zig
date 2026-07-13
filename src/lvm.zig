@@ -7,6 +7,7 @@ const lua = @import("lua.zig");
 const lprefix = @import("lprefix.zig");
 const llimits = @import("llimits.zig");
 const ltm = @import("ltm.zig");
+const libm = @import("libm.zig");
 
 const PF_VAHID = 1; // function has hidden vararg arguments
 
@@ -536,7 +537,7 @@ pub fn run(L: *lua.lua_State, active_ci: *lua.CallInfo) anyerror!void {
                 const rb = L.stack[ci.base + @as(usize, @intCast(GETARG_B(instruction)))];
                 const rc = proto.k[@as(usize, @intCast(GETARG_C(instruction)))];
                 if (rb == .number and rc == .number) {
-                    L.stack[ra] = .{ .number = std.math.pow(f64, rb.number, rc.number) };
+                    L.stack[ra] = .{ .number = libm.getLibm().pow(rb.number, rc.number) };
                     if (GET_OPCODE(code[ci.savedpc]) == .MMBINK) ci.savedpc += 1;
                 }
             },
@@ -654,7 +655,7 @@ pub fn run(L: *lua.lua_State, active_ci: *lua.CallInfo) anyerror!void {
                 const rb = L.stack[ci.base + @as(usize, @intCast(GETARG_B(instruction)))];
                 const rc = L.stack[ci.base + @as(usize, @intCast(GETARG_C(instruction)))];
                 if (rb == .number and rc == .number) {
-                    L.stack[ra] = .{ .number = std.math.pow(f64, rb.number, rc.number) };
+                    L.stack[ra] = .{ .number = libm.getLibm().pow(rb.number, rc.number) };
                     if (GET_OPCODE(code[ci.savedpc]) == .MMBIN) ci.savedpc += 1;
                 }
             },

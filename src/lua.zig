@@ -6,6 +6,7 @@ const ltable = @import("ltable.zig");
 pub const lstring = @import("lstring.zig");
 const lundump = @import("lundump.zig");
 const ltm = @import("ltm.zig");
+const libm = @import("libm.zig");
 pub const llex = @import("llex.zig");
 pub const lcode = @import("lcode.zig");
 pub const lparser = @import("lparser.zig");
@@ -976,7 +977,7 @@ pub fn lua_arith(L: *lua_State, op: i32) void {
                 LUA_OPSUB => p1.number - p2.number,
                 LUA_OPMUL => p1.number * p2.number,
                 LUA_OPMOD => p1.number - @floor(p1.number / p2.number) * p2.number,
-                LUA_OPPOW => std.math.pow(f64, p1.number, p2.number),
+                LUA_OPPOW => libm.getLibm().pow(p1.number, p2.number),
                 LUA_OPDIV => p1.number / p2.number,
                 LUA_OPIDIV => @floor(p1.number / p2.number),
                 LUA_OPBAND => @as(f64, @floatFromInt(@as(i64, @intFromFloat(p1.number)) & @as(i64, @intFromFloat(p2.number)))),

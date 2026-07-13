@@ -6,6 +6,85 @@ tags: [log, changelog]
 timestamp: 2026-07-10T00:00:00Z
 ---
 
+## 2026-07-13 — Math via glibc libm (DynLib resolver → shared `src/libm.zig`) + ThinLTO
+
+Routed every software-transcendental math call through glibc `libm` (C Lua uses
+the same `libm`), then factorized the resolver into a shared module and enabled
+ThinLTO on the build.
+
+### Key discovery (root cause of slow math)
+LLVM recognizes `log`/`sin`/`exp`/`pow` **by name** as math builtins and folds
+calls into the static `compiler_rt` software implementation at compile time —
+even when declared `extern fn`. A plain `extern fn log10 = @extern(...)` therefore
+resolves to `compiler_rt.log10`, never glibc. `objdump` confirmed the hot path
+still calling `compiler_rt.log10.log10` after `link_libc` alone. The only way to
+reach glibc is to resolve the symbol **at runtime** via `std.DynLib`, because the
+function pointer is data the optimizer cannot constant-fold into a builtin. Since
+`libm.so.6` is permanently loaded via `DT_NEEDED` (static link against the
+system libm), the resolved pointers stay valid for the process lifetime.
+
+### Changes
+- **`build.zig`**: `.link_libc = true` on `root_module` + `lua_module` `createModule`;
+  `.lto = .thin` set on the `exe`/`lib` `*Step.Compile` (the `lto` field is on the
+  Compile step, not `ExecutableOptions`/`LibraryOptions`). Compile time rises
+  (~1s → ~16s) but produces one optimized module graph.
+- **`src/libm.zig`** (new): single source of truth. `Libm` struct holds function
+  pointers `{sin,cos,tan,asin,acos,atan2,log,log2,log10,exp,pow,fmod,frexp,ldexp}`.
+  `resolve()` opens `libm.so.6` and looks up each symbol; `getLibm()` returns a
+  cached `Libm`, falling back to `std.math.*` equivalents (`fallback()`) if
+  resolution ever fails. Lookups use `callconv(.c)` (lowercase — `.C` is not a
+  valid calling-convention name in this Zig version).
+- **`src/lib/mathlib.zig`**: removed the local DynLib resolver; now `const libm =
+  @import("../libm.zig")` and every transcendental (`sin/cos/tan/asin/acos/atan2/
+  log/log2/log10/exp/fmod/frexp/ldexp`) calls `libm.getLibm().<fn>(...)`.
+- **`src/lua.zig:980`** (`LUA_OPPOW`) and **`src/lvm.zig:540,658`** (`OP_POWK`/
+  `OP_POW`): now `libm.getLibm().pow(...)`.
+- **`src/llex.zig:398`** (`lua_strx2number`): `libm.getLibm().ldexp(r, e)` (was
+  `std.math.ldexp`).
+- **`src/lib/string/format.zig:122`** (`formatFloatG`): `libm.getLibm().log10(...)`
+  (was `std.math.log10`).
+- Hardware-backed ops (`@floor`,`@sqrt`,`@abs`,`@trunc`,`isNan`/`isInf`/`signbit`)
+  and integer/comptime helpers (`maxInt`,`inf`,`nan`) intentionally stay Zig
+  builtins/`std.math` — glibc merely wraps the same CPU instruction in a slower
+  PLT call and they never invoke `compiler_rt`.
+
+### Verification
+- `zig build` clean; `zig build test` passes **73/73**, zero memory leaks.
+- Output of `../pi/pi-5.5.lua` byte-for-byte identical to `./lua/lua`.
+- `objdump` now shows `getLibm()` + indirect `call *%rN` (no `compiler_rt`), and
+  `perf` shows math in `libm.so.6` (`__ieee754_log_fma`, `__log10_finite`).
+- Wall-clock (`../pi/pi-5.5.lua`, ReleaseFast): luazig **0.13s** vs reference C
+  **0.09s** (≈1.44×). **ThinLTO gave no measurable change (0.13s → 0.13s)** — the
+  bottleneck is interpreter dispatch (`lvm.run` 36%) + table lookup
+  (`luaV_gettable` 28%), not cross-module inlining.
+
+### §0.1 self-audit
+1. ✅ Allocator threaded — no hardcoded allocator.
+2. ✅ Errors propagated — `resolve()` failure handled via `fallback()`, no
+   `catch unreachable`; `std.DynLib.open`/`lookup` errors reach the caller.
+3. ✅ No setjmp/longjmp; `%T`/`try` only where fallible.
+4. ✅ Numeric conversions via `@intCast`/`@floatFromInt`; no `@bitCast` for value
+   conversion.
+5. ✅ Slices not C strings.
+6. ✅ No C varargs.
+7. ✅ Unmanaged containers where used.
+8. ✅ Tagged union `TValue` retained.
+9. ✅ Single type model.
+10. ✅ `std.Io` threaded to I/O paths.
+11. ✅ Shift bounds checked/masked.
+12. ✅ No empty `catch {}` blocks.
+13. ✅ Stack capacity validated before use.
+14. ✅ Type predicates precise.
+
+### Known limitations
+- **Integer-pow bug (separate, pre-existing, NOT from libm):** `2^100` and
+  `2^1023` return `0`/`0` in luazig (should be `8.99e307`/`inf`). `2^50` is
+  correct. Standalone `pow` via the same `libm` resolver gives the correct
+  `2^100 = 1.267e30`, so the fault is an integer-literal exponentiation path
+  (suspected 64-bit overflow), not the math call. Deferred; tracked separately.
+
+---
+
 ## 2026-07-12 — Phase F: debug library completed
 
 Implemented the full `debug` standard library (`src/lib/debug.zig`) and the

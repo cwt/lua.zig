@@ -5,6 +5,7 @@
 const std = @import("std");
 const lua = @import("../../lua.zig");
 const lauxlib = @import("../../lauxlib.zig");
+const libm = @import("../../libm.zig");
 
 fn get2digits(s: []const u8, pos: usize) struct { val: i32, new_pos: usize } {
     var val: i32 = 0;
@@ -119,7 +120,7 @@ fn formatFloatG(buf: []u8, abs_val: f64, spec: u8, precision: usize, strip_zeros
         if (strip_zeros) return "0";
         return try formatFloatF(buf, 0.0, precision - 1);
     }
-    const log10_val = std.math.log10(abs_val);
+    const log10_val = libm.getLibm().log10(abs_val);
     const exponent = @as(i32, @intCast(@as(i64, @intFromFloat(std.math.floor(log10_val)))));
     const p = if (precision == 0) @as(usize, 1) else precision;
     var temp_buf: [150]u8 = undefined;

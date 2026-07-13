@@ -17,6 +17,7 @@
 // the LexState's needs and avoids a fragile hand transcription.
 
 const std = @import("std");
+const libm = @import("libm.zig");
 const lua = @import("lua.zig");
 const lstring = @import("lstring.zig");
 const lparser = @import("lparser.zig");
@@ -395,7 +396,7 @@ fn lua_strx2number(s: []const u8, end_out: *usize) f64 {
         end_out.* = i;
     }
     if (neg) r = -r;
-    return std.math.ldexp(r, e);
+    return libm.getLibm().ldexp(r, e);
 }
 
 // Normalize a decimal numeral so Zig's `std.fmt.parseFloat` accepts the valid
