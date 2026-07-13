@@ -36,7 +36,7 @@ pub fn main(init: std.process.Init) !void {
     } else {
         // Interactive REPL mode
         var buffer: [4096]u8 = undefined;
-        try std.Io.File.stdout().writeStreamingAll(io, "Lua 5.5.1  Copyright (C) 1994-2026 Lua.org, PUC-Rio\n");
+        try std.Io.File.stdout().writeStreamingAll(io, "Lua.Zig 5.5.1  Copyright (C) 1994-2026 Lua.org, PUC-Rio\n");
         while (true) {
             try std.Io.File.stdout().writeStreamingAll(io, "> ");
             const bytes_read = std.Io.File.stdin().readStreaming(io, &.{&buffer}) catch |err| {
