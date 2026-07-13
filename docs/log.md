@@ -1263,3 +1263,58 @@ workstreams (H.1–H.10) by systematic audit against `lua/lua.h`,
 
 ### Verification
 `zig build test` still passes: **72/72 tests**, zero memory leaks.
+
+## 2026-07-13 — Phase D fix: vararg RETURN/TAILCALL frame-restoration bug (3 test regressions)
+
+### Root cause
+
+After the vararg (`buildhiddenargs`) port, three tests regressed with
+`lua_gettop` returning 2 instead of 1: `VM execution`, `BUG-036: VM vararg
+execution`, and `luaL_dostring executes source-text string`.
+
+Every Lua function compiled with `PF_VAHID` (the main chunk always is, via
+`setvararg` in `mainfunc`) has its call frame relocated by `buildhiddenargs`,
+which shifts `CallInfo.func` up by `totalargs + 1`. The matching restoration
+`ci.func -= (nextraargs + nparams1)` must happen on return. The `.RETURN`
+handler did this, but three other return paths did **not**:
+
+1. **`OP_TAILCALL` (.lua branch):** `return sub(10)` compiles to a tail call
+   that reuses the current `CallInfo`. It copied args into the shifted
+   `ci.func` slot but never restored `ci.func`/`ci.base`, so the result landed
+   at the wrong stack index and `L.top` ended up one too high.
+2. **`OP_RETURN0` / `OP_RETURN1`:** these opcodes never restored `ci.func`.
+3. **Text compiler `luaK_finish`:** when it converts `RETURN0`/`RETURN1` →
+   `RETURN` for a `PF_VAHID` function, it set the opcode but (unlike the C
+   reference, which *falls through* into the `OP_RETURN` case) never set
+   `SETARG_C(pc, numParams + 1)`. So the C field stayed 0 and the `.RETURN`
+   handler skipped the restoration.
+
+### Changes
+
+- **`src/lvm.zig`**: Added `isVarargFunc(L, ci)` and `numParamsOf(L, ci)`
+  helpers. `OP_RETURN0` and `OP_RETURN1` now restore `ci.func`/`ci.base` when
+  the executing closure is `PF_VAHID` (using `numParams + 1` as `nparams1`).
+  `OP_TAILCALL`'s `.lua` and `.c` branches now correct `ci.func` via
+  `nextraargs + GETARG_C(i)` before reusing the `CallInfo`, matching
+  `lua/lvm.c` `OP_TAILCALL`.
+- **`src/lcode.zig`**: `luaK_finish` now sets `SETARG_k`/`SETARG_C` on the
+  `RETURN0`/`RETURN1` → `RETURN` conversion (equivalent to the C `fallthrough`
+  into the `OP_RETURN` case), so the VM's `.RETURN` handler sees `C =
+  numParams + 1` and restores the frame correctly.
+
+### §0.1 Self-Audit
+
+- **Rule 1 (allocator threaded):** no allocation changes; helpers only read
+  `L.stack[ci.func]`.
+- **Rule 2/12 (error propagation):** no error-handling changes; `poscall`
+  path unchanged.
+- **Rule 8 (single type model):** unchanged; still reads `lua_Closure` from
+  the stack.
+- **Rule 11 (boundary checks on dynamic bitwise shifts):** not touched.
+
+### Verification
+
+`zig build test` → **73/73 tests pass, zero memory leaks.** Verified all three
+previously-failing tests (`VM execution`, `BUG-036`, `luaL_dostring`) now
+report `lua_gettop == 1`. Cross-checked bytecode (reference-compiled
+`tests/*.luac`) and text-compiled (`luaL_dostring "return 42"`) paths.

@@ -441,6 +441,7 @@ pub fn luaK_setoneret(fs: *FuncState, e: *expdesc) void {
 pub fn luaK_vapar2local(fs: *FuncState, vp: *expdesc) void {
     lparser.needvatab(fs.f);
     vp.k = .VLOCAL;
+    vp.u = .{ .uv = .{ .ridx = @intCast(fs.f.numParams), .vidx = 0 } };
 }
 
 pub fn luaK_dischargevars(fs: *FuncState, e: *expdesc) void {
@@ -452,6 +453,9 @@ pub fn luaK_dischargevars(fs: *FuncState, e: *expdesc) void {
         },
         .VVARGVAR => {
             luaK_vapar2local(fs, e);
+            const temp = e.u.uv.ridx;
+            e.u = .{ .info = temp };
+            e.k = .VNONRELOC;
         },
         .VLOCAL => {
             const temp = e.u.uv.ridx;
@@ -598,6 +602,16 @@ pub fn luaK_exp2anyreg(fs: *FuncState, e: *expdesc) i32 {
     }
     luaK_exp2nextreg(fs, e);
     return e.u.info;
+}
+
+pub fn luaK_codecheckglobal(fs: *FuncState, var_: *expdesc, k: i32, line: i32) void {
+    _ = luaK_exp2anyreg(fs, var_);
+    luaK_fixline(fs, line);
+    var k2 = k;
+    if (k2 >= lvm.MAXARG_Bx) k2 = 0 else k2 += 1;
+    _ = luaK_codeABx(fs, .ERRNNIL, var_.u.info, k2);
+    luaK_fixline(fs, line);
+    freeexp(fs, var_);
 }
 
 pub fn luaK_exp2anyregup(fs: *FuncState, e: *expdesc) void {
@@ -932,8 +946,8 @@ fn finishbinexpneg(fs: *FuncState, e1: *expdesc, e2: *expdesc, op: lvm.OpCode, l
     const i2v = e2.u.ival;
     if (!(fitsC(i2v) and fitsC(-i2v))) return false;
     const v2 = @as(i32, @intCast(i2v));
-    finishbinexpval(fs, e1, e2, op, int2sC(v2), false, line, .MMBINI, event);
-    lvm.SETARG_B(&fs.code.items[fs.code.items.len - 1], int2sC(-v2));
+    finishbinexpval(fs, e1, e2, op, int2sC(-v2), false, line, .MMBINI, event);
+    lvm.SETARG_B(&fs.code.items[fs.code.items.len - 1], int2sC(v2));
     return true;
 }
 
@@ -1121,6 +1135,8 @@ pub fn luaK_posfix(fs: *FuncState, opr: lparser.BinOpr, e1: *expdesc, e2: *expde
         },
         .OPR_SUB => {
             if (finishbinexpneg(fs, e1, e2, .ADDI, line, .SUB)) return;
+            // fallthrough: e2 is not a constant int, emit general subtract
+            codearith(fs, opr, e1, e2, false, line);
         },
         .OPR_DIV, .OPR_IDIV, .OPR_MOD, .OPR_POW => {
             codearith(fs, opr, e1, e2, false, line);
@@ -1223,6 +1239,10 @@ pub fn luaK_finish(fs: *FuncState) void {
             .RETURN0, .RETURN1 => {
                 if (!(fs.needclose or (p.flag & lparser.PF_VAHID) != 0)) break;
                 lvm.SET_OPCODE(pc, .RETURN);
+                if (fs.needclose)
+                    lvm.SETARG_k(pc, 1);
+                if ((p.flag & lparser.PF_VAHID) != 0)
+                    lvm.SETARG_C(pc, p.numParams + 1);
             },
             .RETURN, .TAILCALL => {
                 if (fs.needclose)

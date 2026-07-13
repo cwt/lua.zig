@@ -132,7 +132,7 @@ Wire `iolib`/`oslib` to `std.Io`/`init.io`. **67/67 tests pass, zero memory leak
 
 ## Phase G — Source-Text Compiler ✅ DONE (2026-07-13)
 
-All G.1–G.4 completed. Full Lua 5.5.1 lexer, recursive-descent parser, and code generator ported to Zig 0.16.0. `lua_load` now detects source vs bytecode and compiles text source via `luaD_protectedparser`. 72/72 tests pass, zero leaks.
+All G.1–G.4 completed. Full Lua 5.5.1 lexer, recursive-descent parser, and code generator ported to Zig 0.16.0. `lua_load` now detects source vs bytecode and compiles text source via `luaD_protectedparser`. 73/73 tests pass, zero leaks.
 
 ### Phase G.1 — Lexer (`src/llex.zig`) ✅ DONE
 ### Phase G.2 — Parser (`src/lparser.zig`) ✅ DONE

@@ -8,6 +8,33 @@ const lprefix = @import("lprefix.zig");
 const llimits = @import("llimits.zig");
 const ltm = @import("ltm.zig");
 
+const PF_VAHID = 1; // function has hidden vararg arguments
+
+// True if the closure currently executing in 'ci' uses hidden vararg
+// arguments (and therefore had its frame relocated by buildhiddenargs).
+fn isVarargFunc(L: *lua.lua_State, ci: *lua.CallInfo) bool {
+    const fv = L.stack[ci.func];
+    if (fv == .function) {
+        if (fv.function) |clo| switch (clo.*) {
+            .lua => |lc| return (lc.p.flag & PF_VAHID) != 0,
+            else => {},
+        };
+    }
+    return false;
+}
+
+// Number of fixed parameters of the closure executing in 'ci'.
+fn numParamsOf(L: *lua.lua_State, ci: *lua.CallInfo) usize {
+    const fv = L.stack[ci.func];
+    if (fv == .function) {
+        if (fv.function) |clo| switch (clo.*) {
+            .lua => |lc| return lc.p.numParams,
+            else => {},
+        };
+    }
+    return 0;
+}
+
 // ===================================================================
 // Opcodes
 // ===================================================================
@@ -913,6 +940,13 @@ pub fn run(L: *lua.lua_State, active_ci: *lua.CallInfo) anyerror!void {
                 const cl_call = val.function.?;
                 switch (cl_call.*) {
                     .c => |cc| {
+                        // Correct 'ci.func' for PF_VAHID functions before the
+                        // tail call reuses the current CallInfo.
+                        const nparams1 = GETARG_C(instruction);
+                        if (nparams1 != 0) {
+                            ci.func -= @as(usize, @intCast(@as(i32, @intCast(ci.nextraargs)) + nparams1));
+                            ci.base = ci.func + 1;
+                        }
                         const n = try cc.f(L);
                         const num_returned = @as(usize, @intCast(n));
                         const first_result = L.top - num_returned;
@@ -939,6 +973,13 @@ pub fn run(L: *lua.lua_State, active_ci: *lua.CallInfo) anyerror!void {
                     .lua => |lc| {
                         lua.closeupvals(L, ci.base);
                         const count = @as(usize, @intCast(b));
+                        // Correct 'ci.func' for PF_VAHID functions: buildhiddenargs
+                        // relocated the frame, so restore it before reusing the ci.
+                        const nparams1 = GETARG_C(instruction);
+                        if (nparams1 != 0) {
+                            ci.func -= @as(usize, @intCast(@as(i32, @intCast(ci.nextraargs)) + nparams1));
+                            ci.base = ci.func + 1;
+                        }
                         var k: usize = 0;
                         while (k < count) : (k += 1) {
                             L.stack[ci.func + k] = L.stack[ra_idx + k];
@@ -977,6 +1018,11 @@ pub fn run(L: *lua.lua_State, active_ci: *lua.CallInfo) anyerror!void {
                 if (n < 0) {
                     n = @intCast(L.top - ra_idx);
                 }
+                const nparams1 = GETARG_C(instruction);
+                if (nparams1 != 0) {
+                    ci.func -= @as(usize, @intCast(@as(i32, @intCast(ci.nextraargs)) + nparams1));
+                    ci.base = ci.func + 1;
+                }
                 const old_ci = ci;
                 lua.poscall(L, old_ci, ra_idx, @intCast(n));
                 if (old_ci == active_ci) {
@@ -998,8 +1044,14 @@ pub fn run(L: *lua.lua_State, active_ci: *lua.CallInfo) anyerror!void {
                 }
             },
             .RETURN0 => {
+                const ra_idx = ci.base;
+                if (isVarargFunc(L, ci)) {
+                    const nparams1: i32 = @intCast(numParamsOf(L, ci) + 1);
+                    ci.func -= @as(usize, @intCast(@as(i32, @intCast(ci.nextraargs)) + nparams1));
+                    ci.base = ci.func + 1;
+                }
                 const old_ci = ci;
-                lua.poscall(L, old_ci, ci.base, 0);
+                lua.poscall(L, old_ci, ra_idx, 0);
                 if (old_ci == active_ci) {
                     L.ci = old_ci.previous;
                     L.allocator.destroy(old_ci);
@@ -1020,6 +1072,11 @@ pub fn run(L: *lua.lua_State, active_ci: *lua.CallInfo) anyerror!void {
             },
             .RETURN1 => {
                 const ra_idx = ci.base + @as(usize, @intCast(GETARG_A(instruction)));
+                if (isVarargFunc(L, ci)) {
+                    const nparams1: i32 = @intCast(numParamsOf(L, ci) + 1);
+                    ci.func -= @as(usize, @intCast(@as(i32, @intCast(ci.nextraargs)) + nparams1));
+                    ci.base = ci.func + 1;
+                }
                 const old_ci = ci;
                 lua.poscall(L, old_ci, ra_idx, 1);
                 if (old_ci == active_ci) {
@@ -1133,7 +1190,7 @@ pub fn run(L: *lua.lua_State, active_ci: *lua.CallInfo) anyerror!void {
             },
             .ERRNNIL => {
                 const ra_idx = ci.base + @as(usize, @intCast(GETARG_A(instruction)));
-                if (L.stack[ra_idx] == .nil) {
+                if (L.stack[ra_idx] != .nil) {
                     return error.RuntimeError;
                 }
             },

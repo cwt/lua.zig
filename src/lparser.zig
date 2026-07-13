@@ -526,6 +526,14 @@ fn buildglobal(ls: *llex.LexState, varname: *lua.lua_TString, vp: *expdesc) !voi
     lcode.luaK_indexed(fs, vp, &key);
 }
 
+fn checkglobal(ls: *llex.LexState, varname: *lua.lua_TString, line: i32) !void {
+    const fs = ls.fs.?;
+    var var_: expdesc = undefined;
+    try buildglobal(ls, varname, &var_);
+    const k = var_.u.ind.keystr;
+    lcode.luaK_codecheckglobal(fs, &var_, k, line);
+}
+
 fn buildvar(ls: *llex.LexState, varname: *lua.lua_TString, vp: *expdesc) !void {
     const fs = ls.fs.?;
     init_exp(vp, .VGLOBAL, -1);
@@ -841,6 +849,7 @@ fn close_func(ls: *llex.LexState) !void {
 }
 
 fn setvararg(fs: *FuncState) void {
+    fs.f.isVarArg = true;
     fs.f.flag |= PF_VAHID;
     _ = lcode.luaK_codeABC(fs, .VARARGPREP, 0, 0, 0);
 }
@@ -1373,6 +1382,76 @@ fn retstat(ls: *llex.LexState) !void {
     _ = try testnext(ls, ';');
 }
 
+fn initglobal(ls: *llex.LexState, nvars: i32, firstidx: i32, n: i32, line: i32) !void {
+    if (n == nvars) {
+        var e: expdesc = undefined;
+        const nexps = try explist(ls, &e);
+        try adjust_assign(ls, nvars, nexps, &e);
+    } else {
+        const fs = ls.fs.?;
+        var var_: expdesc = undefined;
+        const vardesc = getlocalvardesc(fs, firstidx + n);
+        const gname = vardesc.name orelse return;
+        try buildglobal(ls, gname, &var_);
+        try enterlevel(ls);
+        try initglobal(ls, nvars, firstidx, n + 1, line);
+        leavelevel(ls);
+        try checkglobal(ls, gname, line);
+        storevartop(fs, &var_);
+    }
+}
+
+fn globalnames(ls: *llex.LexState, defkind: u8) !void {
+    const fs = ls.fs.?;
+    var nvars: i32 = 0;
+    var lastidx: i32 = 0;
+    while (true) {
+        const vname = try str_checkname(ls);
+        const kind = try getglobalattribute(ls, defkind);
+        lastidx = try new_varkind(ls, vname, kind);
+        nvars += 1;
+        if (!(try testnext(ls, ','))) break;
+    }
+    if (try testnext(ls, '=')) {
+        try initglobal(ls, nvars, lastidx - nvars + 1, 0, ls.linenumber);
+    }
+    fs.nactvar = @intCast(fs.nactvar + nvars);
+}
+
+fn globalstat(ls: *llex.LexState) !void {
+    const fs = ls.fs.?;
+    const defkind = try getglobalattribute(ls, GDKREG);
+    if (!(try testnext(ls, '*'))) {
+        try globalnames(ls, defkind);
+    } else {
+        _ = try new_varkind(ls, null, defkind);
+        fs.nactvar += 1;
+    }
+}
+
+fn globalfunc(ls: *llex.LexState, line: i32) !void {
+    const fs = ls.fs.?;
+    var var_: expdesc = undefined;
+    var b: expdesc = undefined;
+    const fname = try str_checkname(ls);
+    _ = try new_varkind(ls, fname, GDKREG);
+    fs.nactvar += 1;
+    try buildglobal(ls, fname, &var_);
+    try body(ls, &b, false, ls.linenumber);
+    try checkglobal(ls, fname, line);
+    lcode.luaK_storevar(fs, &var_, &b);
+    lcode.luaK_fixline(fs, line);
+}
+
+fn globalstatfunc(ls: *llex.LexState, line: i32) !void {
+    try llex.luaX_next(ls);
+    if (try testnext(ls, llex.TK_FUNCTION)) {
+        try globalfunc(ls, line);
+    } else {
+        try globalstat(ls);
+    }
+}
+
 fn ifstat(ls: *llex.LexState, line: i32) !void {
     const fs = ls.fs.?;
     var escapelist: i32 = NO_JUMP;
@@ -1401,6 +1480,7 @@ fn test_then_block(ls: *llex.LexState, escapelist: *i32) !void {
 fn whilestat(ls: *llex.LexState, line: i32) !void {
     const fs = ls.fs.?;
     var bl: BlockCnt = .{};
+    try llex.luaX_next(ls);
     const whileinit = lcode.luaK_getlabel(fs);
     const condexit = try cond(ls);
     enterblock(fs, &bl, 1);
@@ -1555,6 +1635,18 @@ fn getvarattribute(ls: *llex.LexState, df: u8) !u8 {
     return df;
 }
 
+fn getglobalattribute(ls: *llex.LexState, df: u8) !u8 {
+    const kind = try getvarattribute(ls, df);
+    if (kind == RDKTOCLOSE) {
+        try lcode.luaK_semerror(ls, "global variables cannot be to-be-closed");
+        return undefined;
+    }
+    if (kind == RDKCONST) {
+        return GDKCONST;
+    }
+    return kind;
+}
+
 fn checktoclose(fs: *FuncState, level: i32) !void {
     if (level != -1) {
         marktobeclosed(fs);
@@ -1628,6 +1720,7 @@ fn statement(ls: *llex.LexState) anyerror!void {
     switch (ls.t.token) {
         ';' => try llex.luaX_next(ls),
         llex.TK_IF => try ifstat(ls, line),
+        llex.TK_GLOBAL => try globalstatfunc(ls, line),
         llex.TK_WHILE => try whilestat(ls, line),
         llex.TK_DO => {
             try llex.luaX_next(ls);
