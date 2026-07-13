@@ -238,7 +238,20 @@ const MAXTAGLOOP: usize = 2000;
 ///   - If `__index` is a function, calls it and returns the result.
 ///   - If `__index` is a table, recurses into that table.
 /// Errors with `error.RuntimeError` when no metamethod exists.
-pub fn luaV_gettable(L: *lua.lua_State, t: lua.TValue, key: lua.TValue, res: usize) !void {
+pub inline fn luaV_gettable(L: *lua.lua_State, t: lua.TValue, key: lua.TValue, res: usize) !void {
+    // Fast path: a plain table with no metatable cannot have an __index, so a
+    // hit returns the value and a miss returns nil — no metamethod machinery.
+    if (t == .table) {
+        if (t.table) |tbl| {
+            if (tbl.metatable == null) {
+                L.stack[res] = ltable.get(tbl, key);
+                return;
+            }
+        } else {
+            L.stack[res] = .{ .nil = {} };
+            return;
+        }
+    }
     var current = t;
     var loop: usize = 0;
     while (loop < MAXTAGLOOP) : (loop += 1) {
@@ -289,7 +302,19 @@ pub fn luaV_gettable(L: *lua.lua_State, t: lua.TValue, key: lua.TValue, res: usi
 ///   - If `__newindex` is a function, calls it.
 ///   - If `__newindex` is a table, recurses into that table.
 /// Errors with `error.RuntimeError` when no metamethod exists.
-pub fn luaV_settable(L: *lua.lua_State, t: lua.TValue, key: lua.TValue, val: lua.TValue) !void {
+pub inline fn luaV_settable(L: *lua.lua_State, t: lua.TValue, key: lua.TValue, val: lua.TValue) !void {
+    // Fast path: a plain table with no metatable cannot have a __newindex, so a
+    // raw write is always correct.
+    if (t == .table) {
+        if (t.table) |tbl| {
+            if (tbl.metatable == null) {
+                try ltable.set(tbl, key, val);
+                return;
+            }
+        } else {
+            return error.RuntimeError;
+        }
+    }
     var current = t;
     var loop: usize = 0;
     while (loop < MAXTAGLOOP) : (loop += 1) {
