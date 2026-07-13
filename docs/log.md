@@ -1177,3 +1177,49 @@ This is a documentation-only changeset. No source/test changes; `zig build test`
 ### Verification
 
 `zig build test` → **72/72 tests pass, zero memory leaks.** Validated by executing dynamic source compilation, VM execution of output bytecode, and correct cleanup on syntax error paths.
+
+## 2026-07-13 — AND/OR logical operator codegen fix + `LUA_COMPAT_MATHLIB` removal
+
+### AND/OR codegen fix
+
+**Root cause:** `luaK_posfix` for `OPR_AND` called `luaK_goiftrue(fs, e1)` a second
+time (after `luaK_infix` already called it), negating the comparison test condition
+back to its original polarity. This caused the JMP to jump when the condition was
+*true* instead of when it was *false* — i.e., the short-circuit branch was taken
+on the wrong value. The C reference (`lua/lcode.c`) does **not** call
+`luaK_goiftrue` in `luaK_posfix` for AND.
+
+**Fix:** Removed the redundant `luaK_goiftrue(e1)` call from the `OPR_AND` case in
+`luaK_posfix` (`src/lcode.zig:1107`).
+
+**Verification:** All comparison + AND/OR combinations now evaluate correctly
+(e.g. `print(1 >= 10 and true)` → `false`, `print(10 >= 1 and 42)` → `42`).
+
+### `LUA_COMPAT_MATHLIB` removal
+
+**Reason:** Lua 5.5.1 conditionally provides `math.atan2`, `math.cosh`,
+`math.sinh`, `math.tanh`, `math.pow`, `math.log10` behind
+`#if defined(LUA_COMPAT_MATHLIB)`, which is **off by default** in the stock build.
+The port was including them unconditionally.
+
+**Changes:**
+- Removed `math_cosh`, `math_sinh`, `math_tanh`, `math_pow`, `math_log10`
+  function definitions from `src/lib/mathlib.zig`.
+- Removed `"atan2"`, `"cosh"`, `"sinh"`, `"tanh"`, `"pow"`, `"log10"`
+  registration entries. Reduced table size hint from 30→25.
+- `math.log(x, 10)` and `math.atan(y, x)` remain (they are not compat shims).
+
+### Documentation
+- `docs/libraries.md`: Updated mathlib function list and added note about
+  `LUA_COMPAT_MATHLIB` conditional.
+
+### §0.1 Self-Audit
+- No `catch unreachable`, no `@bitCast` for value conversion.
+- Errors propagated via `!T` + `try` throughout.
+- Single type model maintained.
+- AND/OR correctness verified against the C reference semantics.
+
+### Verification
+`zig build` and `zig build test` both pass: **72/72 tests**, zero memory leaks.
+Behavior cross-checked against the Lua 5.5.1 reference binary for logical
+operator evaluation and math library availability.

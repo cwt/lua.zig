@@ -268,7 +268,7 @@ fn math_randomseed(L: *lua.lua_State) !i32 {
 // ===================================================================
 
 pub fn openmathlib(L: *lua.lua_State) !void {
-    lua.lua_createtable(L, 0, 24);
+    lua.lua_createtable(L, 0, 25);
 
     for ([_]struct { name: []const u8, func: lua.lua_CFunction }{
         .{ .name = "abs", .func = math_abs },

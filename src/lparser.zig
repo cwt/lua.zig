@@ -107,7 +107,7 @@ pub const expdesc = struct {
     k: ExpKind,
     t: i32,
     f: i32,
-    u: union {
+    u: union(enum) {
         info: i32,
         ival: i64,
         nval: f64,
@@ -370,8 +370,7 @@ fn init_var(fs: *FuncState, e: *expdesc, vidx: i32) void {
     e.t = NO_JUMP;
     e.f = NO_JUMP;
     e.k = .VLOCAL;
-    e.u.uv.vidx = @intCast(vidx);
-    e.u.uv.ridx = getlocalvardesc(fs, vidx).ridx;
+    e.u = .{ .uv = .{ .vidx = @intCast(vidx), .ridx = getlocalvardesc(fs, vidx).ridx } };
 }
 
 fn new_varkind(ls: *llex.LexState, name: ?*lua.lua_TString, kind: u8) !i32 {
@@ -414,12 +413,12 @@ fn adjustlocalvars(ls: *llex.LexState, nvars: i32) !void {
 
 fn removevars(fs: *FuncState, tolevel: i32) void {
     const dyd = &fs.ls.dyd;
-    dyd.actvar.items.len -= @intCast(fs.nactvar - tolevel);
     while (fs.nactvar > tolevel) {
         fs.nactvar -= 1;
         const v: ?*lua.LocVar = localdebuginfo(fs, fs.nactvar);
         if (v) |vv| vv.endpc = @intCast(fs.code.items.len);
     }
+    dyd.actvar.items.len = @intCast(fs.firstlocal + tolevel);
 }
 
 fn searchupvalue(fs: *FuncState, n: *lua.lua_TString) i32 {
@@ -1026,7 +1025,14 @@ fn primaryexp(ls: *llex.LexState, v: *expdesc) !void {
             lcode.luaK_dischargevars(ls.fs.?, v);
         },
         llex.TK_NAME => try singlevar(ls, v),
-        else => return llex.luaX_syntaxerror(ls, "unexpected symbol"),
+        else => {
+            const tok_str = llex.token2str(ls.t.token);
+            if (std.fmt.allocPrint(ls.allocator, "unexpected symbol near '{s}'", .{tok_str})) |msg| {
+                return llex.luaX_syntaxerror_alloc(ls, msg);
+            } else |_| {
+                return llex.luaX_syntaxerror(ls, "unexpected symbol");
+            }
+        },
     }
 }
 
@@ -1302,6 +1308,7 @@ fn restassign(ls: *llex.LexState, lh: *LHS_assign, nvars: i32) !void {
         try restassign(ls, &nv, nvars + 1);
         leavelevel(ls);
     } else {
+        try checknext(ls, '=');
         const nexps = try explist(ls, &e);
         if (nexps != nvars) {
             try adjust_assign(ls, nvars, nexps, &e);
@@ -1450,6 +1457,7 @@ fn forbody(ls: *llex.LexState, base: i32, line: i32, nvars: i32, isgen: i32) !vo
     const forloop = [_]lvm.OpCode{ .FORLOOP, .TFORLOOP };
     var bl: BlockCnt = .{};
     const fs = ls.fs.?;
+    try checknext(ls, llex.TK_DO);
     const prep = lcode.luaK_codeABx(fs, forprep[@intCast(isgen)], base, 0);
     fs.freereg -= 1;
     enterblock(fs, &bl, 0);
@@ -1679,6 +1687,9 @@ fn mainfunc(ls: *llex.LexState, fs: *FuncState) !void {
 }
 
 fn cleanupFuncState(fs: *FuncState, allocator: std.mem.Allocator) void {
+    for (fs.p.items) |proto| {
+        lua.destroyProto(allocator, proto);
+    }
     fs.code.deinit(allocator);
     fs.k.deinit(allocator);
     fs.lineinfo.deinit(allocator);
@@ -1713,7 +1724,17 @@ pub fn luaD_protectedparser(
         ls.buff.deinit(L.allocator);
         ls.dyd.deinit(L.allocator);
     }
-    const f = try luaY_parser(L, &ls);
+    const f = luaY_parser(L, &ls) catch |err| {
+        if (ls.errmsg) |msg| {
+            var buf: [512]u8 = undefined;
+            const formatted = std.fmt.bufPrint(&buf, "{s}:{d}: {s}", .{ chunkname, ls.linenumber, msg }) catch msg;
+            _ = lua.lua_pushstring(L, formatted);
+        } else {
+            _ = lua.lua_pushstring(L, "syntax error");
+        }
+        if (ls.errmsg_allocated) L.allocator.free(ls.errmsg.?);
+        return err;
+    };
     try lua.registerGC(L, f);
     ls.buff.deinit(L.allocator);
     ls.dyd.deinit(L.allocator);

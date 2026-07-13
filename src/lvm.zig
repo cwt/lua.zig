@@ -1042,24 +1042,24 @@ pub fn run(L: *lua.lua_State, active_ci: *lua.CallInfo) anyerror!void {
             },
             .FORPREP => {
                 const ra_idx = ci.base + @as(usize, @intCast(GETARG_A(instruction)));
-                const init = L.stack[ra_idx].number;
-                const limit = L.stack[ra_idx + 1].number;
-                const step = L.stack[ra_idx + 2].number;
-                if (step == 0) return error.RuntimeError;
-                if ((step > 0 and limit < init) or (step < 0 and init < limit)) {
+                const init_val = L.stack[ra_idx].number;
+                const limit_val = L.stack[ra_idx + 1].number;
+                const step_val = L.stack[ra_idx + 2].number;
+                if (step_val == 0.0) return error.RuntimeError;
+                if ((step_val > 0.0 and limit_val < init_val) or (step_val < 0.0 and init_val < limit_val)) {
                     ci.savedpc += @as(usize, @intCast(GETARG_Bx(instruction) + 1));
                 } else {
-                    L.stack[ra_idx] = .{ .number = limit };
-                    L.stack[ra_idx + 1] = .{ .number = step };
-                    L.stack[ra_idx + 2] = .{ .number = init };
+                    L.stack[ra_idx] = .{ .number = limit_val };
+                    L.stack[ra_idx + 1] = .{ .number = step_val };
+                    L.stack[ra_idx + 2] = .{ .number = init_val };
                 }
             },
             .FORLOOP => {
                 const ra_idx = ci.base + @as(usize, @intCast(GETARG_A(instruction)));
-                const step = L.stack[ra_idx + 1].number;
-                const limit = L.stack[ra_idx].number;
-                const idx = L.stack[ra_idx + 2].number + step;
-                if ((step > 0 and idx <= limit) or (step < 0 and limit <= idx)) {
+                const step_val = L.stack[ra_idx + 1].number;
+                const limit_val = L.stack[ra_idx].number;
+                const idx = L.stack[ra_idx + 2].number + step_val;
+                if ((step_val > 0.0 and idx <= limit_val) or (step_val < 0.0 and limit_val <= idx)) {
                     L.stack[ra_idx + 2] = .{ .number = idx };
                     ci.savedpc -= @as(usize, @intCast(GETARG_Bx(instruction)));
                 }

@@ -199,6 +199,7 @@ pub const LexState = struct {
     fs: ?*lparser.FuncState = null,
     // Last syntax-error message (for diagnostics; null when no error).
     errmsg: ?[]const u8 = null,
+    errmsg_allocated: bool = false,
 };
 
 // ---------------------------------------------------------------------------
@@ -500,6 +501,11 @@ pub fn luaX_syntaxerror(ls: *LexState, msg: []const u8) LexError {
     return lexerror(ls, msg);
 }
 
+pub fn luaX_syntaxerror_alloc(ls: *LexState, msg: []const u8) LexError {
+    ls.errmsg_allocated = true;
+    return lexerror(ls, msg);
+}
+
 // ---------------------------------------------------------------------------
 // String interning
 // ---------------------------------------------------------------------------
@@ -543,6 +549,7 @@ pub fn luaX_setinput(
     ls.chunk = first_slice;
     ls.chunk_off = 0;
     ls.eof = false;
+    ls.fs = null;
     ls.buff = std.ArrayList(u8).empty;
     ls.current = if (readByte(ls)) |b| @as(i32, b) else EOZ;
 }
@@ -891,7 +898,20 @@ fn llex(ls: *LexState, seminfo: *SemInfo) !i32 {
 pub fn token2str(token: i32) []const u8 {
     if (token < FIRST_RESERVED) {
         if (token < 0) return "<eof>";
-        return &[_]u8{@intCast(token)};
+        const static = struct {
+            const chars = blk: {
+                var arr: [256][]const u8 = undefined;
+                for (0..256) |i| {
+                    const single = &[1]u8{@intCast(i)};
+                    arr[i] = single;
+                }
+                break :blk arr;
+            };
+        };
+        if (token >= 0 and token < 256) {
+            return static.chars[@intCast(token)];
+        }
+        return "?";
     }
     for (reserved_words) |r| {
         if (r.tok == token) return r.name;

@@ -295,19 +295,25 @@ fn pcall(L: *lua.lua_State) anyerror!i32 {
 
 fn print(L: *lua.lua_State) anyerror!i32 {
     const n = lua.lua_gettop(L);
-    var i: i32 = 1;
     const io = L.l_G.?.io;
+    try lauxlib.luaL_checkstack(L, 1, "no extra stack slots");
+    _ = lua.lua_getglobal(L, "tostring");
+    var i: i32 = 1;
     while (i <= n) : (i += 1) {
+        lua.lua_pushvalue(L, -1);
+        lua.lua_pushvalue(L, i);
+        try lua.lua_call(L, 1, 1);
         var len: usize = 0;
-        const s = lauxlib.luaL_tolstring(L, i, &len);
+        const s = lua.lua_tolstring(L, -1, &len);
+        if (i > 1) {
+            try std.Io.File.stdout().writeStreamingAll(io, "\t");
+        }
         if (s) |str| {
             try std.Io.File.stdout().writeStreamingAll(io, str);
         }
-        if (i < n) {
-            try std.Io.File.stdout().writeStreamingAll(io, "\t");
-        }
         lua.lua_pop(L, 1);
     }
+    lua.lua_pop(L, 1);
     try std.Io.File.stdout().writeStreamingAll(io, "\n");
     return 0;
 }

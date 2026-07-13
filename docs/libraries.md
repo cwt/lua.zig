@@ -54,22 +54,24 @@ Current `src/lib/baselib.zig` status: **fully implemented** — `type`, `rawequa
 
 ### mathlib (`lua/lmathlib.c`)
 
-Functions: `abs`, `acos`, `asin`, `atan`, `atan2`, `ceil`, `cos`, `cosh`, `deg`, `exp`, `floor`, `fmod`, `huge`, `log`, `max`, `min`, `modf`, `pi`, `rad`, `random`, `randomseed`, `sin`, `sinh`, `sqrt`, `tan`, `tanh`, `tointeger`, `type`, `ult`
+Functions: `abs`, `acos`, `asin`, `atan`, `ceil`, `cos`, `deg`, `exp`, `floor`,
+`fmod`, `huge`, `log`, `max`, `min`, `modf`, `pi`, `rad`, `random`, `randomseed`,
+`sin`, `sqrt`, `tan`, `tointeger`, `type`, `ult`
 
 Mostly pure number operations. Low dependency on other components.
 
-Current `src/lib/mathlib.zig` status: **fully implemented** — all 26 functions
-(`abs`, `sin`, `cos`, `tan`, `asin`, `acos`, `atan`, `floor`, `ceil`, `fmod`,
-`modf`, `sqrt`, `ult`, `log`, `exp`, `deg`, `rad`, `frexp`, `ldexp`, `min`,
-`max`, `type`, `random`, `randomseed`, `tointeger`) plus constants
+Current `src/lib/mathlib.zig` status: **fully implemented** — 25 functions
+(`abs`, `acos`, `asin`, `atan`, `ceil`, `cos`, `deg`, `exp`, `floor`, `fmod`,
+`frexp`, `ldexp`, `log`, `max`, `min`, `modf`, `rad`, `sin`, `sqrt`, `tan`,
+`tointeger`, `type`, `ult`, `random`, `randomseed`) plus constants
 (`pi`, `huge`, `maxinteger`, `mininteger`) ported from `lua/lmathlib.c`.
 PRNG uses a per-state `std.Random.Xoshiro256` seeded in `luaL_newstate_io`.
 Verified by 3 integration tests (37 total).
 
-Note: the C reference also provides `cosh`, `sinh`, `tanh` (hyperbolic) and
-`math.maxinteger`/`math.mininteger` constants. The current implementation matches
-Lua 5.5.1 `lua/lmathlib.c` exactly (no hyperbolic functions; integer bounds
-exposed as constants).
+Note: The C reference conditionally provides `atan2`, `cosh`, `sinh`, `tanh`,
+`pow`, `log10` behind `#if defined(LUA_COMPAT_MATHLIB)`. The default build
+(and this port) excludes them. Use `math.atan(y, x)`, `math.log(x, 10)`, and
+the `^` operator instead.
 
 ### stringlib (`lua/lstrlib.c`)
 

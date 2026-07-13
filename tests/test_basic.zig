@@ -3007,3 +3007,20 @@ test "lex reserved words and operators" {
     try lua.llex.luaX_next(&ls);
     try std.testing.expect(ls.t.token == lua.llex.TK_EOS);
 }
+
+test "function execution and variable assignment" {
+    const gpa = std.testing.allocator;
+    var L: lua.lua_State = undefined;
+    try lua.luaL_newstate(&L, gpa);
+    defer lua.lua_close(&L);
+    try lua.luaL_openlibs(&L);
+
+    const status = try lua.luaL_dostring(&L, "local x = 0; function f(a) x = a end; f(42.0); return x", "=(test)");
+    if (status != 0) {
+        if (lua.lua_tostring(&L, -1)) |msg| {
+            std.debug.print("\nLUA SYNTAX ERROR: {s}\n", .{msg});
+        }
+    }
+    try std.testing.expectEqual(@as(i32, lua.LUA_OK), status);
+    try std.testing.expectEqual(@as(f64, 42.0), lua.lua_tonumber(&L, -1));
+}

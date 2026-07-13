@@ -214,7 +214,8 @@ const LoadState = struct {
         while (loaded < @as(usize, @intCast(n))) : (loaded += 1) {
             const sub = try lua.createProto(self.allocator);
             sub.is_sub = true;
-            try lua.registerGC(self.L, sub);
+            // Sub-protos are freed via the parent's GC entry (freeGCObject recursively traverses f.p).
+            // try lua.registerGC(self.L, sub);
             sub_protos[loaded] = sub;
             try self.loadFunction(sub);
         }

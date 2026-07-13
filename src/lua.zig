@@ -2650,14 +2650,7 @@ fn freeGCObject(L: *lua_State, gc: *VMGCObject) void {
             L.allocator.destroy(uv);
         },
         .proto => |f| {
-            L.allocator.free(f.code);
-            L.allocator.free(f.k);
-            L.allocator.free(f.p);
-            L.allocator.free(f.upvalues);
-            L.allocator.free(f.lineinfo);
-            L.allocator.free(f.abslineinfo);
-            L.allocator.free(f.locvars);
-            L.allocator.destroy(f);
+            destroyProto(L.allocator, f);
         },
         .userdata => |u| {
             L.allocator.free(u.data);

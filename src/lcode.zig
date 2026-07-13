@@ -267,9 +267,8 @@ fn codeAsBx(fs: *FuncState, o: lvm.OpCode, a: i32, bx: i32) i32 {
 }
 
 fn codesJ(fs: *FuncState, o: lvm.OpCode, sj: i32, k: i32) i32 {
-    const j = sj + lvm.OFFSET_sJ;
-    std.debug.assert(j <= lvm.MAXARG_sJ and (k & ~@as(i32, 1)) == 0);
-    return luaK_code(fs, lvm.CREATE_sJ(o, j, k)) catch 0;
+    std.debug.assert(sj + lvm.OFFSET_sJ <= lvm.MAXARG_sJ and (k & ~@as(i32, 1)) == 0);
+    return luaK_code(fs, lvm.CREATE_sJ(o, sj, k)) catch 0;
 }
 
 fn codeextraarg(fs: *FuncState, a: i32) i32 {
@@ -422,7 +421,8 @@ pub fn luaK_setreturns(fs: *FuncState, e: *expdesc, nresults: i32) void {
 
 fn str2K(fs: *FuncState, e: *expdesc) i32 {
     std.debug.assert(e.k == .VKSTR);
-    e.u = .{ .info = stringK(fs, e.u.strval) catch 0 };
+    const s = e.u.strval;
+    e.u = .{ .info = stringK(fs, s) catch 0 };
     e.k = .VK;
     return e.u.info;
 }
@@ -459,31 +459,42 @@ pub fn luaK_dischargevars(fs: *FuncState, e: *expdesc) void {
             e.k = .VNONRELOC;
         },
         .VUPVAL => {
-            e.u = .{ .info = luaK_codeABC(fs, .GETUPVAL, 0, e.u.info, 0) };
+            const info = e.u.info;
+            e.u = .{ .info = luaK_codeABC(fs, .GETUPVAL, 0, info, 0) };
             e.k = .VRELOC;
         },
         .VINDEXUP => {
-            e.u = .{ .info = luaK_codeABC(fs, .GETTABUP, 0, e.u.ind.t, e.u.ind.idx) };
+            const t = e.u.ind.t;
+            const idx = e.u.ind.idx;
+            e.u = .{ .info = luaK_codeABC(fs, .GETTABUP, 0, t, idx) };
             e.k = .VRELOC;
         },
         .VINDEXI => {
-            freereg(fs, e.u.ind.t);
-            e.u = .{ .info = luaK_codeABC(fs, .GETI, 0, e.u.ind.t, e.u.ind.idx) };
+            const t = e.u.ind.t;
+            const idx = e.u.ind.idx;
+            freereg(fs, t);
+            e.u = .{ .info = luaK_codeABC(fs, .GETI, 0, t, idx) };
             e.k = .VRELOC;
         },
         .VINDEXSTR => {
-            freereg(fs, e.u.ind.t);
-            e.u = .{ .info = luaK_codeABC(fs, .GETFIELD, 0, e.u.ind.t, e.u.ind.idx) };
+            const t = e.u.ind.t;
+            const idx = e.u.ind.idx;
+            freereg(fs, t);
+            e.u = .{ .info = luaK_codeABC(fs, .GETFIELD, 0, t, idx) };
             e.k = .VRELOC;
         },
         .VINDEXED => {
-            freeregs(fs, e.u.ind.t, e.u.ind.idx);
-            e.u = .{ .info = luaK_codeABC(fs, .GETTABLE, 0, e.u.ind.t, e.u.ind.idx) };
+            const t = e.u.ind.t;
+            const idx = e.u.ind.idx;
+            freeregs(fs, t, idx);
+            e.u = .{ .info = luaK_codeABC(fs, .GETTABLE, 0, t, idx) };
             e.k = .VRELOC;
         },
         .VVARGIND => {
-            freeregs(fs, e.u.ind.t, e.u.ind.idx);
-            e.u = .{ .info = luaK_codeABC(fs, .GETVARG, 0, e.u.ind.t, e.u.ind.idx) };
+            const t = e.u.ind.t;
+            const idx = e.u.ind.idx;
+            freeregs(fs, t, idx);
+            e.u = .{ .info = luaK_codeABC(fs, .GETVARG, 0, t, idx) };
             e.k = .VRELOC;
         },
         .VVARARG, .VCALL => {
@@ -994,6 +1005,8 @@ fn codeorder(fs: *FuncState, opr: lparser.BinOpr, e1: *expdesc, e2: *expdesc) vo
     }
     freeexps(fs, e1, e2);
     e1.u = .{ .info = condjump(fs, op, r1, r2, @intFromBool(isfloat), 1) };
+    e1.t = NO_JUMP;
+    e1.f = NO_JUMP;
     e1.k = .VJMP;
 }
 
@@ -1020,6 +1033,8 @@ fn codeeq(fs: *FuncState, opr: lparser.BinOpr, e1: *expdesc, e2: *expdesc) void 
     }
     freeexps(fs, e1, e2);
     e1.u = .{ .info = condjump(fs, op, r1, r2, @intFromBool(isfloat), if (opr == .OPR_EQ) 1 else 0) };
+    e1.t = NO_JUMP;
+    e1.f = NO_JUMP;
     e1.k = .VJMP;
 }
 
@@ -1089,7 +1104,6 @@ pub fn luaK_posfix(fs: *FuncState, opr: lparser.BinOpr, e1: *expdesc, e2: *expde
     if (constfolding(fs, @intFromEnum(opr) + lua.LUA_OPADD, e1, e2)) return;
     switch (opr) {
         .OPR_AND => {
-            std.debug.assert(e1.t == NO_JUMP);
             luaK_concat(fs, &e2.f, e1.f);
             e1.* = e2.*;
         },
