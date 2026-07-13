@@ -1585,3 +1585,63 @@ and `luaV_gettable` folded into `lvm.run`. ReleaseFast wall-clock min-of-10 on
 Remaining ~10ms gap is C's tighter C-function call/inline overhead
 (`math_log` inlined at the call site, lighter `precall`) — not addressable by
 local fast-paths without restructuring C-function dispatch.
+
+---
+
+## 2026-07-14 — Phase H.1: C API stubs → implementations (Rev 61)
+
+Closed the highest-priority correctness gap from AGENTS.md §8 H.1. Eight
+functions that previously silently did nothing / returned wrong results now
+behave per Lua 5.5.1 `lua.h` / `lauxlib.h`:
+
+- `luaL_newtable` → `lua_createtable(L, 0, 0)` (was empty body).
+- `luaL_len` → `lua_len` + integer check; returns `error.LuaTypeError` when the
+  length is not an integer (was `lua_rawlen`, ignoring `__len`).
+- `luaL_where` → `lua_getstack` / `lua_getinfo("Sl")` source location string
+  (was always `""`).
+- `lua_concat` → `std.ArrayListUnmanaged` concat of `n` top values; string and
+  number operands stringified, others fall back to `luaL_tolstring` (was
+  discarding `n`).
+- `lua_len` → `!void`, absindex + `LEN` metamethod via `luaT_callTMres` (was
+  discarding `idx`).
+- `lua_getallocf` / `lua_setallocf` → real allocator abstraction: `global_State`
+  gained `allocf` / `alloc_ud` / `alloc_wrapper`, backed by `AllocWrapper`
+  (`{ .alloc = std.mem.Allocator }`) and the `l_alloc` thunk (default = the
+  state's underlying `gpa`). Replaces the previous `undefined`/`ignored` bodies.
+- `lua_toclose` / `lua_closeslot` → slot marking + `__close` metamethod dispatch
+  through `luaT_callTM` (was empty / no-op).
+- `createargtable` → builds the global `arg` table from CLI args (`arg[0]` =
+  script name, `arg[1..]` = extra args) (was empty body).
+
+### Bug fixed during H.1
+
+`lua_absindex` correctly returns a **1-based** index (Lua C API convention),
+but `lua_len` / `lua_closeslot` / `lua_toclose` were indexing `L.stack` with the
+raw absolute value (0-based expected) — so any `lua_len` on a plain table hit
+the `else` branch and raised `RuntimeError`. Switched those sites to `stackAt()`
+(0-based) and stored `tbclist` 0-based. Also corrected `lua_closeslot` to use
+`luaT_callTM` (discards results, nresults=0) instead of `luaT_callTMres`
+(__close returns 0 results).
+
+### §0.1 Self-Audit
+
+- Allocator threaded via `global_State` (no `page_allocator`); default thunk
+  wraps the state's `gpa`.
+- Errors propagated with `!T` / `try`; `lua_closeslot`/`lua_toclose` swallow only
+  the intended `__close` error (matches Lua semantics), not runtime conditions.
+- Conversions via `@intCast` / `@intFromFloat`; no `@bitCast` for values; no C
+  strings; unmanaged containers; `TValue` union retained; metamethods via `ltm`
+  (no `longjmp`); no varargs.
+- `l_alloc` cast fixed to `[*]u8` (the `@as([]u8, @ptrCast(...))` form triggered
+  a compiler SEGV); no `callconv(.c)` on the thunk (matches `lua_Alloc` typedef).
+
+### Verification
+
+8 new tests in `tests/test_basic.zig` cover each function. `zig build test` →
+**81/81 pass** (was 73/73), clean Debug build. Committed as Rev 61.
+
+### Next
+
+H.2 (oslib: `os.date`/`os.execute`/`os.exit`/`os.setlocale`), H.4
+(`luaL_ref`/`luaL_unref`), H.5 (missing C API + auxlib buffer fns),
+H.6 (CLI flags), per AGENTS.md §8.

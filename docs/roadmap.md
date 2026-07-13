@@ -141,11 +141,11 @@ All G.1–G.4 completed. Full Lua 5.5.1 lexer, recursive-descent parser, and cod
 
 See `docs/frontend.md` for architecture decisions and `AGENTS.md` §Phase G for details.
 
-## Phase H — Drop-in replacement gap closure (NOT STARTED)
+## Phase H — Drop-in replacement gap closure (IN PROGRESS)
 
 Phases A–G built a working, self-hosting Lua interpreter. Phase H closes the gap between "working" and "drop-in replacement for Lua 5.5.1". The gaps were identified by a systematic audit comparing `luazig` against `lua/lua.h`, `lua/lauxlib.h`, and the standard library C sources.
 
-### H.1 — C API stubs → implementations (HIGH priority)
+### H.1 — C API stubs → implementations (DONE, Rev 61)
 Silent no-ops that produce wrong results:
 - `lua_concat` — body discards `n`, does nothing
 - `lua_len` — body discards `idx`, does nothing
