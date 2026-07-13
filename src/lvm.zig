@@ -954,19 +954,19 @@ pub fn run(L: *lua.lua_State, active_ci: *lua.CallInfo) anyerror!void {
                         const old_ci = ci;
                         if (old_ci == active_ci) {
                             L.ci = old_ci.previous;
-                            L.allocator.destroy(old_ci);
+                            lua.freeCallInfo(L, old_ci);
                             return;
                         }
                         if (old_ci.previous) |prev| {
                             ci = prev;
                             L.ci = prev;
-                            L.allocator.destroy(old_ci);
+                            lua.freeCallInfo(L, old_ci);
                             cl = L.stack[ci.func].function.?.lua;
                             proto = cl.p;
                             code = proto.code;
                         } else {
                             L.ci = null;
-                            L.allocator.destroy(old_ci);
+                            lua.freeCallInfo(L, old_ci);
                             return;
                         }
                     },
@@ -1027,19 +1027,19 @@ pub fn run(L: *lua.lua_State, active_ci: *lua.CallInfo) anyerror!void {
                 lua.poscall(L, old_ci, ra_idx, @intCast(n));
                 if (old_ci == active_ci) {
                     L.ci = old_ci.previous;
-                    L.allocator.destroy(old_ci);
+                    lua.freeCallInfo(L, old_ci);
                     return;
                 }
                 if (old_ci.previous) |prev| {
                     ci = prev;
                     L.ci = prev;
-                    L.allocator.destroy(old_ci);
+                    lua.freeCallInfo(L, old_ci);
                     cl = L.stack[ci.func].function.?.lua;
                     proto = cl.p;
                     code = proto.code;
                 } else {
                     L.ci = null;
-                    L.allocator.destroy(old_ci);
+                    lua.freeCallInfo(L, old_ci);
                     return;
                 }
             },
@@ -1054,19 +1054,19 @@ pub fn run(L: *lua.lua_State, active_ci: *lua.CallInfo) anyerror!void {
                 lua.poscall(L, old_ci, ra_idx, 0);
                 if (old_ci == active_ci) {
                     L.ci = old_ci.previous;
-                    L.allocator.destroy(old_ci);
+                    lua.freeCallInfo(L, old_ci);
                     return;
                 }
                 if (old_ci.previous) |prev| {
                     ci = prev;
                     L.ci = prev;
-                    L.allocator.destroy(old_ci);
+                    lua.freeCallInfo(L, old_ci);
                     cl = L.stack[ci.func].function.?.lua;
                     proto = cl.p;
                     code = proto.code;
                 } else {
                     L.ci = null;
-                    L.allocator.destroy(old_ci);
+                    lua.freeCallInfo(L, old_ci);
                     return;
                 }
             },
@@ -1081,19 +1081,19 @@ pub fn run(L: *lua.lua_State, active_ci: *lua.CallInfo) anyerror!void {
                 lua.poscall(L, old_ci, ra_idx, 1);
                 if (old_ci == active_ci) {
                     L.ci = old_ci.previous;
-                    L.allocator.destroy(old_ci);
+                    lua.freeCallInfo(L, old_ci);
                     return;
                 }
                 if (old_ci.previous) |prev| {
                     ci = prev;
                     L.ci = prev;
-                    L.allocator.destroy(old_ci);
+                    lua.freeCallInfo(L, old_ci);
                     cl = L.stack[ci.func].function.?.lua;
                     proto = cl.p;
                     code = proto.code;
                 } else {
                     L.ci = null;
-                    L.allocator.destroy(old_ci);
+                    lua.freeCallInfo(L, old_ci);
                     return;
                 }
             },

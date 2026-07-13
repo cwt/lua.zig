@@ -344,6 +344,43 @@ pub fn poscall(L: *lua_State, ci: *CallInfo, first_result_idx: usize, n: usize) 
     }
 }
 
+/// Recycle a CallInfo from the freelist, or allocate a fresh one. Mirrors
+/// C Lua's pre-grown call stack: a CallInfo is only allocated when the pool is
+/// empty, never on every call.
+pub fn allocCallInfo(L: *lua_State) !*CallInfo {
+    if (L.ci_free) |free| {
+        L.ci_free = free.freenext;
+        return free;
+    }
+    return try L.allocator.create(CallInfo);
+}
+
+/// Return a CallInfo to the freelist for reuse (instead of freeing it).
+pub fn freeCallInfo(L: *lua_State, ci: *CallInfo) void {
+    ci.freenext = L.ci_free;
+    L.ci_free = ci;
+}
+
+/// Free every CallInfo owned by `L`: the active call chain above `base_ci`
+/// and all recycled CallInfos in the freelist. Used when a coroutine finishes
+/// or is explicitly closed, mirroring C Lua discarding a dead thread's stack.
+fn freeAllCallInfos(L: *lua_State) void {
+    var curr = L.ci;
+    while (curr) |ci| {
+        const prev = ci.previous;
+        if (ci != &L.base_ci) L.allocator.destroy(ci);
+        curr = prev;
+    }
+    var f = L.ci_free;
+    while (f) |ci| {
+        const nextf = ci.freenext;
+        L.allocator.destroy(ci);
+        f = nextf;
+    }
+    L.ci_free = null;
+    L.ci = &L.base_ci;
+}
+
 pub fn precall(L: *lua_State, func_idx: usize, nresults: i32) !?*CallInfo {
     const val = L.stack[func_idx];
     if (val != .function) {
@@ -354,7 +391,7 @@ pub fn precall(L: *lua_State, func_idx: usize, nresults: i32) !?*CallInfo {
         .c => |cc| {
             if (lua_checkstack(L, 20) == 0) return error.StackOverflow;
             const old_ci = L.ci;
-            const new_ci = try L.allocator.create(CallInfo);
+            const new_ci = try allocCallInfo(L);
             new_ci.* = .{
                 .func = func_idx,
                 .base = func_idx + 1,
@@ -376,7 +413,7 @@ pub fn precall(L: *lua_State, func_idx: usize, nresults: i32) !?*CallInfo {
                 if (old_ci) |prev| {
                     prev.next = null;
                 }
-                L.allocator.destroy(new_ci);
+                freeCallInfo(L, new_ci);
                 return e;
             };
             if (n < 0) {
@@ -384,7 +421,7 @@ pub fn precall(L: *lua_State, func_idx: usize, nresults: i32) !?*CallInfo {
                 if (old_ci) |prev| {
                     prev.next = null;
                 }
-                L.allocator.destroy(new_ci);
+                freeCallInfo(L, new_ci);
                 return error.RuntimeError;
             }
             const num_returned = @as(usize, @intCast(n));
@@ -394,7 +431,7 @@ pub fn precall(L: *lua_State, func_idx: usize, nresults: i32) !?*CallInfo {
             if (old_ci) |prev| {
                 prev.next = null;
             }
-            L.allocator.destroy(new_ci);
+            freeCallInfo(L, new_ci);
             return null;
         },
         .lua => |lc| {
@@ -417,7 +454,7 @@ pub fn precall(L: *lua_State, func_idx: usize, nresults: i32) !?*CallInfo {
                 }
                 L.top = base_idx + num_params;
             }
-            const new_ci = try L.allocator.create(CallInfo);
+            const new_ci = try allocCallInfo(L);
             new_ci.* = .{
                 .func = func_idx,
                 .base = base_idx,
@@ -458,6 +495,10 @@ pub const CallInfo = struct {
     // Set by luaT_adjustvarargs; read by OP_VARARG/OP_GETVARG in the
     // hidden-vararg (PF_VAHID) path.
     nextraargs: i32 = 0,
+    // Freelist link used by the CallInfo pool (lua.allocCallInfo /
+    // lua.freeCallInfo). Kept separate from `next`/`previous` so the active
+    // call-chain links remain intact for the debug API (lua_getinfo, etc.).
+    freenext: ?*CallInfo = null,
 };
 
 pub const GCColor = enum(u2) {
@@ -535,6 +576,9 @@ pub const lua_State = struct {
     top: usize,
     l_G: ?*global_State,
     ci: ?*CallInfo,
+    // Freelist of recycled CallInfo structs (see lua.allocCallInfo /
+    // lua.freeCallInfo). Avoids per-call allocator churn.
+    ci_free: ?*CallInfo = null,
     stack: []TValue,
     stack_last: usize,
     openupval: ?*UpVal,
@@ -1255,9 +1299,9 @@ pub fn lua_newthread(L: *lua_State) !*lua_State {
 
 pub fn lua_closethread(L: *lua_State, from: *lua_State) i32 {
     _ = from;
+    freeAllCallInfos(L);
     L.status = 0;
     L.top = 0;
-    L.ci = &L.base_ci;
     return LUA_OK;
 }
 
@@ -2513,7 +2557,7 @@ fn do_resume(L: *lua_State, narg: i32) !void {
                 const u_nres = @as(usize, @intCast(nres));
                 poscall(L, ci, L.top - u_nres, u_nres);
                 L.ci = prev;
-                L.allocator.destroy(ci);
+                freeCallInfo(L, ci);
             } else {
                 // Check if the yielded frame is a Lua function. If so, resume
                 // lvm.run on the existing CallInfo — savedpc already points past
@@ -2524,10 +2568,10 @@ fn do_resume(L: *lua_State, narg: i32) !void {
                     try lvm.run(L, ci);
                 } else {
                     const prev = ci.previous;
-                    const func_idx = ci.func;
-                    L.ci = prev;
-                    L.allocator.destroy(ci);
-                    if (try precall(L, func_idx, LUA_MULTRET)) |new_ci| {
+                const func_idx = ci.func;
+                L.ci = prev;
+                freeCallInfo(L, ci);
+                if (try precall(L, func_idx, LUA_MULTRET)) |new_ci| {
                         try lvm.run(L, new_ci);
                     }
                 }
@@ -2566,6 +2610,10 @@ pub fn lua_resume(L: *lua_State, from: ?*lua_State, narg: i32, nresults: ?*i32) 
     }
 
     if (L.status == LUA_YIELD) return LUA_YIELD;
+    // Coroutine finished (dead/completed): discard its call stack. Recycled
+    // CallInfos would otherwise linger in the freelist until the thread is
+    // explicitly closed, which the caller may never do.
+    freeAllCallInfos(L);
     return LUA_OK;
 }
 
@@ -3150,7 +3198,7 @@ pub fn lua_close(L: *lua_State) void {
     if (L.l_G) |g| {
         L.openupval = null;
 
-        // Free CallInfo structs
+        // Free CallInfo structs still on the active call chain.
         var curr_ci = L.ci;
         while (curr_ci) |ci| {
             const prev = ci.previous;
@@ -3160,6 +3208,15 @@ pub fn lua_close(L: *lua_State) void {
             curr_ci = prev;
         }
         L.ci = null;
+
+        // Free recycled CallInfo structs held in the freelist.
+        var free_ci = L.ci_free;
+        while (free_ci) |ci| {
+            const nextf = ci.freenext;
+            L.allocator.destroy(ci);
+            free_ci = nextf;
+        }
+        L.ci_free = null;
 
         // Free all GC objects registered in allgc
         var curr_gc = g.allgc;
