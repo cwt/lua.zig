@@ -449,16 +449,22 @@ test "luaL_dostring loads and runs a chunk (properly implemented)" {
     try std.testing.expectEqual(@as(f64, 42.0), L.stack[L.top - 1].number);
 }
 
-test "luaL_dostring returns LUA_ERRSYNTAX for non-bytecode source" {
+test "luaL_dostring executes source-text string and handles syntax errors" {
     const gpa = std.testing.allocator;
     var L: lua.lua_State = undefined;
     try lua.luaL_newstate(&L, gpa);
     defer lua.lua_close(&L);
 
-    // No source-text parser exists; text input must fail load with LUA_ERRSYNTAX
-    // (not silently LUA_OK like the old stub did).
-    const status = try lua.luaL_dostring(&L, "return 1", "=(test)");
-    try std.testing.expectEqual(@as(i32, lua.LUA_ERRSYNTAX), status);
+    // Valid source-text compilation and execution
+    const status_ok = try lua.luaL_dostring(&L, "return 42", "=(test)");
+    try std.testing.expectEqual(@as(i32, lua.LUA_OK), status_ok);
+    try std.testing.expectEqual(@as(i32, 1), lua.lua_gettop(&L));
+    try std.testing.expectEqual(@as(f64, 42.0), L.stack[L.top - 1].number);
+    lua.lua_pop(&L, 1);
+
+    // Invalid source-text should fail load with LUA_ERRSYNTAX
+    const status_err = try lua.luaL_dostring(&L, "return 42 +", "=(test)");
+    try std.testing.expectEqual(@as(i32, lua.LUA_ERRSYNTAX), status_err);
 }
 
 test "__index function metamethod via C API" {
@@ -2814,7 +2820,7 @@ test "lex basic tokens and numbers" {
     const source = try newSource(&L, "test");
 
     var ls: lua.llex.LexState = undefined;
-    try lua.llex.luaX_setinput(&L, &ls, lexerStringReader, &rd, source);
+    try lua.llex.luaX_setinput(&L, &ls, lexerStringReader, &rd, source, &[_]u8{});
     defer ls.buff.deinit(ls.allocator);
 
     try lua.llex.luaX_next(&ls);
@@ -2864,7 +2870,7 @@ test "lex integer and hex/float forms" {
     const source = try newSource(&L, "t2");
 
     var ls: lua.llex.LexState = undefined;
-    try lua.llex.luaX_setinput(&L, &ls, lexerStringReader, &rd, source);
+    try lua.llex.luaX_setinput(&L, &ls, lexerStringReader, &rd, source, &[_]u8{});
     defer ls.buff.deinit(ls.allocator);
 
     const expect_int = struct {
@@ -2911,7 +2917,7 @@ test "lex long string, escapes, and comments" {
     const source = try newSource(&L, "t3");
 
     var ls: lua.llex.LexState = undefined;
-    try lua.llex.luaX_setinput(&L, &ls, lexerStringReader, &rd, source);
+    try lua.llex.luaX_setinput(&L, &ls, lexerStringReader, &rd, source, &[_]u8{});
     defer ls.buff.deinit(ls.allocator);
 
     try lua.llex.luaX_next(&ls); // s
@@ -2952,7 +2958,7 @@ test "lex error on unfinished string" {
     const source = try newSource(&L, "t4");
 
     var ls: lua.llex.LexState = undefined;
-    try lua.llex.luaX_setinput(&L, &ls, lexerStringReader, &rd, source);
+    try lua.llex.luaX_setinput(&L, &ls, lexerStringReader, &rd, source, &[_]u8{});
     defer ls.buff.deinit(ls.allocator);
 
     // x
@@ -2975,7 +2981,7 @@ test "lex reserved words and operators" {
     const source = try newSource(&L, "t5");
 
     var ls: lua.llex.LexState = undefined;
-    try lua.llex.luaX_setinput(&L, &ls, lexerStringReader, &rd, source);
+    try lua.llex.luaX_setinput(&L, &ls, lexerStringReader, &rd, source, &[_]u8{});
     defer ls.buff.deinit(ls.allocator);
 
     try lua.llex.luaX_next(&ls);

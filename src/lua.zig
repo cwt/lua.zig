@@ -7,6 +7,8 @@ pub const lstring = @import("lstring.zig");
 const lundump = @import("lundump.zig");
 const ltm = @import("ltm.zig");
 pub const llex = @import("llex.zig");
+pub const lcode = @import("lcode.zig");
+pub const lparser = @import("lparser.zig");
 
 pub const lua_Number = llimits.lua_Number;
 pub const lua_Integer = llimits.lua_Integer;
@@ -2392,66 +2394,78 @@ pub fn lua_load(L: *lua_State, reader: lua_Reader, dt: ?*anyopaque, chunkname: [
             std.debug.print("Failed to load binary chunk: {any}\n", .{err});
             return LUA_ERRSYNTAX;
         };
-        const lc = L.allocator.create(lua_LClosure) catch {
-            destroyProto(L.allocator, proto);
-            return LUA_ERRMEM;
-        };
-        const upvals = L.allocator.alloc(?*UpVal, proto.upvalues.len) catch {
-            L.allocator.destroy(lc);
-            destroyProto(L.allocator, proto);
-            return LUA_ERRMEM;
-        };
-        @memset(upvals, null);
-        lc.* = .{
-            .p = proto,
-            .upvals = upvals,
-        };
-
-        // Initialize first upvalue (_ENV) if proto expects it
-        if (proto.upvalues.len > 0) {
-            const registry = G(L).registry.table.?;
-            const globals = ltable.getInt(registry, 2); // RIDX_GLOBALS is 2
-            const env_uv = L.allocator.create(UpVal) catch {
-                L.allocator.free(upvals);
-                L.allocator.destroy(lc);
-                destroyProto(L.allocator, proto);
-                return LUA_ERRMEM;
-            };
-            env_uv.* = .{
-                .value = globals,
-                .index = null,
-                .next = null,
-                .refcount = 1,
-            };
-            registerGC(L, env_uv) catch {
-                L.allocator.free(upvals);
-                L.allocator.destroy(lc);
-                destroyProto(L.allocator, proto);
-                return LUA_ERRMEM;
-            };
-            upvals[0] = env_uv;
-        }
-
-        const cl = L.allocator.create(lua_Closure) catch {
-            if (upvals.len > 0 and upvals[0] != null) L.allocator.destroy(upvals[0].?);
-            L.allocator.free(upvals);
-            L.allocator.destroy(lc);
-            destroyProto(L.allocator, proto);
-            return LUA_ERRMEM;
-        };
-        cl.* = .{ .lua = lc };
-        registerGC(L, cl) catch {
-            L.allocator.free(upvals);
-            L.allocator.destroy(lc);
-            destroyProto(L.allocator, proto);
-            return LUA_ERRMEM;
-        };
-        L.stack[L.top] = TValue{ .function = cl };
-        L.top += 1;
-        return LUA_OK;
+        return finishLoad(L, proto);
     } else {
-        return LUA_ERRSYNTAX;
+        const proto = lparser.luaD_protectedparser(L, reader, dt, chunkname, first_slice.?) catch |e| {
+            if (e == error.SyntaxError) return LUA_ERRSYNTAX;
+            return LUA_ERRMEM;
+        };
+        return finishLoad(L, proto);
     }
+}
+
+// Instantiate a top-level closure for `proto` (wiring its _ENV upvalue to the
+// global table) and push it onto the stack, ready to be called. Used by both
+// the binary-chunk loader and the source-text parser paths.
+pub fn finishLoad(L: *lua_State, proto: *lua_Proto) i32 {
+    const lc = L.allocator.create(lua_LClosure) catch {
+        destroyProto(L.allocator, proto);
+        return LUA_ERRMEM;
+    };
+    const upvals = L.allocator.alloc(?*UpVal, proto.upvalues.len) catch {
+        L.allocator.destroy(lc);
+        destroyProto(L.allocator, proto);
+        return LUA_ERRMEM;
+    };
+    @memset(upvals, null);
+    lc.* = .{
+        .p = proto,
+        .upvals = upvals,
+    };
+
+    // Initialize first upvalue (_ENV) if proto expects it
+    if (proto.upvalues.len > 0) {
+        const registry = G(L).registry.table orelse return LUA_ERRMEM;
+        const globals = ltable.getInt(registry, 2); // RIDX_GLOBALS is 2
+        const env_uv = L.allocator.create(UpVal) catch {
+            L.allocator.free(upvals);
+            L.allocator.destroy(lc);
+            destroyProto(L.allocator, proto);
+            return LUA_ERRMEM;
+        };
+        env_uv.* = .{
+            .value = globals,
+            .index = null,
+            .next = null,
+            .refcount = 1,
+        };
+        registerGC(L, env_uv) catch {
+            L.allocator.free(upvals);
+            L.allocator.destroy(lc);
+            destroyProto(L.allocator, proto);
+            return LUA_ERRMEM;
+        };
+        upvals[0] = env_uv;
+    }
+
+    const cl = L.allocator.create(lua_Closure) catch {
+        if (upvals.len > 0 and upvals[0] != null) L.allocator.destroy(upvals[0].?);
+        L.allocator.free(upvals);
+        L.allocator.destroy(lc);
+        destroyProto(L.allocator, proto);
+        return LUA_ERRMEM;
+    };
+    cl.* = .{ .lua = lc };
+    registerGC(L, cl) catch {
+        if (upvals.len > 0 and upvals[0] != null) L.allocator.destroy(upvals[0].?);
+        L.allocator.free(upvals);
+        L.allocator.destroy(lc);
+        destroyProto(L.allocator, proto);
+        return LUA_ERRMEM;
+    };
+    L.stack[L.top] = TValue{ .function = cl };
+    L.top += 1;
+    return LUA_OK;
 }
 
 pub fn lua_dump(L: *lua_State, writer: lua_Writer, data: ?*anyopaque, strip: i32) i32 {

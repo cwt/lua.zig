@@ -19,8 +19,45 @@
 const std = @import("std");
 const lua = @import("lua.zig");
 const lstring = @import("lstring.zig");
+const lparser = @import("lparser.zig");
 
 const Allocator = std.mem.Allocator;
+
+// ---------------------------------------------------------------------------
+// Shared parser data structures (declared here so that `LexState` can carry a
+// `Dyndata` pointer-free handle and `lcode.zig` can reach the active-variable
+// descriptor list via `fs.ls.dyd.actvar`).
+// ---------------------------------------------------------------------------
+
+// Description of an active variable. The `val` field overlaps the compile-time
+// constant value (mirrors the C `union Vardesc`).
+pub const Vardesc = struct {
+    val: lua.TValue = .{ .nil = {} },
+    kind: u8 = 0,
+    ridx: u8 = 0,
+    pidx: i16 = 0,
+    name: ?*lua.lua_TString = null,
+};
+
+pub const Labeldesc = struct {
+    name: ?*lua.lua_TString = null,
+    pc: i32 = 0,
+    line: i32 = 0,
+    nactvar: i16 = 0,
+    close: u8 = 0,
+};
+
+pub const Dyndata = struct {
+    actvar: std.ArrayList(Vardesc) = .empty,
+    gt: std.ArrayList(Labeldesc) = .empty,
+    label: std.ArrayList(Labeldesc) = .empty,
+
+    pub fn deinit(self: *Dyndata, alloc: Allocator) void {
+        self.actvar.deinit(alloc);
+        self.gt.deinit(alloc);
+        self.label.deinit(alloc);
+    }
+};
 
 // End of stream sentinel (mirrors the C `EOZ = -1`).
 const EOZ: i32 = -1;
@@ -140,6 +177,10 @@ pub const Token = struct {
 pub const LexState = struct {
     allocator: Allocator,
     L: *lua.lua_State,
+    dyd: Dyndata = .{},
+    level: i32 = 0,
+    brkn: ?*lua.lua_TString = null,
+    envn: ?*lua.lua_TString = null,
     current: i32, // current character (char int) or EOZ
     linenumber: i32,
     lastline: i32,
@@ -154,6 +195,8 @@ pub const LexState = struct {
     // Scratch buffer for the current token's text (mirrors `Mbuffer`).
     buff: std.ArrayList(u8),
     source: *lua.lua_TString,
+    // Currently-parsing function state (mirrors the C `LexState.fs`).
+    fs: ?*lparser.FuncState = null,
     // Last syntax-error message (for diagnostics; null when no error).
     errmsg: ?[]const u8 = null,
 };
@@ -482,17 +525,22 @@ pub fn luaX_setinput(
     reader: lua.lua_Reader,
     data: ?*anyopaque,
     source: *lua.lua_TString,
+    first_slice: []const u8,
 ) !void {
     ls.allocator = L.allocator;
     ls.L = L;
     ls.reader = reader;
     ls.data = data;
     ls.source = source;
+    ls.dyd = .{ .actvar = .empty, .gt = .empty, .label = .empty };
+    ls.level = 0;
+    ls.brkn = try lstring.luaS_new(L.allocator, &L.l_G.?.strt, L.l_G.?.seed, "_break");
+    ls.envn = try lstring.luaS_new(L.allocator, &L.l_G.?.strt, L.l_G.?.seed, "_ENV");
     ls.t = .{};
     ls.lookahead = .{ .token = TK_EOS };
     ls.linenumber = 1;
     ls.lastline = 1;
-    ls.chunk = &[_]u8{};
+    ls.chunk = first_slice;
     ls.chunk_off = 0;
     ls.eof = false;
     ls.buff = std.ArrayList(u8).empty;

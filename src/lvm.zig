@@ -198,6 +198,86 @@ pub fn SETARG_sJ(i: *Instruction, v: i32) void {
     i.* = (i.* & ~@as(u32, 0x1FFFFFF << 7)) | (val << 7);
 }
 
+// -------------------------------------------------------------------
+// Argument-limit constants (consistent with the encoding above)
+// -------------------------------------------------------------------
+pub const MAXARG_A = 0xFF;
+pub const MAXARG_B = 0xFF;
+pub const MAXARG_C = 0xFF;
+pub const MAXARG_vB = 0x3F;
+pub const MAXARG_vC = 0x3FF;
+pub const MAXARG_Bx = 0x1FFFF;
+pub const MAXARG_Ax = 0x1FFFFFF;
+pub const MAXARG_sJ = 0x1FFFFFF;
+pub const MAXARG_sC = 0xFF;
+pub const OFFSET_sBx = 65535;
+pub const OFFSET_sJ = 16777215;
+pub const OFFSET_sC = 127;
+pub const NO_REG: i32 = -1;
+pub const MAXINDEXRK = MAXARG_C;
+pub const MAX_FSTACK = 250;
+pub const MAXIWTHABS = 128;
+pub const LIMLINEDIFF = 0x80;
+pub const ABSLINEINFO: i32 = -0x80;
+
+// -------------------------------------------------------------------
+// Instruction construction macros
+// -------------------------------------------------------------------
+pub fn CREATE_ABCk(o: OpCode, a: i32, b: i32, c: i32, k: i32) Instruction {
+    var i: Instruction = 0;
+    SET_OPCODE(&i, o);
+    SETARG_A(&i, a);
+    SETARG_B(&i, b);
+    SETARG_C(&i, c);
+    SETARG_k(&i, k);
+    return i;
+}
+
+pub fn CREATE_vABCk(o: OpCode, a: i32, b: i32, c: i32, k: i32) Instruction {
+    var i: Instruction = 0;
+    SET_OPCODE(&i, o);
+    SETARG_A(&i, a);
+    SETARG_vB(&i, b);
+    SETARG_vC(&i, c);
+    SETARG_k(&i, k);
+    return i;
+}
+
+pub fn CREATE_ABx(o: OpCode, a: i32, bx: i32) Instruction {
+    var i: Instruction = 0;
+    SET_OPCODE(&i, o);
+    SETARG_A(&i, a);
+    SETARG_Bx(&i, bx);
+    return i;
+}
+
+pub fn CREATE_Ax(o: OpCode, ax: i32) Instruction {
+    var i: Instruction = 0;
+    SET_OPCODE(&i, o);
+    SETARG_Ax(&i, ax);
+    return i;
+}
+
+pub fn CREATE_sJ(o: OpCode, sj: i32, k: i32) Instruction {
+    var i: Instruction = 0;
+    SET_OPCODE(&i, o);
+    // 'k' for J-format is always 0 in practice (ignored); sJ occupies bits 7-31.
+    _ = k;
+    SETARG_sJ(&i, sj);
+    return i;
+}
+
+// -------------------------------------------------------------------
+// Opcode "test" mode: true for comparison/test opcodes that are
+// always followed by a jump instruction.
+// -------------------------------------------------------------------
+pub fn testTMode(o: OpCode) bool {
+    return switch (o) {
+        .EQ, .LT, .LE, .EQK, .EQI, .LTI, .LEI, .GTI, .GEI, .TEST, .TESTSET => true,
+        else => false,
+    };
+}
+
 // ===================================================================
 // Value representation
 // ===================================================================

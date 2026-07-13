@@ -1148,3 +1148,32 @@ This is a documentation-only changeset. No source/test changes; `zig build test`
 ### Related
 
 - Phase G.2 (parser, `src/lparser.zig`) and G.3 (codegen, `src/lcode.zig`) remain; G.4 wires `lua_load`'s text branch to `luaD_protectedparser`.
+
+## 2026-07-13 — Phase G complete: Source-Text Compiler implemented (`src/lparser.zig`, `src/lcode.zig`, wired `lua_load`)
+
+### Changes
+
+- **`src/lparser.zig`**: Full recursive-descent parser ported from `lua/lparser.c` (and parts of `lua/ldo.c`).
+  - Implemented blocks, statements (`if`, `while`, `repeat`, `for` loop variations, local/global variable declarations, assignments, functions, tailcalls, `goto`, labels, `break`).
+  - Added clean error/syntax error propagation replacing C's longjmp mechanics.
+  - Used safety-checked union assignment rules of Zig (`e.u = .{ ... }`) to avoid union field panics.
+  - Implemented `cleanupFuncState` helper invoked in `errdefer` blocks to prevent memory leaks on syntax errors.
+- **`src/lcode.zig`**: Full code generator ported from `lua/lcode.c`.
+  - Implemented instruction emission, constant folding, register allocation, upvalue handling, and jump patch lists.
+  - Fixed bitwise and shift operations to work under Zig's compile-time types and unsigned constraints.
+- **`src/lua.zig`**: Wired the text-compilation path in `lua_load` to call `lparser.luaD_protectedparser` instead of failing with `LUA_ERRSYNTAX` for non-bytecode source. Updated `luaD_protectedparser` and `luaX_setinput` to pass/handle `first_slice` so the first read chunk is not discarded.
+- **`tests/test_basic.zig`**: Added a new end-to-end integration test `luaL_dostring executes source-text string and handles syntax errors` verifying that source-text strings compilation, execution, and syntax errors work as expected. Updated existing lexer tests to match the new `luaX_setinput` signature.
+
+### §0.1 Self-Audit
+
+- **Rule 1 (allocator threaded):** all allocations (in `FuncState` arrays) use `ls.L.allocator` / `L.allocator`.
+- **Rule 2/12 (error propagation):** no swallowed errors; errors cleanly bubble up via `try`/`return error.SyntaxError`.
+- **Rule 3 (no longjmp):** longjmp completely eliminated and replaced by Zig's error union (`!T`) propagation.
+- **Rule 5 (slices used):** uses slices (`[]const u8`) for buffers and identifiers.
+- **Rule 7 (unmanaged containers):** `FuncState` uses unmanaged containers initialized with `.empty` and explicit allocator.
+- **Rule 11 (boundary checks on dynamic bitwise shifts):** bitwise operators strictly cast and verify bounds.
+- **Rule 12 (no swallowed runtime errors):** no empty/dummy catches.
+
+### Verification
+
+`zig build test` → **72/72 tests pass, zero memory leaks.** Validated by executing dynamic source compilation, VM execution of output bytecode, and correct cleanup on syntax error paths.
