@@ -1381,3 +1381,64 @@ the hot path).
 `ltable.getHash` fallen off the hot list (<1.5%) and `ltm.luaV_gettable`
 reduced to ~22% (the remaining cost is the metamethod scaffolding wrapper, not
 the probe). Reference `lua/lua`: 0.092s.
+
+## Rev 54 — Link libc; route mathlib transcendentals through glibc libm
+
+**Date:** 2026-07-13
+**Goal:** Eliminate the ~16% `compiler_rt` software-transcendental cost on
+`../pi/pi-5.5.lua` (root cause #3 from the ranked slowness audit) by using the
+hosted libm instead of Zig's bundled `compiler_rt` implementations.
+
+### Discovery (why naive `link_libc` was not enough)
+
+- Adding `.link_libc = true` to the **module** `createModule` (not to
+  `addExecutable`/`addLibrary` — that field lives on the module in Zig 0.16.0;
+  the builder rejects it on the install step) made `libm.so.6` a DT_NEEDED
+  dependency, but the hot `math_log` still called `compiler_rt.log.log`.
+- Root cause: LLVM **recognizes `log`/`log10`/`sin`/`exp`/... as math builtins**
+  and folds any call to them (including a plain `extern fn log`) into the
+  `compiler_rt` implementation at compile time. `nm` confirms `compiler_rt`
+  exports bare `log`/`log10`/`sin` symbols, so an `extern fn` reference resolves
+  to the statically-linked `compiler_rt` copy — glibc is never reached.
+- `x86-64` has **no** hardware `log`/`sin`/`exp` instruction; both paths are
+  library calls. glibc's `libm` is hand-tuned asm, faster than `compiler_rt`
+  (musl-derived, correct but not x86-64-optimized). C Lua links libc and thus
+  uses glibc's `libm` — so this also makes Lua's `math.*` match reference C Lua
+  semantics (Lua's math is specified in terms of C `math.h`).
+
+### Fix
+
+- **`src/lib/mathlib.zig`**: replaced `std.math.*` / builtin `@sin`/`@log`/...
+  calls for the true transcendentals (no hardware instruction exists for them)
+  with pointers resolved **at runtime via `std.DynLib.open("libm.so.6")`**. A
+  function pointer the compiler cannot constant-fold bypasses the builtin
+  folding, so calls actually dispatch into glibc. Pointers are cached in a
+  process-global after first resolution (libm is permanently loaded via
+  DT_NEEDED, so they stay valid). Hardware-backed ops (`sqrt`/`floor`/`ceil`)
+  stay as Zig builtins — inlining the hardware instruction is faster than an
+  indirect call.
+- **`build.zig`**: `.link_libc = true` added to `root_module` and `lua_module`
+  `createModule` calls.
+
+### §0.1 Self-Audit
+
+- **Rule 1 (thread the allocator):** untouched; `openmathlib` takes `L`.
+- **Rule 8 (single type model):** untouched.
+- No `@cImport` used (the lighter `extern`-via-`DynLib` path; `@cImport` of
+  `math.h` would have hit the same builtin-folding wall).
+
+### Verification
+
+`zig build test` → **73/73 pass** (mathlib tests 38–40 included; output matches
+`./lua/lua` byte-for-byte on `pi-5.5.lua`). `perf report` now shows math
+dispatching into `libm.so.6` (`__ieee754_log_fma`, `__log10_finite`) instead of
+`compiler_rt`. ReleaseFast wall-clock on `../pi/pi-5.5.lua`: **0.14s → 0.13s**
+(reference `lua/lua`: 0.092s). Remaining hot spots now clearly: `lvm.run` 36%,
+`ltm.luaV_gettable` 28%, `lua.precall` 10%, `ltm.luaT_equalobj` 8.6%.
+
+### Out of scope (left as-is)
+
+- `src/lib/string/format.zig:122` (`std.math.log10` for `%g` precision) and
+  `src/llex.zig:398` (`std.math.ldexp` at compile time) still use `compiler_rt`;
+  neither is on this benchmark's hot path. Route them the same way if their
+  semantics need to match glibc exactly.

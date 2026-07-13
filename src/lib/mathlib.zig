@@ -2,6 +2,57 @@ const std = @import("std");
 const lua = @import("../lua.zig");
 const lauxlib = @import("../lauxlib.zig");
 
+// Hosted libm (glibc on Linux) provides faster transcendental functions than
+// the bundled compiler_rt, and matches reference C Lua's math semantics (Lua's
+// math.* is specified in terms of C math.h). With link_libc, libm.so.6 is linked;
+// we resolve its symbols at runtime via std.DynLib because LLVM folds any call
+// named `log`/`sin`/... into a compiler_rt builtin at compile time, so a plain
+// extern call cannot reach glibc. Only the true transcendentals (no x86-64
+// hardware instruction exists for them) are routed here; sqrt/floor/ceil stay as
+// Zig builtins because the hardware instructions inline faster than an indirect
+// call. libm is permanently loaded via DT_NEEDED, so the pointers stay valid.
+const Libm = struct {
+    sin: *const fn (f64) callconv(.c) f64,
+    cos: *const fn (f64) callconv(.c) f64,
+    tan: *const fn (f64) callconv(.c) f64,
+    asin: *const fn (f64) callconv(.c) f64,
+    acos: *const fn (f64) callconv(.c) f64,
+    atan2: *const fn (f64, f64) callconv(.c) f64,
+    log: *const fn (f64) callconv(.c) f64,
+    log2: *const fn (f64) callconv(.c) f64,
+    log10: *const fn (f64) callconv(.c) f64,
+    exp: *const fn (f64) callconv(.c) f64,
+    fmod: *const fn (f64, f64) callconv(.c) f64,
+    frexp: *const fn (f64, *i32) callconv(.c) f64,
+    ldexp: *const fn (f64, i32) callconv(.c) f64,
+};
+
+var libm_handle: ?std.DynLib = null;
+var libm_cache: ?Libm = null;
+
+fn getLibm() !Libm {
+    if (libm_cache) |m| return m;
+    if (libm_handle == null) libm_handle = try std.DynLib.open("libm.so.6");
+    const lib = &libm_handle.?;
+    const m = Libm{
+        .sin = lib.lookup(*const fn (f64) callconv(.c) f64, "sin") orelse return error.LibmSymbolMissing,
+        .cos = lib.lookup(*const fn (f64) callconv(.c) f64, "cos") orelse return error.LibmSymbolMissing,
+        .tan = lib.lookup(*const fn (f64) callconv(.c) f64, "tan") orelse return error.LibmSymbolMissing,
+        .asin = lib.lookup(*const fn (f64) callconv(.c) f64, "asin") orelse return error.LibmSymbolMissing,
+        .acos = lib.lookup(*const fn (f64) callconv(.c) f64, "acos") orelse return error.LibmSymbolMissing,
+        .atan2 = lib.lookup(*const fn (f64, f64) callconv(.c) f64, "atan2") orelse return error.LibmSymbolMissing,
+        .log = lib.lookup(*const fn (f64) callconv(.c) f64, "log") orelse return error.LibmSymbolMissing,
+        .log2 = lib.lookup(*const fn (f64) callconv(.c) f64, "log2") orelse return error.LibmSymbolMissing,
+        .log10 = lib.lookup(*const fn (f64) callconv(.c) f64, "log10") orelse return error.LibmSymbolMissing,
+        .exp = lib.lookup(*const fn (f64) callconv(.c) f64, "exp") orelse return error.LibmSymbolMissing,
+        .fmod = lib.lookup(*const fn (f64, f64) callconv(.c) f64, "fmod") orelse return error.LibmSymbolMissing,
+        .frexp = lib.lookup(*const fn (f64, *i32) callconv(.c) f64, "frexp") orelse return error.LibmSymbolMissing,
+        .ldexp = lib.lookup(*const fn (f64, i32) callconv(.c) f64, "ldexp") orelse return error.LibmSymbolMissing,
+    };
+    libm_cache = m;
+    return m;
+}
+
 // ===================================================================
 // Math library functions
 // ===================================================================
@@ -32,34 +83,40 @@ fn math_abs(L: *lua.lua_State) !i32 {
 }
 
 fn math_sin(L: *lua.lua_State) !i32 {
-    lua.lua_pushnumber(L, @sin(try lauxlib.luaL_checknumber(L, 1)));
+    const m = try getLibm();
+    lua.lua_pushnumber(L, m.sin(try lauxlib.luaL_checknumber(L, 1)));
     return 1;
 }
 
 fn math_cos(L: *lua.lua_State) !i32 {
-    lua.lua_pushnumber(L, @cos(try lauxlib.luaL_checknumber(L, 1)));
+    const m = try getLibm();
+    lua.lua_pushnumber(L, m.cos(try lauxlib.luaL_checknumber(L, 1)));
     return 1;
 }
 
 fn math_tan(L: *lua.lua_State) !i32 {
-    lua.lua_pushnumber(L, @tan(try lauxlib.luaL_checknumber(L, 1)));
+    const m = try getLibm();
+    lua.lua_pushnumber(L, m.tan(try lauxlib.luaL_checknumber(L, 1)));
     return 1;
 }
 
 fn math_asin(L: *lua.lua_State) !i32 {
-    lua.lua_pushnumber(L, std.math.asin(try lauxlib.luaL_checknumber(L, 1)));
+    const m = try getLibm();
+    lua.lua_pushnumber(L, m.asin(try lauxlib.luaL_checknumber(L, 1)));
     return 1;
 }
 
 fn math_acos(L: *lua.lua_State) !i32 {
-    lua.lua_pushnumber(L, std.math.acos(try lauxlib.luaL_checknumber(L, 1)));
+    const m = try getLibm();
+    lua.lua_pushnumber(L, m.acos(try lauxlib.luaL_checknumber(L, 1)));
     return 1;
 }
 
 fn math_atan(L: *lua.lua_State) !i32 {
+    const m = try getLibm();
     const y = try lauxlib.luaL_checknumber(L, 1);
     const x = lauxlib.luaL_optnumber(L, 2, 1.0);
-    lua.lua_pushnumber(L, std.math.atan2(y, x));
+    lua.lua_pushnumber(L, m.atan2(y, x));
     return 1;
 }
 
@@ -96,6 +153,7 @@ fn math_ceil(L: *lua.lua_State) !i32 {
 }
 
 fn math_fmod(L: *lua.lua_State) !i32 {
+    const m = try getLibm();
     if (lua.lua_isinteger(L, 1) != 0 and lua.lua_isinteger(L, 2) != 0) {
         const d = try lauxlib.luaL_checkinteger(L, 2);
         try lauxlib.luaL_argcheck(L, d != 0, 2, "zero");
@@ -105,7 +163,7 @@ fn math_fmod(L: *lua.lua_State) !i32 {
             lua.lua_pushinteger(L, @rem(try lauxlib.luaL_checkinteger(L, 1), d));
         }
     } else {
-        lua.lua_pushnumber(L, @mod(try lauxlib.luaL_checknumber(L, 1), try lauxlib.luaL_checknumber(L, 2)));
+        lua.lua_pushnumber(L, m.fmod(try lauxlib.luaL_checknumber(L, 1), try lauxlib.luaL_checknumber(L, 2)));
     }
     return 1;
 }
@@ -136,17 +194,19 @@ fn math_ult(L: *lua.lua_State) !i32 {
 }
 
 fn math_log(L: *lua.lua_State) !i32 {
+    const m = try getLibm();
     const x = try lauxlib.luaL_checknumber(L, 1);
-    const res: f64 = if (lua.lua_isnoneornil(L, 2)) @log(x) else blk: {
+    const res: f64 = if (lua.lua_isnoneornil(L, 2)) m.log(x) else blk: {
         const base = try lauxlib.luaL_checknumber(L, 2);
-        break :blk if (base == 2.0) std.math.log2(x) else if (base == 10.0) std.math.log10(x) else @log(x) / @log(base);
+        break :blk if (base == 2.0) m.log2(x) else if (base == 10.0) m.log10(x) else m.log(x) / m.log(base);
     };
     lua.lua_pushnumber(L, res);
     return 1;
 }
 
 fn math_exp(L: *lua.lua_State) !i32 {
-    lua.lua_pushnumber(L, std.math.exp(try lauxlib.luaL_checknumber(L, 1)));
+    const m = try getLibm();
+    lua.lua_pushnumber(L, m.exp(try lauxlib.luaL_checknumber(L, 1)));
     return 1;
 }
 
@@ -161,17 +221,20 @@ fn math_rad(L: *lua.lua_State) !i32 {
 }
 
 fn math_frexp(L: *lua.lua_State) !i32 {
+    const m = try getLibm();
     const x = try lauxlib.luaL_checknumber(L, 1);
-    const result = std.math.frexp(x);
-    lua.lua_pushnumber(L, result.significand);
-    lua.lua_pushinteger(L, result.exponent);
+    var exp: i32 = 0;
+    const sig = m.frexp(x, &exp);
+    lua.lua_pushnumber(L, sig);
+    lua.lua_pushinteger(L, exp);
     return 2;
 }
 
 fn math_ldexp(L: *lua.lua_State) !i32 {
+    const m = try getLibm();
     const x = try lauxlib.luaL_checknumber(L, 1);
     const ep = try lauxlib.luaL_checkinteger(L, 2);
-    lua.lua_pushnumber(L, std.math.ldexp(x, @as(i32, @intCast(ep))));
+    lua.lua_pushnumber(L, m.ldexp(x, @as(i32, @intCast(ep))));
     return 1;
 }
 

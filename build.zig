@@ -8,12 +8,14 @@ pub fn build(b: *std.Build) void {
         .root_source_file = b.path("src/luazig.zig"),
         .target = target,
         .optimize = optimize,
+        .link_libc = true,
     });
 
     const lua_module = b.createModule(.{
         .root_source_file = b.path("src/lua.zig"),
         .target = target,
         .optimize = optimize,
+        .link_libc = true,
     });
 
     const exe = b.addExecutable(.{
