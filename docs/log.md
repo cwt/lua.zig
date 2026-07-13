@@ -1318,3 +1318,66 @@ handler did this, but three other return paths did **not**:
 previously-failing tests (`VM execution`, `BUG-036`, `luaL_dostring`) now
 report `lua_gettop == 1`. Cross-checked bytecode (reference-compiled
 `tests/*.luac`) and text-compiled (`luaL_dostring "return 42"`) paths.
+
+---
+
+## Rev 46 — Table-lookup hot path optimization (2026-07-13)
+
+### Context
+
+Profiling `luazig` against the reference `lua/lua` binary on `../pi/pi-5.5.lua`
+(a ~6M table-lookup / ~2M C-call workload) showed the table path at ~45% of
+cycles (`ltable.getHash` 24.5% + `ltm.luaV_gettable` 20.4%) on top of the
+earlier CallInfo fix. Cross-referenced the **talyn** OKF bundle
+(`../talyn/docs/`), which uses `perf` IPC / backend-bound / dTLB metrics rather
+than wall-clock.
+
+### Key finding (from talyn's profiling methodology)
+
+`perf stat` on the workload showed **IPC ≈ 3.2 with near-zero cache misses**
+(3105 core cache-misses, 252 dTLB misses, 662 L1D misses). This is the
+*opposite* of talyn's Priority 12 problem (70% backend-bound, fixed by struct
+slimming). So for Lua.Zig the table path is **instruction-bound**, not
+memory-bound: the fix must **reduce instructions per lookup**, not slim structs.
+This reframed the work toward specialization of the common case (the lesson
+talyn applies repeatedly in Priorities 9/15/21 — collapse generic dispatch for
+the hot path).
+
+### Changes
+
+- **`src/ltable.zig`**: `hashKey` now uses a power-of-two bitmask
+  (`h & (len - 1)`) instead of `h % len`. `node.items.len` is always a power of
+  two (guaranteed by `computeHashSize`/`growNode`), so the modulo reduces to a
+  single `and` — eliminating a runtime integer division on every probe (AGENTS
+  Rule 11: mask instead of divide).
+- **`src/ltable.zig`**: added `getStr(t, key: *const TString)` — a specialized
+  interned-string lookup equivalent to C Lua's `luaH_getshortstr`. It hashes
+  `key.hash & mask` and compares keys by pointer identity (`ks == key`),
+  skipping the generic `hashKey` 9-case switch and the `keyEquals` union
+  comparison. `get` dispatches string keys to `getStr`.
+- **`src/ltable.zig`**: marked `get`, `getInt`, `getHash`, `getStr`, `asInt`,
+  `keyEquals`, `hashKey` `inline` so the whole chain collapses at the call site
+  (VM's `luaV_gettable`), letting the optimizer specialize for the constant
+  string-key type.
+- **`src/ltable.zig`**: hardened `keyEquals` to guard every field access with
+  an explicit tag check (was accessing `b.<field>` under a `switch (a)` arm,
+  which only failed to trip because the function was never inlined at a
+  statically-typed call site — inlining `getInt`→`getHash`→`keyEquals` with a
+  `.number` key exposed it).
+
+### §0.1 Self-Audit
+
+- **Rule 8 (single type model):** preserved. `getStr` still reads/writes
+  `TValue`; it only specializes the *key* type, no NaN-boxing.
+- **Rule 4 (no `@bitCast` for value conversion):** untouched.
+- **Rule 11 (mask dynamic shifts / power-of-two modulo):** the `h % len` →
+  `h & (len-1)` change is exactly this rule applied to hash probing.
+
+### Verification
+
+`zig build test` → **73/73 tests pass.** ReleaseFast wall-clock on
+`../pi/pi-5.5.lua`: **0.184s → 0.14s** (~24% faster; ~7.6% from the bitmask,
+~18% from string specialization + inlining). `perf report` now shows
+`ltable.getHash` fallen off the hot list (<1.5%) and `ltm.luaV_gettable`
+reduced to ~22% (the remaining cost is the metamethod scaffolding wrapper, not
+the probe). Reference `lua/lua`: 0.092s.

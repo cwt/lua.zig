@@ -18,6 +18,7 @@ const lua = @import("lua.zig");
 const TValue = lua.TValue;
 const Table = lua.lua_Table;
 const Node = lua.Node;
+const TString = lua.lua_TString;
 
 const LIMFORLAST: usize = 4;
 
@@ -26,7 +27,7 @@ pub const KV = struct { key: TValue, val: TValue };
 
 /// Classify a numeric TValue as an integer key, if it has an integral value
 /// within the representable integer range.
-fn asInt(v: TValue) ?i64 {
+inline fn asInt(v: TValue) ?i64 {
     if (v != .number) return null;
     const n = v.number;
     if (n != @floor(n)) return null;
@@ -35,27 +36,30 @@ fn asInt(v: TValue) ?i64 {
 }
 
 /// Raw key equality. Treats equal string contents as equal (interned strings
-/// also satisfy pointer equality).
-fn keyEquals(a: TValue, b: TValue) bool {
+/// also satisfy pointer equality). Each field access is guarded by an explicit
+/// tag check so the function is safe to inline at call sites where the key's
+/// active tag is statically known.
+inline fn keyEquals(a: TValue, b: TValue) bool {
     if (@as(std.meta.Tag(TValue), a) != @as(std.meta.Tag(TValue), b)) {
         return false;
     }
-    return switch (a) {
-        .nil => true,
-        .boolean => |x| x == b.boolean,
-        .number => |x| x == b.number,
-        .string => |sa| blk: {
-            const sb = b.string orelse break :blk false;
-            if (sa == sb) break :blk true;
-            break :blk std.mem.eql(u8, sa.?.s, sb.s);
-        },
-        .lightud => |pa| pa == b.lightud,
-        .table => |ta| ta == b.table,
-        .function => |fa| fa == b.function,
-        .userdata => |ua| ua == b.userdata,
-        .thread => |ta| ta == b.thread,
-        else => false,
-    };
+    if (a == .number and b == .number) return a.number == b.number;
+    if (a == .string and b == .string) {
+        if (a.string) |sa| {
+            if (b.string) |sb| {
+                if (sa == sb) return true;
+                return std.mem.eql(u8, sa.s, sb.s);
+            }
+        }
+        return false;
+    }
+    if (a == .boolean and b == .boolean) return a.boolean == b.boolean;
+    if (a == .lightud and b == .lightud) return a.lightud == b.lightud;
+    if (a == .table and b == .table) return a.table == b.table;
+    if (a == .function and b == .function) return a.function == b.function;
+    if (a == .userdata and b == .userdata) return a.userdata == b.userdata;
+    if (a == .thread and b == .thread) return a.thread == b.thread;
+    return true;
 }
 
 fn hashBits(x: u64) usize {
@@ -70,8 +74,13 @@ fn hashBits(x: u64) usize {
 }
 
 /// Hash a key into a node index for a table with `len` nodes.
-fn hashKey(key: TValue, len: usize) usize {
+///
+/// `len` is always a power of two (see `computeHashSize`/`growNode`), so the
+/// modulo reduces to a bitmask — a single `and` instead of a runtime integer
+/// division.
+inline fn hashKey(key: TValue, len: usize) usize {
     if (len == 0) return 0;
+    const mask = len - 1;
     const h: usize = switch (key) {
         .number => |n| hashBits(@bitCast(n)),
         .string => |ts| if (ts) |s| s.hash else 0,
@@ -83,7 +92,7 @@ fn hashKey(key: TValue, len: usize) usize {
         .thread => |p| if (p) |q| @intFromPtr(q) else 0,
         else => 0,
     };
-    return h % len;
+    return h & mask;
 }
 
 /// Smallest power of two >= n (n clamped to >=1).
@@ -237,7 +246,7 @@ pub fn arrayIsEmpty(t: *Table, i: usize) bool {
 }
 
 /// Get the value for an integer key (Lua semantics: array part first).
-pub fn getInt(t: *Table, k: i64) TValue {
+pub inline fn getInt(t: *Table, k: i64) TValue {
     if (k >= 1) {
         const u: usize = @intCast(k);
         if (u <= t.array.items.len) {
@@ -247,7 +256,7 @@ pub fn getInt(t: *Table, k: i64) TValue {
     return getHash(t, TValue{ .number = @as(f64, @floatFromInt(k)) });
 }
 
-fn getHash(t: *Table, key: TValue) TValue {
+inline fn getHash(t: *Table, key: TValue) TValue {
     const len = t.node.items.len;
     if (len == 0) return TValue{ .nil = {} };
     const mp = hashKey(key, len);
@@ -260,9 +269,33 @@ fn getHash(t: *Table, key: TValue) TValue {
     }
 }
 
+/// Specialized lookup for interned-string keys — the dominant case for
+/// globals and field access. Interned strings are unique per content, so keys
+/// compare by pointer identity. This skips the generic `hashKey` switch and the
+/// `keyEquals` union comparison that `getHash` performs (the Zig-idiomatic
+/// counterpart of C Lua's `luaH_getshortstr`).
+inline fn getStr(t: *Table, key: *const TString) TValue {
+    const len = t.node.items.len;
+    if (len == 0) return TValue{ .nil = {} };
+    const mp = @as(usize, key.hash) & (len - 1);
+    var n = mp;
+    while (true) {
+        const k = t.node.items[n].key;
+        if (k == .nil) return TValue{ .nil = {} };
+        if (k == .string) {
+            if (k.string) |ks| {
+                if (ks == key) return t.node.items[n].val;
+            }
+        }
+        if (t.node.items[n].next == -1) return TValue{ .nil = {} };
+        n = @intCast(t.node.items[n].next);
+    }
+}
+
 /// Get the value for any key.
-pub fn get(t: *Table, key: TValue) TValue {
+pub inline fn get(t: *Table, key: TValue) TValue {
     if (key == .nil) return TValue{ .nil = {} };
+    if (key == .string) return getStr(t, key.string.?);
     if (asInt(key)) |k| return getInt(t, k);
     return getHash(t, key);
 }
