@@ -9,15 +9,16 @@ timestamp: 2026-07-12T00:00:00Z
 ## Phase Overview
 
 ```
-Phase A (DONE) --> Phase B (DONE) --> Phase C (DONE, loader) --> Phase D (DONE) --> Phase E (DONE) --> Phase F (DONE)
- Foundations       Tables           Front-End (loader)        VM           Runtime          Libs
-                                                                                              |
-                                                                                       Phase G (NEXT)
-                                                                                  Source-text compiler
-                                                                               (lexer / parser / codegen)
+Phase A (DONE) --> Phase B (DONE) --> Phase C (DONE) --> Phase D (DONE) --> Phase E (DONE) --> Phase F (DONE) --> Phase G (DONE)
+ Foundations       Tables           Front-End (loader)     VM               Runtime           Libs              Source compiler
+
+                                                                                                                          v
+                                                                                                                   Phase H (NEXT)
+                                                                                                              Drop-in replacement
+                                                                                                              gap closure
 ```
 
-Work **top-down from the foundation**, validating each layer with tests before proceeding. Phases A–F are complete; **Phase G (source-text compiler)** is the next planned work.
+Work **top-down from the foundation**, validating each layer with tests before proceeding. Phases A–G are complete; **Phase H (drop-in replacement gap closure)** is the next planned work.
 
 ## Phase A -- Foundations (Complete)
 
@@ -129,27 +130,73 @@ Implement library bodies in `src/lib/*.zig`:
 
 Wire `iolib`/`oslib` to `std.Io`/`init.io`. **67/67 tests pass, zero memory leaks.**
 
-## Phase G -- Source-Text Compiler (G.1 DONE, G.2–G.4 NOT STARTED)
+## Phase G — Source-Text Compiler ✅ DONE (2026-07-13)
 
-Phases A–F are complete: the port runs precompiled Lua 5.5.1 bytecode through the full VM with all 10 standard libraries. The one remaining core gap is that **text source cannot yet be compiled end-to-end** — the lexer is done, but the parser and code generator are not. `luaL_dostring`/`luaL_loadstring` already delegate to `lua_load`, which only detects the `\x1b` binary signature; the source path is partially built.
+All G.1–G.4 completed. Full Lua 5.5.1 lexer, recursive-descent parser, and code generator ported to Zig 0.16.0. `lua_load` now detects source vs bytecode and compiles text source via `luaD_protectedparser`. 72/72 tests pass, zero leaks.
 
-**Scope (port of `lua/llex.c`, `lua/lparser.c`, `lua/lcode.c`, + `lua/ldo.c` parser glue):**
+### Phase G.1 — Lexer (`src/llex.zig`) ✅ DONE
+### Phase G.2 — Parser (`src/lparser.zig`) ✅ DONE
+### Phase G.3 — Code generator (`src/lcode.zig`) ✅ DONE
+### Phase G.4 — Wire `lua_load` ✅ DONE
 
-### Phase G.1 -- Lexer (`src/llex.zig`) — ✅ DONE (2026-07-12)
-Port `lua/llex.c` (604 lines). `LexState`, `luaX_init` (reserved words), `luaX_next`, `luaX_lookahead`, `luaX_newstring` (token → interned string), full number scanner (`str2num`/`l_str2int`/`lua_strx2number`/`l_str2d`), strings/long strings/escapes, comments, `luaX_syntaxerror`, `token2str`. Threads the allocator; no C globals. 5 unit tests in `tests/test_basic.zig` (72/72 pass).
+See `docs/frontend.md` for architecture decisions and `AGENTS.md` §Phase G for details.
 
-### Phase G.2 -- Parser (`src/lparser.zig`)
-Port `lua/lparser.c` (2,202 lines). `FuncState`, `expdesc`, `luaY_parser`, `luaD_protectedparser` (the `lua_load` text branch). Recursive descent for blocks, `if`/`while`/`repeat`/`for`, `local`/`global`, functions, varargs. Replace `luaD_throw`/`longjmp` with `!T` error returns.
+## Phase H — Drop-in replacement gap closure (NOT STARTED)
 
-### Phase G.3 -- Code generator (`src/lcode.zig`)
-Port `lua/lcode.c` (1,970 lines). `expdesc`→instruction emission, register allocation (`luaK_dischargevars`, `luaK_storevar`), jump/patch lists (`luaK_concat`, `luaK_patchtohere`) for `and`/`or`/`goto`, upvalue handling. Produces the same `lua_Proto` shapes `lundump.zig` already builds, so the VM is **untouched**.
+Phases A–G built a working, self-hosting Lua interpreter. Phase H closes the gap between "working" and "drop-in replacement for Lua 5.5.1". The gaps were identified by a systematic audit comparing `luazig` against `lua/lua.h`, `lua/lauxlib.h`, and the standard library C sources.
 
-### Phase G.4 -- Wire `lua_load`
-When the first byte is not `\x1b`, call `luaD_protectedparser` instead of `lundump`. Fold `lzio.c` (89 lines) ZIO streaming into the existing `Zio`.
+### H.1 — C API stubs → implementations (HIGH priority)
+Silent no-ops that produce wrong results:
+- `lua_concat` — body discards `n`, does nothing
+- `lua_len` — body discards `idx`, does nothing
+- `lua_getallocf` / `lua_setallocf` — returns undefined / ignores params
+- `lua_toclose` / `lua_closeslot` — `<close>` variables never fire
+- `createargtable` — `arg` table never populated
+- `luaL_newtable` — empty body
+- `luaL_where` — always pushes `""`
+- `luaL_len` — uses `lua_rawlen` without `__len` metamethod
+
+### H.2 — oslib stubs (HIGH priority)
+- `os.date` — `*t` returns empty table; no date formatting
+- `os.execute` — always pushes `true`; no subprocess execution
+- `os.exit` — no Lua cleanup before `std.process.exit()`
+- `os.setlocale` — always returns `"C"`
+
+### H.3 — iolib stubs (LOW priority)
+- `io.flush` / `file:flush` — no-op
+- `file:setvbuf` — no-op
+
+### H.4 — Reference system (MEDIUM priority)
+- `luaL_ref` / `luaL_unref` — needed by C extensions
+- `LUA_NOREF` / `LUA_REFNIL` constants
+- Port from `lua/lauxlib.c`
+
+### H.5 — Missing C API functions (MEDIUM priority)
+- `lua_atpanic`, `lua_version`, `lua_pushexternalstring`, `lua_numbertocstring`
+- `luaL_checkversion_`, `luaL_callmeta`, `luaL_alloc`, `luaL_loadfilex`, `luaL_loadbufferx`, `luaL_loadstring`, `luaL_makeseed`, `luaL_getsubtable`, `luaL_requiref`, `luaL_dofile`
+- Buffer aux: `luaL_addstring`, `luaL_buffinitsize`, `luaL_prepbuffer`, `luaL_bufflen`, `luaL_buffaddr`, `luaL_buffsub`
+
+### H.6 — CLI/REPL improvements (MEDIUM priority)
+- `-e`, `-l`, `-i`, `-v` flags
+- Multi-line input in REPL
+- Readline/history/line-editing
+- `arg` table (depends on H.1 `createargtable`)
+- `--` argument separator
+
+### H.7 — Convenience macros (LOW priority)
+`lua_insert`, `lua_remove`, `lua_newtable`, `lua_register`, `lua_pushglobaltable`, `lua_pushliteral`, `lua_isnoneornil`, `lua_isfunction`, `lua_isthread`, `lua_islightuserdata`
+
+### H.8 — Deprecated compatibility aliases (LOW priority)
+`lua_newuserdata`, `lua_getuservalue`, `lua_setuservalue`, `lua_resetthread`
+
+### H.9 — Missing constants and exports (LOW priority)
+`LUA_GNAME`, `LUA_ERRFILE`, `LUA_LOADED_TABLE`, `LUA_PRELOAD_TABLE`, `LUA_NOREF`, `LUA_REFNIL`, `LUAL_NUMSIZES`, `LUA_COPYRIGHT`, `LUA_AUTHORS`, `lua_ident`
+
+### H.10 — GC completeness (LOW priority)
+- `LUA_GCPARAM` option 9 not handled
+- GC parameter get/set (`LUA_GCPMINORMUL`, `LUA_GCPSTEPMUL`, etc.)
 
 ### Verification
-- Compile `"return 1+2"` → `Proto` identical (when dumped) to the Lua 5.5.1 reference `lua/` binary.
-- Round-trip a source string through `luaL_dostring`.
-- Run scripts from `lua/testes/`; test count rises past 67.
+Each H.x sub-phase must compile, pass all existing tests, and add focused tests for the new functionality. After Phase H is complete, `luazig` should pass all Lua 5.5.1 `lua/testes/` test files without modification (modulo `os.execute` platform dependency and `os.date` localization).
 
-**Effort**: ~4,700 lines of C total. Moderate, well-specified, testable against the in-repo `lua/` oracle. See `docs/frontend.md` for the architecture decision (Option A vs B) and `AGENTS.md` §5 / §8 for the gate.
+See `AGENTS.md` §Phase H for detailed per-item breakdown. §0.1 gate applies to all work.

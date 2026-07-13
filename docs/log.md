@@ -1223,3 +1223,43 @@ The port was including them unconditionally.
 `zig build` and `zig build test` both pass: **72/72 tests**, zero memory leaks.
 Behavior cross-checked against the Lua 5.5.1 reference binary for logical
 operator evaluation and math library availability.
+
+---
+
+## 2026-07-13 — Phase H documented: gap analysis for drop-in replacement
+
+Documented the comprehensive gulf between `luazig` and "drop-in replacement for
+Lua 5.5.1" as **Phase H** in AGENTS.md and docs/roadmap.md. Identified 10
+workstreams (H.1–H.10) by systematic audit against `lua/lua.h`,
+`lua/lauxlib.h`, and standard library C sources.
+
+### Critical blockers (H.1–H.2)
+- **5 C API stubs**: `lua_concat`, `lua_len`, `lua_toclose`, `lua_closeslot`,
+  `createargtable` are no-ops; `lua_getallocf`/`lua_setallocf` are stubs.
+- **4 oslib stubs**: `os.date` (no formatting), `os.execute` (no-op),
+  `os.exit` (no cleanup), `os.setlocale` (always "C").
+
+### Important gaps (H.4–H.6)
+- No `luaL_ref`/`luaL_unref` reference system.
+- No `lua_atpanic`, `luaL_requiref`, `luaL_loadfilex`, `luaL_checkversion`,
+  `luaL_makeseed`, and other missing C API / auxlib functions.
+- CLI is bare: no `-e -l -i -v` flags, no multi-line REPL.
+
+### Minor gaps (H.3, H.7–H.10)
+- `io.flush`/`file.flush` stubs, missing convenience macros, deprecated
+  compat aliases, missing constants/exports, GC parameter API gaps.
+
+### Changes
+- **`AGENTS.md`**: Added comprehensive `§Phase H` section (H.1–H.10) with
+  prioritized gap descriptions and verification criteria.
+- **`docs/roadmap.md`**: Updated phase diagram to include Phase H; added
+  detailed `## Phase H` section with all 10 workstreams.
+- **`docs/log.md`**: Added this entry.
+
+### §0.1 Self-Audit
+- Documentation-only changeset. No source code modified.
+- OKF bundle guidelines followed: AGENTS.md + roadmap.md + log.md updated.
+- See `AGENTS.md` §Phase H for §0.1 gate requirements on all Phase H work.
+
+### Verification
+`zig build test` still passes: **72/72 tests**, zero memory leaks.
