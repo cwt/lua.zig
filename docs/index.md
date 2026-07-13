@@ -45,7 +45,7 @@ timestamp: 2026-07-10T00:00:00Z
 | State | `src/lstate.zig` | `lua/lstate.c` + `lua/lstate.h` | ✅ Deleted (merged into `lua.zig`) |
 | VM | `src/lvm.zig` | `lua/lvm.c` + `lua/lvm.h` | ✅ Full execution loop, all opcodes |
 | Auxlib | `src/lauxlib.zig` | `lua/lauxlib.c` + `lua/lauxlib.h` | ✅ All core helpers + Phase H.1 (`luaL_newtable`, `luaL_len`, `luaL_where`); `luaL_ref`/`luaL_unref` + buffer fns pending (H.4/H.5) |
-| Libs | `src/lualib.zig` + `src/lib/*` | `lua/lbaselib.c` etc. | ✅ `baselib`, `mathlib`, `bit32`, `utf8lib`, `stringlib`, `tablib`, `corolib` — **all 10** |
+| Libs | `src/lualib.zig` + `src/lib/*` | `lua/lbaselib.c` etc. | ✅ `baselib`, `mathlib`, `bit32`, `utf8lib`, `stringlib`, `tablib`, `corolib` — **all 10**; oslib real in Phase H.2 (`os.date`/`os.execute`/`os.exit`/`os.setlocale`) |
 | Entry | `src/luazig.zig` | `lua/lua.c` | ✅ juicy-main |
 | Entry | `src/luazig.zig` | `lua/lua.c` | ✅ juicy-main |
 

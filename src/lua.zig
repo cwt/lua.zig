@@ -3248,6 +3248,9 @@ pub fn luaL_newstate(L: *lua_State, gpa: std.mem.Allocator) !void {
     errdefer threaded.deinit();
     try luaL_newstate_io(L, gpa, threaded.io());
     L.l_G.?.io_backend = threaded;
+    // `threaded.io()` above captured a pointer to the stack-local `threaded`;
+    // now that `threaded` lives in `io_backend` (heap), re-point `io` at it.
+    L.l_G.?.io = L.l_G.?.io_backend.?.io();
 }
 
 pub fn createargtable(L: *lua_State, args: []const []const u8) !void {

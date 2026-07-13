@@ -1645,3 +1645,47 @@ the `else` branch and raised `RuntimeError`. Switched those sites to `stackAt()`
 H.2 (oslib: `os.date`/`os.execute`/`os.exit`/`os.setlocale`), H.4
 (`luaL_ref`/`luaL_unref`), H.5 (missing C API + auxlib buffer fns),
 H.6 (CLI flags), per AGENTS.md §8.
+
+## 2026-07-14 — Phase H.2: oslib stubs → real implementations + io lifetime fix
+
+Completed H.2: real `os.date`, `os.execute`, `os.exit`, `os.setlocale`, and the
+table form of `os_time`. Also fixed a latent `io` lifetime bug that the new
+`os.execute` was the first code path to expose.
+
+### Changes
+- `src/lib/oslib.zig`:
+  - `os_execute` — real subprocess via `std.process.spawn(io, .{ .argv = &[_][]const u8{ "/bin/sh", "-c", cmd }, .stdin/.stdout/.stderr = .inherit })` + `child.wait(io)`. Returns `(true, "exit", code)` for status 0, `(nil, "exit"/"signal", code)` otherwise (matches `luaL_execresult`).
+  - `os_date` — `*t` table (year/month/day/hour/min/sec/wday/yday/isdst) via `localtime_r`/`gmtime_r`; formatted strings via `strftime` with growable buffer. `!` UTC prefix honored.
+  - `os_time` — table form (requires year/month/day) via `mktime`; non-table falls back to `linux.clock_gettime`.
+  - `os_setlocale` — real `std.c.setlocale` with category parsing (`classcat`).
+  - `os_exit` — `lua_close(L_)` then `std.process.exit` (runs `__close`/`__gc` first).
+  - `std.c` on this Zig version exposes only `setlocale`/`LC`/`time_t`; the missing broken-down-time libc functions are bound directly with `extern "c"` (`localtime_r`/`gmtime_r`/`mktime`/`strftime`/`time`) and a glibc-compatible `tm` (`extern struct`) is declared locally. This is the same mechanism `std.os.linux` uses for syscalls (not `@cImport`).
+- `src/lua.zig` (`luaL_newstate`): `threaded.io()` captured a pointer to a
+  **stack-local** `threaded`; after `threaded` was copied into `io_backend`
+  (heap), `L.l_G.?.io` was dangling. Re-pointed `io` at
+  `L.l_G.?.io_backend.?.io()` after the copy. This was the root cause of the
+  `os.execute` SEGV in tests (the juicy-main binary passes a real `io` and was
+  unaffected).
+
+### Bugs filed
+- `BUG-037` — `luaL_newstate` left `L.l_G.?.io` dangling (stack `threaded` moved to
+  `io_backend`). Fixed by re-deriving `io` from the heap copy.
+- `BUG-038` — VM `TAILCALL` with a C function drops the argument: `return f(args)`
+  in tail position loses `args` (e.g. `return os.execute("true")` → "command must
+  be a string"), while `print(f(args))` works. Pre-existing Phase-D issue, not
+  fixed in this change (avoided in the H.2 test via a non-tail-call form).
+
+### §0.1 Self-Audit
+- Allocator threaded; errors propagated with `!T`/`try` (`os_execute`/`os_date`/
+  `os_time`/`setfieldint` all propagate; error unions from `lua_getfield`/
+  `lua_setfield` handled, not swallowed).
+- `@intCast`/`@intFromEnum` used for conversions; `SIG` enum → integer via
+  `@intFromEnum`; no `@bitCast` for values; no C strings (sentinel slices via
+  `dupeZ`); `TValue` union retained; no `longjmp`; no varargs.
+- `l_alloc` cast already correct (`[*]u8`). No `callconv(.c)`.
+
+### Verification
+5 new tests in `tests/test_basic.zig` (os.date `*t`, os.date format + UTC,
+os.time round-trip, os.execute success/failure, os.setlocale). `os.date`/`os.execute`
+output verified byte-for-byte against the Lua 5.5.1 reference binary. `zig build test`
+→ **86/86 pass** (was 81/81), clean Debug build.

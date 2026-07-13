@@ -3230,3 +3230,95 @@ test "H.1 lua_closeslot runs __close metamethod" {
     _ = lua.lua_getglobal(&L, "__closed_ran");
     try std.testing.expectEqual(@as(i32, 1), lua.lua_toboolean(&L, -1));
 }
+
+// ===================================================================
+// Phase H.2 — oslib stubs -> implementations
+// ===================================================================
+
+test "H.2 os.date '*t' returns a populated table" {
+    const gpa = std.testing.allocator;
+    var L: lua.lua_State = undefined;
+    try lua.luaL_newstate(&L, gpa);
+    defer lua.lua_close(&L);
+    try lua.luaL_openlibs(&L);
+
+    const status = try lua.luaL_dostring(
+        &L,
+        "local t = os.date('*t'); return t.year, t.month, t.day, t.hour, t.min, t.sec, t.wday, t.yday",
+        "=(test)",
+    );
+    try std.testing.expectEqual(@as(i32, lua.LUA_OK), status);
+    try std.testing.expect(lua.lua_tointeger(&L, -8).? >= 2024); // year
+    try std.testing.expect((lua.lua_tointeger(&L, -7).? >= 1) and (lua.lua_tointeger(&L, -7).? <= 12)); // month
+    try std.testing.expect((lua.lua_tointeger(&L, -1).? >= 1) and (lua.lua_tointeger(&L, -1).? <= 366)); // yday
+}
+
+test "H.2 os.date format string and UTC prefix" {
+    const gpa = std.testing.allocator;
+    var L: lua.lua_State = undefined;
+    try lua.luaL_newstate(&L, gpa);
+    defer lua.lua_close(&L);
+    try lua.luaL_openlibs(&L);
+
+    const status = try lua.luaL_dostring(
+        &L,
+        "return os.date('%Y'), os.date('!%Y')",
+        "=(test)",
+    );
+    try std.testing.expectEqual(@as(i32, lua.LUA_OK), status);
+    const local_year = lua.lua_tostring(&L, -2).?;
+    try std.testing.expectEqual(@as(usize, 4), local_year.len);
+    const utc_year = lua.lua_tostring(&L, -1).?;
+    try std.testing.expectEqual(@as(usize, 4), utc_year.len);
+}
+
+test "H.2 os.time returns epoch and round-trips with '*t'" {
+    const gpa = std.testing.allocator;
+    var L: lua.lua_State = undefined;
+    try lua.luaL_newstate(&L, gpa);
+    defer lua.lua_close(&L);
+    try lua.luaL_openlibs(&L);
+
+    const status = try lua.luaL_dostring(
+        &L,
+        "local t = os.date('*t'); return os.time(), os.time(t) == os.time()",
+        "=(test)",
+    );
+    try std.testing.expectEqual(@as(i32, lua.LUA_OK), status);
+    try std.testing.expect(lua.lua_tonumber(&L, -2).? > 0);
+    try std.testing.expectEqual(@as(i32, 1), lua.lua_toboolean(&L, -1));
+}
+
+test "H.2 os.execute reports success/failure with status code" {
+    const gpa = std.testing.allocator;
+    var L: lua.lua_State = undefined;
+    try lua.luaL_newstate(&L, gpa);
+    defer lua.lua_close(&L);
+    try lua.luaL_openlibs(&L);
+
+    // Success: status 0 -> first result is boolean true.
+    // (Non-tail-call form avoids a separate pre-existing VM TAILCALL bug.)
+    var status = try lua.luaL_dostring(&L, "local r = os.execute('true'); return r", "=(test)");
+    try std.testing.expectEqual(@as(i32, lua.LUA_OK), status);
+    try std.testing.expectEqual(@as(i32, 1), lua.lua_toboolean(&L, -1));
+    lua.lua_settop(&L, 0);
+
+    // Failure: status non-zero -> first result is nil.
+    status = try lua.luaL_dostring(&L, "local r = os.execute('false'); return r", "=(test)");
+    try std.testing.expectEqual(@as(i32, lua.LUA_OK), status);
+    try std.testing.expectEqual(@as(i32, lua.LUA_TNIL), lua.lua_type(&L, -1));
+}
+
+test "H.2 os.setlocale returns the active locale" {
+    const gpa = std.testing.allocator;
+    var L: lua.lua_State = undefined;
+    try lua.luaL_newstate(&L, gpa);
+    defer lua.lua_close(&L);
+    try lua.luaL_openlibs(&L);
+
+    const status = try lua.luaL_dostring(&L, "return os.setlocale('C')", "=(test)");
+    try std.testing.expectEqual(@as(i32, lua.LUA_OK), status);
+    const loc = lua.lua_tostring(&L, -1).?;
+    try std.testing.expectEqual(@as(usize, 1), loc.len);
+    try std.testing.expectEqual(@as(u8, 'C'), loc[0]);
+}

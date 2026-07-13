@@ -156,11 +156,13 @@ Silent no-ops that produce wrong results:
 - `luaL_where` — always pushes `""`
 - `luaL_len` — uses `lua_rawlen` without `__len` metamethod
 
-### H.2 — oslib stubs (HIGH priority)
-- `os.date` — `*t` returns empty table; no date formatting
-- `os.execute` — always pushes `true`; no subprocess execution
-- `os.exit` — no Lua cleanup before `std.process.exit()`
-- `os.setlocale` — always returns `"C"`
+### H.2 — oslib stubs (DONE, Rev 64)
+- `os.date` — `*t` table (year/month/day/hour/min/sec/wday/yday/isdst) + real `strftime` formatting via `extern "c"` libc `localtime_r`/`gmtime_r`/`strftime` (glibc `tm` layout declared locally).
+- `os.execute` — real subprocess via `std.process.spawn` + `child.wait`, returning `(true/nil, "exit"/"signal", code)` matching the reference. Uses `L.l_G.?.io`.
+- `os.exit` — calls `lua_close` then `std.process.exit` (runs `__close`/`__gc` finalizers first).
+- `os.setlocale` — real `std.c.setlocale` with category parsing (`classcat`).
+- `os_time` — table form (requires year/month/day) via `mktime`; non-table falls back to `clock_gettime`.
+- Note: `std.c` on this Zig version exposes only `setlocale`/`LC`/`time_t` (no `time`/`strftime`/`mktime`/`localtime_r`/`gmtime_r`/`tm`), so those are bound directly with `extern "c"`.
 
 ### H.3 — iolib stubs (LOW priority)
 - `io.flush` / `file:flush` — no-op
