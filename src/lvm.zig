@@ -493,7 +493,7 @@ pub fn run(L: *lua.lua_State, active_ci: *lua.CallInfo) anyerror!void {
                 const sc = GETARG_sC(instruction);
                 if (rb == .number) {
                     L.stack[ra] = .{ .number = rb.number + @as(f64, @floatFromInt(sc)) };
-                    if (GET_OPCODE(code[ci.savedpc]) == .MMBINI) ci.savedpc += 1;
+                    ci.savedpc += 1;
                 }
             },
             .ADDK => {
@@ -502,7 +502,7 @@ pub fn run(L: *lua.lua_State, active_ci: *lua.CallInfo) anyerror!void {
                 const rc = proto.k[@as(usize, @intCast(GETARG_C(instruction)))];
                 if (rb == .number and rc == .number) {
                     L.stack[ra] = .{ .number = rb.number + rc.number };
-                    if (GET_OPCODE(code[ci.savedpc]) == .MMBINK) ci.savedpc += 1;
+                    ci.savedpc += 1;
                 }
             },
             .SUBK => {
@@ -511,7 +511,7 @@ pub fn run(L: *lua.lua_State, active_ci: *lua.CallInfo) anyerror!void {
                 const rc = proto.k[@as(usize, @intCast(GETARG_C(instruction)))];
                 if (rb == .number and rc == .number) {
                     L.stack[ra] = .{ .number = rb.number - rc.number };
-                    if (GET_OPCODE(code[ci.savedpc]) == .MMBINK) ci.savedpc += 1;
+                    ci.savedpc += 1;
                 }
             },
             .MULK => {
@@ -520,7 +520,7 @@ pub fn run(L: *lua.lua_State, active_ci: *lua.CallInfo) anyerror!void {
                 const rc = proto.k[@as(usize, @intCast(GETARG_C(instruction)))];
                 if (rb == .number and rc == .number) {
                     L.stack[ra] = .{ .number = rb.number * rc.number };
-                    if (GET_OPCODE(code[ci.savedpc]) == .MMBINK) ci.savedpc += 1;
+                    ci.savedpc += 1;
                 }
             },
             .MODK => {
@@ -529,7 +529,7 @@ pub fn run(L: *lua.lua_State, active_ci: *lua.CallInfo) anyerror!void {
                 const rc = proto.k[@as(usize, @intCast(GETARG_C(instruction)))];
                 if (rb == .number and rc == .number) {
                     L.stack[ra] = .{ .number = rb.number - @floor(rb.number / rc.number) * rc.number };
-                    if (GET_OPCODE(code[ci.savedpc]) == .MMBINK) ci.savedpc += 1;
+                    ci.savedpc += 1;
                 }
             },
             .POWK => {
@@ -538,7 +538,7 @@ pub fn run(L: *lua.lua_State, active_ci: *lua.CallInfo) anyerror!void {
                 const rc = proto.k[@as(usize, @intCast(GETARG_C(instruction)))];
                 if (rb == .number and rc == .number) {
                     L.stack[ra] = .{ .number = libm.getLibm().pow(rb.number, rc.number) };
-                    if (GET_OPCODE(code[ci.savedpc]) == .MMBINK) ci.savedpc += 1;
+                    ci.savedpc += 1;
                 }
             },
             .DIVK => {
@@ -547,7 +547,7 @@ pub fn run(L: *lua.lua_State, active_ci: *lua.CallInfo) anyerror!void {
                 const rc = proto.k[@as(usize, @intCast(GETARG_C(instruction)))];
                 if (rb == .number and rc == .number) {
                     L.stack[ra] = .{ .number = rb.number / rc.number };
-                    if (GET_OPCODE(code[ci.savedpc]) == .MMBINK) ci.savedpc += 1;
+                    ci.savedpc += 1;
                 }
             },
             .IDIVK => {
@@ -556,7 +556,7 @@ pub fn run(L: *lua.lua_State, active_ci: *lua.CallInfo) anyerror!void {
                 const rc = proto.k[@as(usize, @intCast(GETARG_C(instruction)))];
                 if (rb == .number and rc == .number) {
                     L.stack[ra] = .{ .number = @floor(rb.number / rc.number) };
-                    if (GET_OPCODE(code[ci.savedpc]) == .MMBINK) ci.savedpc += 1;
+                    ci.savedpc += 1;
                 }
             },
             .BANDK => {
@@ -567,7 +567,7 @@ pub fn run(L: *lua.lua_State, active_ci: *lua.CallInfo) anyerror!void {
                     const ib = @as(i64, @intFromFloat(rb.number));
                     const ic = @as(i64, @intFromFloat(rc.number));
                     L.stack[ra] = .{ .number = @floatFromInt(ib & ic) };
-                    if (GET_OPCODE(code[ci.savedpc]) == .MMBINK) ci.savedpc += 1;
+                    ci.savedpc += 1;
                 }
             },
             .BORK => {
@@ -578,7 +578,7 @@ pub fn run(L: *lua.lua_State, active_ci: *lua.CallInfo) anyerror!void {
                     const ib = @as(i64, @intFromFloat(rb.number));
                     const ic = @as(i64, @intFromFloat(rc.number));
                     L.stack[ra] = .{ .number = @floatFromInt(ib | ic) };
-                    if (GET_OPCODE(code[ci.savedpc]) == .MMBINK) ci.savedpc += 1;
+                    ci.savedpc += 1;
                 }
             },
             .BXORK => {
@@ -589,7 +589,7 @@ pub fn run(L: *lua.lua_State, active_ci: *lua.CallInfo) anyerror!void {
                     const ib = @as(i64, @intFromFloat(rb.number));
                     const ic = @as(i64, @intFromFloat(rc.number));
                     L.stack[ra] = .{ .number = @floatFromInt(ib ^ ic) };
-                    if (GET_OPCODE(code[ci.savedpc]) == .MMBINK) ci.savedpc += 1;
+                    ci.savedpc += 1;
                 }
             },
             .SHLI => {
@@ -600,7 +600,7 @@ pub fn run(L: *lua.lua_State, active_ci: *lua.CallInfo) anyerror!void {
                 if (rb == .number) {
                     const ib = @as(i64, @intFromFloat(rb.number));
                     L.stack[ra] = .{ .number = @floatFromInt(ib << shift) };
-                    if (GET_OPCODE(code[ci.savedpc]) == .MMBINI) ci.savedpc += 1;
+                    ci.savedpc += 1;
                 }
             },
             .SHRI => {
@@ -611,7 +611,7 @@ pub fn run(L: *lua.lua_State, active_ci: *lua.CallInfo) anyerror!void {
                 if (rb == .number) {
                     const ib = @as(i64, @intFromFloat(rb.number));
                     L.stack[ra] = .{ .number = @floatFromInt(ib >> shift) };
-                    if (GET_OPCODE(code[ci.savedpc]) == .MMBINI) ci.savedpc += 1;
+                    ci.savedpc += 1;
                 }
             },
             .ADD => {
@@ -620,7 +620,7 @@ pub fn run(L: *lua.lua_State, active_ci: *lua.CallInfo) anyerror!void {
                 const rc = L.stack[ci.base + @as(usize, @intCast(GETARG_C(instruction)))];
                 if (rb == .number and rc == .number) {
                     L.stack[ra] = .{ .number = rb.number + rc.number };
-                    if (GET_OPCODE(code[ci.savedpc]) == .MMBIN) ci.savedpc += 1;
+                    ci.savedpc += 1;
                 }
             },
             .SUB => {
@@ -629,7 +629,7 @@ pub fn run(L: *lua.lua_State, active_ci: *lua.CallInfo) anyerror!void {
                 const rc = L.stack[ci.base + @as(usize, @intCast(GETARG_C(instruction)))];
                 if (rb == .number and rc == .number) {
                     L.stack[ra] = .{ .number = rb.number - rc.number };
-                    if (GET_OPCODE(code[ci.savedpc]) == .MMBIN) ci.savedpc += 1;
+                    ci.savedpc += 1;
                 }
             },
             .MUL => {
@@ -638,7 +638,7 @@ pub fn run(L: *lua.lua_State, active_ci: *lua.CallInfo) anyerror!void {
                 const rc = L.stack[ci.base + @as(usize, @intCast(GETARG_C(instruction)))];
                 if (rb == .number and rc == .number) {
                     L.stack[ra] = .{ .number = rb.number * rc.number };
-                    if (GET_OPCODE(code[ci.savedpc]) == .MMBIN) ci.savedpc += 1;
+                    ci.savedpc += 1;
                 }
             },
             .MOD => {
@@ -647,7 +647,7 @@ pub fn run(L: *lua.lua_State, active_ci: *lua.CallInfo) anyerror!void {
                 const rc = L.stack[ci.base + @as(usize, @intCast(GETARG_C(instruction)))];
                 if (rb == .number and rc == .number) {
                     L.stack[ra] = .{ .number = rb.number - @floor(rb.number / rc.number) * rc.number };
-                    if (GET_OPCODE(code[ci.savedpc]) == .MMBIN) ci.savedpc += 1;
+                    ci.savedpc += 1;
                 }
             },
             .POW => {
@@ -656,7 +656,7 @@ pub fn run(L: *lua.lua_State, active_ci: *lua.CallInfo) anyerror!void {
                 const rc = L.stack[ci.base + @as(usize, @intCast(GETARG_C(instruction)))];
                 if (rb == .number and rc == .number) {
                     L.stack[ra] = .{ .number = libm.getLibm().pow(rb.number, rc.number) };
-                    if (GET_OPCODE(code[ci.savedpc]) == .MMBIN) ci.savedpc += 1;
+                    ci.savedpc += 1;
                 }
             },
             .DIV => {
@@ -665,7 +665,7 @@ pub fn run(L: *lua.lua_State, active_ci: *lua.CallInfo) anyerror!void {
                 const rc = L.stack[ci.base + @as(usize, @intCast(GETARG_C(instruction)))];
                 if (rb == .number and rc == .number) {
                     L.stack[ra] = .{ .number = rb.number / rc.number };
-                    if (GET_OPCODE(code[ci.savedpc]) == .MMBIN) ci.savedpc += 1;
+                    ci.savedpc += 1;
                 }
             },
             .IDIV => {
@@ -674,7 +674,7 @@ pub fn run(L: *lua.lua_State, active_ci: *lua.CallInfo) anyerror!void {
                 const rc = L.stack[ci.base + @as(usize, @intCast(GETARG_C(instruction)))];
                 if (rb == .number and rc == .number) {
                     L.stack[ra] = .{ .number = @floor(rb.number / rc.number) };
-                    if (GET_OPCODE(code[ci.savedpc]) == .MMBIN) ci.savedpc += 1;
+                    ci.savedpc += 1;
                 }
             },
             .BAND => {
@@ -685,7 +685,7 @@ pub fn run(L: *lua.lua_State, active_ci: *lua.CallInfo) anyerror!void {
                     const ib = @as(i64, @intFromFloat(rb.number));
                     const ic = @as(i64, @intFromFloat(rc.number));
                     L.stack[ra] = .{ .number = @floatFromInt(ib & ic) };
-                    if (GET_OPCODE(code[ci.savedpc]) == .MMBIN) ci.savedpc += 1;
+                    ci.savedpc += 1;
                 }
             },
             .BOR => {
@@ -696,7 +696,7 @@ pub fn run(L: *lua.lua_State, active_ci: *lua.CallInfo) anyerror!void {
                     const ib = @as(i64, @intFromFloat(rb.number));
                     const ic = @as(i64, @intFromFloat(rc.number));
                     L.stack[ra] = .{ .number = @floatFromInt(ib | ic) };
-                    if (GET_OPCODE(code[ci.savedpc]) == .MMBIN) ci.savedpc += 1;
+                    ci.savedpc += 1;
                 }
             },
             .BXOR => {
@@ -707,7 +707,7 @@ pub fn run(L: *lua.lua_State, active_ci: *lua.CallInfo) anyerror!void {
                     const ib = @as(i64, @intFromFloat(rb.number));
                     const ic = @as(i64, @intFromFloat(rc.number));
                     L.stack[ra] = .{ .number = @floatFromInt(ib ^ ic) };
-                    if (GET_OPCODE(code[ci.savedpc]) == .MMBIN) ci.savedpc += 1;
+                    ci.savedpc += 1;
                 }
             },
             .SHL => {
@@ -718,7 +718,7 @@ pub fn run(L: *lua.lua_State, active_ci: *lua.CallInfo) anyerror!void {
                     const ib = @as(i64, @intFromFloat(rb.number));
                     const ic = @as(i64, @intFromFloat(rc.number));
                     L.stack[ra] = .{ .number = @floatFromInt(lua.luaV_shift(ib, ic)) };
-                    if (GET_OPCODE(code[ci.savedpc]) == .MMBIN) ci.savedpc += 1;
+                    ci.savedpc += 1;
                 }
             },
             .SHR => {
@@ -729,7 +729,7 @@ pub fn run(L: *lua.lua_State, active_ci: *lua.CallInfo) anyerror!void {
                     const ib = @as(i64, @intFromFloat(rb.number));
                     const ic = @as(i64, @intFromFloat(rc.number));
                     L.stack[ra] = .{ .number = @floatFromInt(lua.luaV_shift(ib, -ic)) };
-                    if (GET_OPCODE(code[ci.savedpc]) == .MMBIN) ci.savedpc += 1;
+                    ci.savedpc += 1;
                 }
             },
             .MMBIN => {

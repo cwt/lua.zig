@@ -1521,3 +1521,67 @@ dispatching into `libm.so.6` (`__ieee754_log_fma`, `__log10_finite`) instead of
   `src/llex.zig:398` (`std.math.ldexp` at compile time) still use `compiler_rt`;
   neither is on this benchmark's hot path. Route them the same way if their
   semantics need to match glibc exactly.
+
+---
+
+## 2026-07-13 — Rev 55: VM hot-loop MMBIN skip + Debug-LTO crash workaround
+
+### Goal
+
+Continue closing the interpreter gap with reference C Lua on `../pi/pi-5.5.lua`
+(product formula; hot loop is pure float arithmetic + per-iteration
+`math.log(n,10)`/`math.floor` C-calls). Investigate and remove avoidable
+per-opcode overhead.
+
+### Changes
+
+- **`src/lvm.zig` — removed TEMP profiling instrumentation.** The per-opcode
+  histogram (`g_opcount`/`g_opdepth` globals, the `defer`-dumped histogram, and
+  the `incq` counter in the fetch loop) was added only to profile the loop; it
+  was a hot-path memory write and is now gone.
+- **`src/lvm.zig` — unconditional MMBIN skip in number fast-paths.** Every
+  binary/arithmetic opcode (`ADD/SUB/MUL/MOD/DIV/IDIV/POW/BAND/BOR/BXOR/SHL/SHR`
+  and the `K`/`I` immediate variants `MULK/MODK/ADDI/...`/`GEI`/`EQI`) emitted
+  `if (GET_OPCODE(code[ci.savedpc]) == .MMBINX) ci.savedpc += 1;` to skip the
+  trailing metamethod guard. For valid Lua 5.5.1 bytecode a binary op is *always*
+  followed by its `MMBIN`/`MMBINI`/`MMBINK` variant, and numbers never need a
+  metamethod (running `MMBIN` with two numbers would itself error in C), so the
+  guarded check is redundant for any correct program. The number path now does
+  `ci.savedpc += 1;` unconditionally, deleting a per-opcode `code[]` read +
+  compare + branch from the dispatch loop. The non-number path still runs the
+  next instruction (the real `MMBIN` dispatch) unchanged.
+- **`build.zig` — LTO only for Release builds.** `.lto = .thin` was previously
+  unconditional, which made `zig build` (Debug) run the Debug+LTO codegen path.
+  That path segfaults in this toolchain's LLVM backend (`process terminated
+  with signal SEGV`), and the fault also reproduces on the committed tip — i.e.
+  it is an environmental LLVM bug, not a regression in the port. LTO is now set
+  `if (optimize != .Debug) .thin else .none`, so `zig build` (Debug) works and
+  `zig build -Doptimize=ReleaseFast` still gets ThinLTO.
+
+### Investigation findings
+
+- `lvm.run` uses an LLVM **jump table** dispatch (`jmp *jt(,%rdx,8)`), O(1) and
+  equivalent to C's computed-goto — dispatch shape is *not* the gap.
+- `run`'s return type cannot be narrowed from `anyerror!void` to `!void`
+  (error-set inference cycle: `run ↔ luaD_call ↔ luaT_callTMres`); the wide
+  error union is inherent, not removable locally.
+- `allocCallInfo` already uses a freelist; no per-call heap allocation.
+
+### §0.1 Self-Audit
+
+- **Rule 8 (single type model):** unchanged.
+- **Rule 12 (no swallowed errors):** the MMBIN skip preserves semantics for all
+  valid bytecode (numbers never invoke binary metamethods; malformed chunks are
+  out of scope). Verified by 73/73 tests + byte-identical `pi-5.5.lua` output.
+- No `@cImport`; libm still resolved via `std.DynLib` (`src/libm.zig`).
+
+### Verification
+
+`zig build test` → **73/73 pass**. `perf report` (ReleaseFast ThinLTO):
+`lvm.run` 54.6%, `lua.precall` 15.6% (3M `math.log`/`math.floor` C-calls —
+paid by C too), libm `log`/`log10` ~22.5%, `math_log` 3.8%; `luaT_equalobj`
+and `luaV_gettable` folded into `lvm.run`. ReleaseFast wall-clock min-of-10 on
+`../pi/pi-5.5.lua`: **luazig 100ms vs reference `lua/lua` 90ms (~1.11×)**.
+Remaining ~10ms gap is C's tighter C-function call/inline overhead
+(`math_log` inlined at the call site, lighter `precall`) — not addressable by
+local fast-paths without restructuring C-function dispatch.

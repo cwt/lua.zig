@@ -18,11 +18,16 @@ pub fn build(b: *std.Build) void {
         .link_libc = true,
     });
 
+    // LTO is only enabled for Release builds: the Debug+LTO codegen path
+    // triggers an LLVM backend crash in this toolchain. ReleaseFast/ReleaseSmall
+    // LTO works correctly and yields the optimized interpreter.
+    const use_lto = optimize != .Debug;
+
     const exe = b.addExecutable(.{
         .name = "luazig",
         .root_module = root_module,
     });
-    exe.lto = .thin;
+    exe.lto = if (use_lto) .thin else .none;
 
     b.installArtifact(exe);
 
@@ -30,7 +35,7 @@ pub fn build(b: *std.Build) void {
         .name = "lua",
         .root_module = root_module,
     });
-    lib.lto = .thin;
+    lib.lto = if (use_lto) .thin else .none;
 
     b.installArtifact(lib);
 
