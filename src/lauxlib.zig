@@ -213,9 +213,17 @@ pub fn luaL_tolstring(L: *lua.lua_State, idx: i32, len: ?*usize) ?[]const u8 {
         lua.LUA_TNUMBER => {
             var buf: [128]u8 = undefined;
             if (lua.lua_isinteger(L, idx) != 0) {
-                const iv = lua.lua_tointeger(L, idx) orelse 0;
-                const s = std.fmt.bufPrint(&buf, "{d}", .{iv}) catch return null;
-                _ = lua.lua_pushstring(L, s);
+                if (lua.lua_tointeger(L, idx)) |iv| {
+                    const s = std.fmt.bufPrint(&buf, "{d}", .{iv}) catch return null;
+                    _ = lua.lua_pushstring(L, s);
+                } else {
+                    // Integral value outside the i64 range (e.g. 2^100): there is
+                    // no integer TValue type in this f64-only port, so format it as
+                    // a (scientific) float instead of collapsing to 0.
+                    const fv = lua.lua_tonumber(L, idx) orelse 0.0;
+                    const s = std.fmt.bufPrint(&buf, "{e}", .{fv}) catch return null;
+                    _ = lua.lua_pushstring(L, s);
+                }
             } else {
                 const fv = lua.lua_tonumber(L, idx) orelse 0.0;
                 const s = std.fmt.bufPrint(&buf, "{d}", .{fv}) catch return null;

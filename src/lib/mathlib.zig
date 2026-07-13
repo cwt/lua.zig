@@ -160,6 +160,14 @@ fn math_exp(L: *lua.lua_State) !i32 {
     return 1;
 }
 
+fn math_pow(L: *lua.lua_State) !i32 {
+    const m = libm.getLibm();
+    const x = try lauxlib.luaL_checknumber(L, 1);
+    const y = try lauxlib.luaL_checknumber(L, 2);
+    lua.lua_pushnumber(L, m.pow(x, y));
+    return 1;
+}
+
 fn math_deg(L: *lua.lua_State) !i32 {
     lua.lua_pushnumber(L, try lauxlib.luaL_checknumber(L, 1) * (180.0 / std.math.pi));
     return 1;
@@ -300,6 +308,7 @@ pub fn openmathlib(L: *lua.lua_State) !void {
         .{ .name = "max", .func = math_max },
         .{ .name = "min", .func = math_min },
         .{ .name = "modf", .func = math_modf },
+        .{ .name = "pow", .func = math_pow },
         .{ .name = "rad", .func = math_rad },
         .{ .name = "sin", .func = math_sin },
         .{ .name = "sqrt", .func = math_sqrt },
