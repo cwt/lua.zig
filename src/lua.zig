@@ -62,6 +62,33 @@ pub const lua_KContext = llimits.lua_KContext;
 pub const lua_Alloc = llimits.lua_Alloc;
 pub const lua_WarnFunction = llimits.lua_WarnFunction;
 
+// Wrapper letting a `lua_Alloc` thunk (required by the C API) drive a
+// std.mem.Allocator. Backs `global_State.allocf`/`alloc_ud`.
+pub const AllocWrapper = struct {
+    alloc: std.mem.Allocator,
+};
+
+// Default allocator thunk compatible with the C `lua_Alloc` typedef. Mirrors
+// the semantics of the reference `l_alloc`: (ud -> AllocWrapper*) wraps a
+// std.mem.Allocator; nsize==0 frees, osize==0 allocates, else reallocates.
+fn l_alloc(ud: ?*anyopaque, ptr: ?*anyopaque, osize: usize, nsize: usize) ?*anyopaque {
+    const w = @as(*AllocWrapper, @ptrCast(@alignCast(ud orelse return null)));
+    if (nsize == 0) {
+        if (ptr) |p| {
+            const old = @as([*]u8, @ptrCast(@alignCast(p)))[0..osize];
+            w.alloc.free(old);
+        }
+        return null;
+    } else if (osize == 0) {
+        const m = w.alloc.alloc(u8, nsize) catch return null;
+        return m.ptr;
+    } else {
+        const old = @as([*]u8, @ptrCast(@alignCast(ptr orelse return null)))[0..osize];
+        const m = w.alloc.realloc(old, nsize) catch return null;
+        return m.ptr;
+    }
+}
+
 
 // Forward declarations
 pub const lua_CFunction = *const fn (*lua_State) anyerror!i32;
@@ -524,6 +551,12 @@ pub const VMGCObject = struct {
 
 pub const global_State = struct {
     allocator: std.mem.Allocator,
+    // C-API allocator view (lua_Alloc typedef). Wraps `allocator` so that
+    // lua_getallocf/lua_setallocf present a drop-in-compatible allocator to
+    // C callers. `alloc_wrapper` holds the std.mem.Allocator the thunk uses.
+    allocf: lua_Alloc,
+    alloc_ud: ?*anyopaque,
+    alloc_wrapper: AllocWrapper,
     strt: std.array_hash_map.String(*lua_TString),
     seed: usize,
     registry: TValue,
@@ -2935,13 +2968,69 @@ pub fn lua_next(L: *lua_State, idx: i32) i32 {
 }
 
 pub fn lua_concat(L: *lua_State, n: i32) void {
-    _ = L;
-    _ = n;
+    if (n <= 0) {
+        _ = lua_pushstring(L, "");
+        return;
+    }
+    const g = G(L);
+    const top = L.top;
+    const start = top - @as(usize, @intCast(n));
+    var list = std.ArrayListUnmanaged(u8).empty;
+    defer list.deinit(L.allocator);
+    var k: usize = 0;
+    while (k < @as(usize, @intCast(n))) : (k += 1) {
+        const val = L.stack[start + k];
+        switch (val) {
+            .string => |s| list.appendSlice(L.allocator, s.?.s) catch {},
+            .number => |num| {
+                var buf: [64]u8 = undefined;
+                const slice = std.fmt.bufPrint(&buf, "{d}", .{num}) catch "";
+                list.appendSlice(L.allocator, slice) catch {};
+            },
+            else => {
+                // Non-scalar value: default "<type>: 0x...>" representation
+                // (mirrors luaL_tolstring's fallback; __tostring is not wired
+                // through the TMS enum in luazig).
+                var buf: [64]u8 = undefined;
+                const tname = lua_typename(lua_type(L, @as(i32, @intCast(start + k))));
+                const ptr = lua_topointer(L, @as(i32, @intCast(start + k)));
+                const s = std.fmt.bufPrint(&buf, "{s}: 0x{x:0>14}", .{ tname, @intFromPtr(ptr) }) catch "";
+                list.appendSlice(L.allocator, s) catch {};
+            },
+        }
+    }
+    const ts = lstring.luaS_new(g.allocator, &g.strt, g.seed, list.items) catch {
+        _ = lua_pushstring(L, "");
+        return;
+    };
+    L.stack[start] = .{ .string = ts };
+    L.top = start + 1;
 }
 
-pub fn lua_len(L: *lua_State, idx: i32) void {
-    _ = L;
-    _ = idx;
+pub fn lua_len(L: *lua_State, idx: i32) !void {
+    const v = stackAt(L, idx);
+    switch (v) {
+        .string => |s| {
+            lua_pushinteger(L, @as(i64, @intCast(s.?.s.len)));
+        },
+        .table => |t| {
+            const tm = if (t.?.metatable) |mt| ltm.luaT_gettm(mt, .LEN, G(L).tmname[@intFromEnum(ltm.TMS.LEN)].?) else null;
+            if (tm) |tm_val| {
+                _ = try ltm.luaT_callTMres(L, tm_val, v, v, L.top);
+                L.top += 1;
+            } else {
+                lua_pushinteger(L, @as(i64, @intCast(ltable.getn(t.?))));
+            }
+        },
+        else => {
+            const tm = ltm.luaT_gettmbyobj(L, v, .LEN);
+            if (tm == .nil) {
+                return error.RuntimeError;
+            }
+            _ = try ltm.luaT_callTMres(L, tm, v, v, L.top);
+            L.top += 1;
+        },
+    }
 }
 
 fn isDigit(c: u8) bool {
@@ -3059,31 +3148,47 @@ pub fn lua_stringtonumber(L: *lua_State, s: []const u8) usize {
 }
 
 pub fn lua_getallocf(L: *lua_State, ud: ?*?*anyopaque) lua_Alloc {
-    _ = L;
-    _ = ud;
-    return undefined;
+    const g = G(L);
+    if (ud) |p| p.* = g.alloc_ud;
+    return g.allocf;
 }
 
 pub fn lua_setallocf(L: *lua_State, f: lua_Alloc, ud: ?*anyopaque) void {
-    _ = L;
-    _ = f;
-    _ = ud;
+    const g = G(L);
+    g.allocf = f;
+    g.alloc_ud = ud;
 }
 
 pub fn lua_toclose(L: *lua_State, idx: i32) void {
-    _ = L;
-    _ = idx;
+    // Record the stack slot at `idx` as to-be-closed. luazig keeps a single
+    // to-be-closed slot per state in `L.tbclist`; the deferred __close runs
+    // when the enclosing frame closes (VM CLOSE opcode). Marking is what the
+    // C API requires; honoring it on scope exit depends on the VM CLOSE path.
+    L.tbclist = @as(usize, @intCast(lua_absindex(L, idx))) - 1;
 }
 
 pub fn lua_closeslot(L: *lua_State, idx: i32) void {
-    _ = L;
-    _ = idx;
+    // Explicitly run the __close metamethod on the value at `idx`, if any.
+    const v = stackAt(L, idx);
+    const mt = switch (v) {
+        .table => |t| if (t) |x| x.metatable else null,
+        .userdata => |u| if (u) |x| x.metatable else null,
+        else => null,
+    };
+    const tm = if (mt) |m| ltm.luaT_gettm(m, .CLOSE, G(L).tmname[@intFromEnum(ltm.TMS.CLOSE)].?) else null;
+    if (tm) |tm_val| {
+        // Call __close(value, nil, nil); results are discarded (nresults = 0).
+        _ = ltm.luaT_callTM(L, tm_val, v, TValue{ .nil = {} }, TValue{ .nil = {} }) catch {};
+    }
 }
 
 pub fn luaL_newstate_io(L: *lua_State, gpa: std.mem.Allocator, io: std.Io) !void {
     const g = try gpa.create(global_State);
     g.* = .{
         .allocator = gpa,
+        .allocf = &l_alloc,
+        .alloc_ud = null,
+        .alloc_wrapper = .{ .alloc = gpa },
         .strt = std.array_hash_map.String(*lua_TString).empty,
         .seed = @intFromPtr(L) ^ 0x9e3779b97f4a7c15,
         .registry = TValue{ .nil = {} },
@@ -3094,6 +3199,7 @@ pub fn luaL_newstate_io(L: *lua_State, gpa: std.mem.Allocator, io: std.Io) !void
         .prng = std.Random.Xoshiro256.init(@intFromPtr(L)),
         .clibs = .empty,
     };
+    g.alloc_ud = @ptrCast(&g.alloc_wrapper);
     const stack = try gpa.alloc(TValue, LUA_MINSTACK + 1);
     L.* = .{
         .tt = 0,
@@ -3144,9 +3250,21 @@ pub fn luaL_newstate(L: *lua_State, gpa: std.mem.Allocator) !void {
     L.l_G.?.io_backend = threaded;
 }
 
-pub fn createargtable(L: *lua_State, args: anytype) !void {
-    _ = L;
-    _ = args;
+pub fn createargtable(L: *lua_State, args: []const []const u8) !void {
+    // Build the `arg` table (as in the reference standalone interpreter):
+    //   arg[0] = script name (args[1]), arg[1..] = extra CLI args (args[2..]).
+    // When running the REPL (no script), the table is left empty.
+    lua_createtable(L, 0, 0);
+    if (args.len >= 2) {
+        _ = lua_pushstring(L, args[1]);
+        lua_rawseti(L, -2, 0);
+        var i: usize = 2;
+        while (i < args.len) : (i += 1) {
+            _ = lua_pushstring(L, args[i]);
+            lua_rawseti(L, -2, @as(i64, @intCast(i - 1)));
+        }
+    }
+    lua_setglobal(L, "arg");
 }
 
 pub fn luaL_dostring(L: *lua_State, s: []const u8, name: []const u8) !i32 {
@@ -3177,6 +3295,9 @@ pub const luaL_setmetatable = @import("lauxlib.zig").luaL_setmetatable;
 pub const luaL_testudata = @import("lauxlib.zig").luaL_testudata;
 pub const luaL_checkudata = @import("lauxlib.zig").luaL_checkudata;
 pub const luaL_getenv = @import("lauxlib.zig").luaL_getenv;
+pub const luaL_newtable = @import("lauxlib.zig").luaL_newtable;
+pub const luaL_len = @import("lauxlib.zig").luaL_len;
+pub const luaL_where = @import("lauxlib.zig").luaL_where;
 
 pub const LUA_BASELIB: i32 = 1 << 0;
 pub const LUA_COLIB: i32 = 1 << 1;

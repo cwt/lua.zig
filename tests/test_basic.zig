@@ -3024,3 +3024,209 @@ test "function execution and variable assignment" {
     try std.testing.expectEqual(@as(i32, lua.LUA_OK), status);
     try std.testing.expectEqual(@as(f64, 42.0), lua.lua_tonumber(&L, -1));
 }
+
+// ===================================================================
+// Phase H.1 — C API stubs -> implementations
+// ===================================================================
+
+fn h1_testLen(L: *lua.lua_State) !i32 {
+    lua.lua_pushinteger(L, 7);
+    return 1;
+}
+
+fn h1_testClose(L: *lua.lua_State) !i32 {
+    // Mark that __close ran by setting a global flag.
+    lua.lua_pushboolean(L, 1);
+    lua.lua_setglobal(L, "__closed_ran");
+    return 0;
+}
+
+fn h1_dummyAlloc(ud: ?*anyopaque, ptr: ?*anyopaque, osize: usize, nsize: usize) ?*anyopaque {
+    _ = ud;
+    _ = ptr;
+    _ = osize;
+    _ = nsize;
+    return null;
+}
+
+test "H.1 luaL_newtable creates an empty table" {
+    const gpa = std.testing.allocator;
+    var L: lua.lua_State = undefined;
+    try lua.luaL_newstate(&L, gpa);
+    defer lua.lua_close(&L);
+
+    try lua.luaL_newtable(&L);
+    try std.testing.expectEqual(@as(i32, lua.LUA_TTABLE), lua.lua_type(&L, -1));
+    try std.testing.expectEqual(@as(usize, 0), lua.lua_rawlen(&L, -1));
+}
+
+test "H.1 lua_concat concatenates strings and numbers" {
+    const gpa = std.testing.allocator;
+    var L: lua.lua_State = undefined;
+    try lua.luaL_newstate(&L, gpa);
+    defer lua.lua_close(&L);
+
+    // strings
+    _ = lua.lua_pushstring(&L, "ab");
+    _ = lua.lua_pushstring(&L, "cd");
+    _ = lua.lua_pushstring(&L, "ef");
+    lua.lua_concat(&L, 3);
+    const s = lua.lua_tostring(&L, -1) orelse return error.TestFailed;
+    try std.testing.expectEqualSlices(u8, "abcdef", s);
+
+    // mixed number + string
+    lua.lua_settop(&L, 0);
+    lua.lua_pushinteger(&L, 42);
+    _ = lua.lua_pushstring(&L, "xyz");
+    lua.lua_concat(&L, 2);
+    const s2 = lua.lua_tostring(&L, -1) orelse return error.TestFailed;
+    try std.testing.expectEqualSlices(u8, "42xyz", s2);
+
+    // empty concat yields empty string
+    lua.lua_settop(&L, 0);
+    lua.lua_concat(&L, 0);
+    const s3 = lua.lua_tostring(&L, -1) orelse return error.TestFailed;
+    try std.testing.expectEqualSlices(u8, "", s3);
+}
+
+test "H.1 lua_len pushes length (string/table/__len)" {
+    const gpa = std.testing.allocator;
+    var L: lua.lua_State = undefined;
+    try lua.luaL_newstate(&L, gpa);
+    defer lua.lua_close(&L);
+
+    // string length
+    _ = lua.lua_pushstring(&L, "hello");
+    try lua.lua_len(&L, -1);
+    try std.testing.expectEqual(@as(f64, 5.0), lua.lua_tonumber(&L, -1));
+    lua.lua_settop(&L, 0);
+
+    // table length
+    lua.lua_createtable(&L, 0, 0);
+    var i: i32 = 1;
+    while (i <= 3) : (i += 1) {
+        lua.lua_pushinteger(&L, @as(i64, @intCast(i * 10)));
+        lua.lua_rawseti(&L, -2, @as(i64, @intCast(i)));
+    }
+    try lua.lua_len(&L, -1);
+    try std.testing.expectEqual(@as(f64, 3.0), lua.lua_tonumber(&L, -1));
+    lua.lua_settop(&L, 0);
+
+    // __len metamethod
+    lua.lua_createtable(&L, 0, 0); // subject table
+    lua.lua_createtable(&L, 0, 0); // metatable
+    lua.lua_pushcfunction(&L, h1_testLen);
+    try lua.lua_setfield(&L, -2, "__len");
+    _ = lua.lua_setmetatable(&L, -2);
+    try lua.lua_len(&L, -1);
+    try std.testing.expectEqual(@as(f64, 7.0), lua.lua_tonumber(&L, -1));
+}
+
+test "H.1 luaL_len returns integer length via __len" {
+    const gpa = std.testing.allocator;
+    var L: lua.lua_State = undefined;
+    try lua.luaL_newstate(&L, gpa);
+    defer lua.lua_close(&L);
+
+    lua.lua_createtable(&L, 0, 0);
+    var i: i32 = 1;
+    while (i <= 4) : (i += 1) {
+        lua.lua_pushinteger(&L, @as(i64, @intCast(i)));
+        lua.lua_rawseti(&L, -2, @as(i64, @intCast(i)));
+    }
+    const len = try lua.luaL_len(&L, -1);
+    try std.testing.expectEqual(@as(usize, 4), len);
+
+    // __len metamethod path
+    lua.lua_createtable(&L, 0, 0);
+    lua.lua_createtable(&L, 0, 0);
+    lua.lua_pushcfunction(&L, h1_testLen);
+    try lua.lua_setfield(&L, -2, "__len");
+    _ = lua.lua_setmetatable(&L, -2);
+    const len2 = try lua.luaL_len(&L, -1);
+    try std.testing.expectEqual(@as(usize, 7), len2);
+}
+
+test "H.1 luaL_where pushes a source location string" {
+    const gpa = std.testing.allocator;
+    var L: lua.lua_State = undefined;
+    try lua.luaL_newstate(&L, gpa);
+    defer lua.lua_close(&L);
+
+    lua.luaL_where(&L, 1);
+    try std.testing.expectEqual(@as(i32, lua.LUA_TSTRING), lua.lua_type(&L, -1));
+    // At top level there is no active function, so the result is "".
+    const s = lua.lua_tostring(&L, -1) orelse return error.TestFailed;
+    try std.testing.expectEqualSlices(u8, "", s);
+}
+
+test "H.1 createargtable builds the global arg table" {
+    const gpa = std.testing.allocator;
+    var L: lua.lua_State = undefined;
+    try lua.luaL_newstate(&L, gpa);
+    defer lua.lua_close(&L);
+
+    try lua.createargtable(&L, &[_][]const u8{ "luazig", "script.lua", "extra1", "extra2" });
+    _ = lua.lua_getglobal(&L, "arg");
+    try std.testing.expectEqual(@as(i32, lua.LUA_TTABLE), lua.lua_type(&L, -1));
+
+    _ = lua.lua_rawgeti(&L, -1, 0);
+    const a0 = lua.lua_tostring(&L, -1) orelse return error.TestFailed;
+    try std.testing.expectEqualSlices(u8, "script.lua", a0);
+    lua.lua_pop(&L, 1);
+
+    _ = lua.lua_rawgeti(&L, -1, 1);
+    const a1 = lua.lua_tostring(&L, -1) orelse return error.TestFailed;
+    try std.testing.expectEqualSlices(u8, "extra1", a1);
+    lua.lua_pop(&L, 1);
+
+    _ = lua.lua_rawgeti(&L, -1, 2);
+    const a2 = lua.lua_tostring(&L, -1) orelse return error.TestFailed;
+    try std.testing.expectEqualSlices(u8, "extra2", a2);
+}
+
+test "H.1 lua_getallocf / lua_setallocf roundtrip" {
+    const gpa = std.testing.allocator;
+    var L: lua.lua_State = undefined;
+    try lua.luaL_newstate(&L, gpa);
+    defer lua.lua_close(&L);
+
+    var ud1: ?*anyopaque = undefined;
+    const af1 = lua.lua_getallocf(&L, &ud1);
+    // Default allocator must be present.
+    if (ud1 == null) return error.TestFailed;
+
+    // Swap in a different allocator and read it back.
+    lua.lua_setallocf(&L, h1_dummyAlloc, @as(?*anyopaque, @ptrFromInt(0x1234)));
+    var ud2: ?*anyopaque = undefined;
+    const af2 = lua.lua_getallocf(&L, &ud2);
+    if (af2 != h1_dummyAlloc) return error.TestFailed;
+    if (ud2 != @as(?*anyopaque, @ptrFromInt(0x1234))) return error.TestFailed;
+
+    // Restore the default so the state stays usable.
+    lua.lua_setallocf(&L, af1, ud1);
+}
+
+test "H.1 lua_closeslot runs __close metamethod" {
+    const gpa = std.testing.allocator;
+    var L: lua.lua_State = undefined;
+    try lua.luaL_newstate(&L, gpa);
+    defer lua.lua_close(&L);
+
+    // Build a table with a __close metamethod.
+    lua.lua_createtable(&L, 0, 0); // subject
+    lua.lua_createtable(&L, 0, 0); // metatable
+    lua.lua_pushcfunction(&L, h1_testClose);
+    try lua.lua_setfield(&L, -2, "__close");
+    _ = lua.lua_setmetatable(&L, -2);
+
+    // Before closing, the flag is absent.
+    _ = lua.lua_getglobal(&L, "__closed_ran");
+    try std.testing.expectEqual(@as(i32, lua.LUA_TNIL), lua.lua_type(&L, -1));
+    lua.lua_pop(&L, 1);
+
+    lua.lua_closeslot(&L, -1);
+
+    _ = lua.lua_getglobal(&L, "__closed_ran");
+    try std.testing.expectEqual(@as(i32, 1), lua.lua_toboolean(&L, -1));
+}

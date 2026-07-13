@@ -15,7 +15,7 @@ const lualib = @import("lualib.zig");
 // ===================================================================
 
 pub fn luaL_newtable(L: *lua.lua_State) !void {
-    _ = L;
+    lua.lua_createtable(L, 0, 0);
 }
 
 pub fn luaL_setn(L: *lua.lua_State) !void {
@@ -57,9 +57,16 @@ pub fn luaL_typename(L: *lua.lua_State, idx: i32) ![]const u8 {
 }
 
 pub fn luaL_len(L: *lua.lua_State, idx: i32) !usize {
-    const l = lua.lua_rawlen(L, idx);
-    if (l > 0) return l;
-    return l;
+    try lua.lua_len(L, idx);
+    const isnum = lua.lua_isinteger(L, -1);
+    const iv = lua.lua_tointegerx(L, -1, null);
+    if (iv == null or (iv.? == 0 and isnum == 0)) {
+        lua.lua_pop(L, 1);
+        return error.LuaTypeError;
+    }
+    const l = iv.?;
+    lua.lua_pop(L, 1);
+    return @as(usize, @intCast(l));
 }
 
 pub fn luaL_checkinteger(L: *lua.lua_State, idx: i32) !i64 {
@@ -254,7 +261,17 @@ pub fn luaL_tolstring(L: *lua.lua_State, idx: i32, len: ?*usize) ?[]const u8 {
 }
 
 pub fn luaL_where(L: *lua.lua_State, level: i32) void {
-    _ = level;
+    var ar: lua.lua_Debug = undefined;
+    if (lua.lua_getstack(L, level, &ar) != 0) {
+        _ = lua.lua_getinfo(L, "Sl", &ar) catch {};
+        if (ar.currentline > 0) {
+            const src = std.mem.sliceTo(&ar.short_src, 0);
+            var buf: [256]u8 = undefined;
+            const s = std.fmt.bufPrint(&buf, "{s}:{d}: ", .{ src, ar.currentline }) catch "? ";
+            _ = lua.lua_pushstring(L, s);
+            return;
+        }
+    }
     _ = lua.lua_pushstring(L, "");
 }
 

@@ -12,7 +12,7 @@ pub fn main(init: std.process.Init) !void {
     defer gpa.destroy(L);
 
     try lua.luaL_newstate_io(L, gpa, io);
-    try lua.createargtable(L, init.minimal.args);
+    try lua.createargtable(L, args);
     try lua.luaL_openlibs(L);
 
     if (args.len >= 2) {
