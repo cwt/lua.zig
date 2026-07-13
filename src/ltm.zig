@@ -155,7 +155,12 @@ inline fn G(L: *lua.lua_State) *lua.global_State {
     return L.l_G orelse @panic("global state not initialized");
 }
 
-pub fn luaT_equalobj(L: *lua.lua_State, t1: lua.TValue, t2: lua.TValue) !bool {
+pub inline fn luaT_equalobj(L: *lua.lua_State, t1: lua.TValue, t2: lua.TValue) !bool {
+    // Fast path: both values are numbers (f64-only model) — direct compare,
+    // skipping the tag-compare and the full switch dispatch.
+    if (t1 == .number and t2 == .number) {
+        return t1.number == t2.number;
+    }
     if (@as(std.meta.Tag(lua.TValue), t1) != @as(std.meta.Tag(lua.TValue), t2)) {
         return false;
     }
