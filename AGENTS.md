@@ -130,7 +130,8 @@ are available as a Git subrepo.
 ### What is genuinely done
 - **Module layout exists.** Files mirror the C modules: `lua.zig` (core API),
   `lvm.zig` (opcodes + VM stub), `llimits.zig`, `luaconf.zig`, `lauxlib.zig`,
-  `lstate.zig`, and `src/lib/*` for the standard libraries.
+  and `src/lib/*` for the standard libraries (`lstate.zig` deleted — contents
+  merged into `lua.zig`).
 - **Single type model (§4.1).** One `lua_State` (struct in `lua.zig`), one
   `lua_CFunction`, one `global_State`. No `*anyopaque` shortcuts. No duplicate
   structs.
@@ -144,13 +145,14 @@ are available as a Git subrepo.
   have all been removed.
 - **juicy-main entry point** is in `src/luazig.zig` using `std.process.Init`.
 - **`build.zig`** builds exe (`luazig`) + library (`lua`). Test step works.
-- **50 passing tests** in `tests/test_basic.zig` covering nil/boolean/number/integer/
+- **92+ passing tests** in `tests/test_basic.zig` covering nil/boolean/number/integer/
    string/table type checks, stack push/pop round-trip, string interning,
    table setfield/getfield, seti/geti + length, empty/remove length, hash-part
    string keys, `next` traversal, stack-key gettable/settable, bytecode loader,
    VM execution, **8 metamethod tests** (`__index`, `__newindex`, `__add`, `__eq`, `__lt`/`__le`),
    error propagation/pcall, GC, all Phase F libraries, coroutine yield/resume,
-   io library registration + type check, os library registration + time/clock/difftime.
+   io library registration + type check, os library registration + time/clock/difftime
+   + os.date/*t, os.execute, os.setlocale, io buffering, file:read("*n"), debug lib.
 - **Phase B complete — Tables & string interning.**
    Real `lua_Table` (array part + chained-scatter hash part) in `src/ltable.zig`;
    string interning in `global_State.strt` (`std.array_hash_map.String`) in
@@ -173,16 +175,21 @@ are available as a Git subrepo.
 - **Repository initialized** with `.hgignore`, `.hgsub`, `LICENSE`, `AGENTS.md`.
 
 - **Phase E complete — Metamethods, Error handling, and GC.**
-   All Phase E items fully implemented: `__index`/`__newindex` chains (up to MAXTAGLOOP=2000), arithmetic and comparison metamethods, native error propagation (longjmp-free `anyerror`/`try` continuation path), protected calls with custom `errfunc` handlers on active stack frames, and a complete mark-and-sweep garbage collection engine for unreferenced tables and interned strings. Stale duplicated `src/lstate.zig` has been removed. Verified by 27 passing tests with zero memory leaks.
+   All Phase E items fully implemented: `__index`/`__newindex` chains (up to MAXTAGLOOP=2000), arithmetic and comparison metamethods, native error propagation (longjmp-free `anyerror`/`try` continuation path), protected calls with custom `errfunc` handlers on active stack frames, and a complete mark-and-sweep garbage collection engine for unreferenced tables and interned strings. Stale duplicated `src/lstate.zig` has been removed. Verified by passing tests with zero memory leaks.
 
 - **Phase F complete — All standard libraries implemented (2026-07-12).**
-   All 10 libraries fully implemented and tested. The `debug` library (`src/lib/debug.zig`) adds 16 functions matching the C `dblib[]` table exactly: `getinfo`, `traceback`, `getupvalue`/`setupvalue`, `getlocal`/`setlocal`, `sethook`/`gethook`, `upvalueid`/`upvaluejoin`, `getregistry`, `getmetatable`/`setmetatable`, `getuservalue`/`setuservalue`, plus `debug`. Supporting infrastructure (`luaO_chunkid`, `luaG_getfuncline`, `luaF_getlocalname`, `lua_getinfo`, `lua_getlocal`, `lua_setlocal`, `lua_sethook`/gethook, `luaL_traceback`) fully ported. **65 tests pass, zero memory leaks.**
+   All 10 libraries fully implemented and tested. The `debug` library (`src/lib/debug.zig`) adds 16 functions matching the C `dblib[]` table exactly: `getinfo`, `traceback`, `getupvalue`/`setupvalue`, `getlocal`/`setlocal`, `sethook`/`gethook`, `upvalueid`/`upvaluejoin`, `getregistry`, `getmetatable`/`setmetatable`, `getuservalue`/`setuservalue`, plus `debug`. Supporting infrastructure (`luaO_chunkid`, `luaG_getfuncline`, `luaF_getlocalname`, `lua_getinfo`, `lua_getlocal`, `lua_setlocal`, `lua_sethook`/gethook, `luaL_traceback`) fully ported. **92+ tests pass, zero memory leaks.**
 
 - **Phase D fix — VM vararg execution (BUG-036 FIXED, 2026-07-13).**
-   Ported `luaT_adjustvarargs`/`luaT_getvarargs`/`luaT_getvararg` into `src/ltm.zig` and wired `OP_VARARGPREP`/`OP_VARARG`/`OP_GETVARG` in `src/lvm.zig`. Vararg functions (`function f(a, ...) ... end`, `f(...)`, `select`, `{...}`) now execute correctly. Added `lua_Proto.flag` and `CallInfo.nextraargs`. The hidden-vararg frame is relocated by `buildhiddenargs` (matching the C reference) and restored on every return path: `.RETURN`, `.RETURN0`, `.RETURN1`, and `.TAILCALL` (`.lua`/`.c`) now correct `ci.func`/`ci.base`, and `luaK_finish` sets `SETARG_C(pc, numParams + 1)` on the `RETURN0`/`RETURN1` → `RETURN` conversion for `PF_VAHID` functions. Verified against the Lua 5.5.1 reference binary. **73/73 tests pass.**
+   Ported `luaT_adjustvarargs`/`luaT_getvarargs`/`luaT_getvararg` into `src/ltm.zig` and wired `OP_VARARGPREP`/`OP_VARARG`/`OP_GETVARG` in `src/lvm.zig`. Vararg functions (`function f(a, ...) ... end`, `f(...)`, `select`, `{...}`) now execute correctly. Added `lua_Proto.flag` and `CallInfo.nextraargs`. The hidden-vararg frame is relocated by `buildhiddenargs` (matching the C reference) and restored on every return path: `.RETURN`, `.RETURN0`, `.RETURN1`, and `.TAILCALL` (`.lua`/`.c`) now correct `ci.func`/`ci.base`, and `luaK_finish` sets `SETARG_C(pc, numParams + 1)` on the `RETURN0`/`RETURN1` → `RETURN` conversion for `PF_VAHID` functions. Verified against the Lua 5.5.1 reference binary. **92+ tests pass.**
 
 ### What is NOT done (future phases)
-Phase H — see §8 and the Phase H section below.
+Phase H remaining items — see §8 and the Phase H section below.
+
+### Phase H partial status
+
+Items from Phase H have been addressed incrementally during earlier bug-fix work.
+See §8 for the complete, up-to-date status of each H.x sub-phase.
 
 ---
 
@@ -275,20 +282,20 @@ and string interning in `global_State.strt` (`std.array_hash_map.String`) in
 | File | Status | Next action |
 |------|--------|-------------|
 | `build.zig` | ✅ exe+lib build OK; test step works | Expand when adding deps or test targets. |
-| `src/luazig.zig` | ✅ entry point, juicy-main | Thread `io` down to `iolib`/`oslib` if syscall-based I/O needs replacement. |
-| `src/lua.zig` | ✅ type model, stack, global_State, table API, binary loader, error propagation, `luaL_dostring` (real impl), GC | Phase G — source-text compiler. |
+| `src/luazig.zig` | ✅ entry point, juicy-main, basic CLI (script + REPL), `arg` table | Phase H — add `-e`, `-l`, `-i`, `-v` flags, multi-line REPL. |
+| `src/lua.zig` | ✅ type model, stack, global_State, table API, binary loader, source compiler, error propagation, `luaL_dostring` (real impl), GC, all C API functions | Phase H — missing C API functions, constants. |
 | `src/lundump.zig` | ✅ `loadBinaryChunk` bytecode loader, alignment, varint, string intern | Keep as-is; test coverage is complete. |
 | `src/llimits.zig` | ✅ constants only, no types | Keep as-is. |
 | `src/luaconf.zig` | ✅ version/layout config | Fix `LUA_VDIR` if reference changes. |
 | `src/lstate.zig` | ❌ Deleted | Stale/dead code removed from the repository. |
-| `src/ltm.zig` | ✅ `luaV_gettable`/`luaV_settable`, `luaT_trybinTM`, comparison helpers | Complete arithmetic metamethods; add `__len`/`__concat`/`__call` tests. |
+| `src/ltm.zig` | ✅ `luaV_gettable`/`luaV_settable`, `luaT_trybinTM`, comparison helpers, all metamethod dispatch | Keep as-is; test coverage complete. |
 | `src/ltable.zig` | ✅ `lua_Table` array+hash, `get`/`set`/`getInt`/`setInt`/`next`/`getn`/`deinit` | `__index`/`__newindex` dispatch now done in `ltm.zig`; keep as raw. |
-| `src/lstring.zig` | ✅ `luaS_new`/`luaS_hash`/`luaS_eqstr`, interning in `global_State.strt` | Add short/long string split with GC. |
-| `src/lvm.zig` | ✅ run execution loop, all table opcodes via metamethods | Phase E — arithmetic metamethods via `luaT_trybinTM`. |
-| `src/lauxlib.zig` | ✅ aux helpers, frame-relative getmetafield, checked option/checklstring | Complete missing helper functions when adding remaining standard libraries. |
+| `src/lstring.zig` | ✅ `luaS_new`/`luaS_hash`/`luaS_eqstr`, interning in `global_State.strt`, GC sweep | Keep as-is; short/long string split deferred. |
+| `src/lvm.zig` | ✅ run execution loop, all table opcodes via metamethods, arithmetic metamethods, vararg handling | Keep as-is. |
+| `src/lauxlib.zig` | ✅ aux helpers, frame-relative getmetafield, checked option/checklstring, string buffer, traceback | Phase H — add reference system (luaL_ref/unref), missing auxlib functions. |
 | `src/lualib.zig` | ✅ inline helpers for all libraries (openlibs dispatch) | Keep as-is. |
-| `src/lib/*.zig` | ✅ All 10 libraries fully implemented and tested (`baselib`, `mathlib`, `stringlib`, `tablelib`, `utf8lib`, `corolib`, `bit32`, `iolib`, `oslib`, `debug`, `loadlib`) | Phase G — source-text compiler; `loadlib` `require()` chain still minimal. |
-| `tests/test_basic.zig` | ✅ 50 passing tests | Ready for remaining Phase F libraries (`debug`, `loadlib`). |
+| `src/lib/*.zig` | ✅ All 10 libraries fully implemented and tested (`baselib`, `mathlib`, `stringlib`, `tablelib`, `utf8lib`, `corolib`, `bit32`, `iolib`, `oslib`, `debug`, `loadlib`) | Keep as-is; `loadlib` `require()` chain still minimal. |
+| `tests/test_basic.zig` | ✅ 92+ passing tests | Add focused tests for Phase H items. |
 | `docs/` | ✅ OKF v0.1 bundle (architecture, log, glossary) | Update after every phase; see `docs/README.md`. |
 | `lua/` | ✅ Git subrepo tracking git@github.com:lua/lua.git | Reference source; update with `git pull` when needed. |
 | `.hgsub` | ✅ defines `lua = [git]git@github.com:lua/lua.git` | Add more subrepos if needed. |
@@ -342,47 +349,44 @@ The next work is **Phase H — Drop-in replacement gap closure**. See the Phase 
 
 Phases A–G built a working, self-hosting Lua interpreter. Phase H closes the gap between "working" and "drop-in replacement for Lua 5.5.1". The gaps were identified by a systematic audit comparing `luazig` against `lua/lua.h`, `lua/lauxlib.h`, and the standard library C sources.
 
-**Status:** NOT STARTED (2026-07-13).
+**Status:** Partially done (revs 65–69 addressed H.1, H.2, H.3, and partial H.5/H.9).
+Updated 2026-07-14 with H.1/H.2/H.3 confirmed done.
 
 **Scope (portability, API completeness, stub elimination):**
 
-### H.1 — C API stubs → implementations (HIGH priority)
+### H.1 — C API stubs → implementations ✅ DONE (revs 65–69)
 
-These are empty function bodies that silently do nothing. Any C code calling them gets wrong results:
+| Function | File | Status |
+|----------|------|--------|
+| `lua_concat` | `src/lua.zig:2972` | ✅ real impl — concatenates n values from stack top |
+| `lua_len` | `src/lua.zig:3012` | ✅ real impl — pushes `#obj` with `__len` metamethod dispatch |
+| `lua_getallocf` | `src/lua.zig:3152` | ✅ real impl — returns current allocator and user data |
+| `lua_setallocf` | `src/lua.zig:3158` | ✅ real impl — sets new allocator |
+| `lua_toclose` | `src/lua.zig:3164` | ✅ real impl — records to-be-closed slot |
+| `lua_closeslot` | `src/lua.zig:3172` | ✅ real impl — runs `__close` metamethod on slot |
+| `createargtable` | `src/lua.zig:3258` | ✅ real impl — populates `arg` table from CLI args |
+| `luaL_newtable` | `src/lauxlib.zig:17` | ✅ real impl — calls `lua_createtable(L, 0, 0)` |
+| `luaL_where` | `src/lauxlib.zig:263` | ✅ real impl — pushes source location string |
+| `luaL_len` | `src/lauxlib.zig:59` | ✅ real impl — invokes `lua_len` with `__len` metamethod |
 
-| Function | File | Issue |
-|----------|------|-------|
-| `lua_concat` | `src/lua.zig:2888` | Body discards `n` — does nothing. Concatenates `n` values from the stack top. |
-| `lua_len` | `src/lua.zig:2893` | Body discards `idx` — does nothing. Pushes `#obj` with `__len` metamethod. |
-| `lua_getallocf` | `src/lua.zig:3012` | Returns `undefined`. Should return the current allocator and user data. |
-| `lua_setallocf` | `src/lua.zig:3018` | Ignores all params. Should set a new allocator. |
-| `lua_toclose` | `src/lua.zig:3024` | Empty body. Marks stack slot as to-be-closed. |
-| `lua_closeslot` | `src/lua.zig:3029` | Empty body. Runs `__close` metamethod on slot. |
-| `createargtable` | `src/lua.zig:3098` | Empty body. Populates `arg` table from CLI args. |
-| `luaL_newtable` | `src/lauxlib.zig:17` | Empty body. Creates a new table on the stack. |
-| `luaL_where` | `src/lauxlib.zig:248` | Always pushes `""`. Should push source location string. |
-| `luaL_len` | `src/lauxlib.zig:59` | Calls `lua_rawlen` (no `__len` metamethod). Should invoke metatable. |
+### H.2 — oslib stubs ✅ DONE (revs 65, 69)
 
-### H.2 — oslib stubs (HIGH priority)
+| Function | Status |
+|----------|--------|
+| `os.date` | ✅ real impl — `*t` returns full table (9 fields), formats via `strftime` |
+| `os.execute` | ✅ real impl — subprocess via `std.process.spawn`, 3-value return |
+| `os.exit` | ✅ real impl — conditional `lua_close` per second argument (BUG-043 fixed) |
+| `os.setlocale` | ✅ real impl — delegates to `std.c.setlocale` |
 
-Real scripts depend on these:
+### H.3 — iolib stubs ✅ DONE (revs 66, 67)
 
-| Function | Issue |
-|----------|-------|
-| `os.date` | `*t` returns empty table (9 fields all nil); other formats push the format string back unchanged. No actual date formatting. |
-| `os.execute` | Ignores command, always pushes `true`. No subprocess execution. |
-| `os.exit` | Calls `std.process.exit()` without `lua_close` first — no GC finalizers or `__close` run. |
-| `os.setlocale` | Always returns `"C"` regardless of input. |
+| Function | Status |
+|----------|--------|
+| `io.flush` / `file:flush` | ✅ real flush (rev 66) |
+| `file:setvbuf` | ✅ real buffering (rev 66) |
+| `file:read("*n")` | ✅ ported PUC-Rio `read_number`; `LStream.unget` pushback (rev 67) |
 
-### H.3 — iolib stubs (LOW priority) — ✅ DONE (rev 67)
-
-| Function | Issue | Status |
-|----------|-------|--------|
-| `io.flush` / `file:flush` | Returns `true` without flushing. | ✅ real flush (rev 66) |
-| `file:setvbuf` | Ignores arguments, returns `true`. | ✅ real buffering (rev 66) |
-| `file:read("*n")` | Number format not implemented (deferred from H.3). | ✅ ported PUC-Rio `read_number`; `LStream.unget` pushback added (BUG-042, rev 67) |
-
-### H.4 — Reference system (MEDIUM priority)
+### H.4 — Reference system (MEDIUM priority) — NOT STARTED
 
 The Lua C API provides a reference system (`luaL_ref`/`luaL_unref`) for storing values without pinning them to the stack:
 
@@ -396,40 +400,43 @@ Port from `lua/lauxlib.c`. Needed by any C extension that persists Lua values.
 
 **Core API (`lua.h`):**
 
-| Function | Why needed |
-|----------|------------|
-| `lua_atpanic` | C API consumers need a panic handler for unprotected errors |
-| `lua_version` | Version number query (returns `lua_Number`) |
-| `lua_pushexternalstring` | **Lua 5.5 new feature** — push string backed by external allocator |
-| `lua_numbertocstring` | Convert number to C string buffer (`LUA_N2SBUFFSZ`-sized) |
+| Function | Why needed | Status |
+|----------|------------|--------|
+| `lua_atpanic` | C API consumers need a panic handler for unprotected errors | ❌ missing |
+| `lua_version` | Version number query (returns `lua_Number`) | ❌ missing |
+| `lua_pushexternalstring` | Lua 5.5 new feature — push string backed by external allocator | ❌ missing |
+| `lua_numbertocstring` | Convert number to C string buffer (`LUA_N2SBUFFSZ`-sized) | ❌ missing |
 
 **Auxlib (`lauxlib.h`):**
 
-| Function | Why needed |
-|----------|------------|
-| `luaL_checkversion_` / `luaL_checkversion` | Version/ABI check called by every library `open` function |
-| `luaL_callmeta` | Calls a metamethod by name |
-| `luaL_alloc` | Default allocator compatible with `lua_Alloc` typedef |
-| `luaL_loadfilex` | Load file as Lua chunk (with mode) |
-| `luaL_loadbufferx` | Load buffer as Lua chunk (with mode) |
-| `luaL_loadstring` | Load string as Lua chunk |
-| `luaL_makeseed` | Generate random seed for hashing |
-| `luaL_getsubtable` | Get or create subtable in registry |
-| `luaL_requiref` | Require library with C open function |
-| `luaL_dofile` | Load and run file (macro in C) |
+| Function | Why needed | Status |
+|----------|------------|--------|
+| `luaL_checkversion_` / `luaL_checkversion` | Version/ABI check called by every library `open` function | ❌ missing |
+| `luaL_callmeta` | Calls a metamethod by name | ❌ missing |
+| `luaL_alloc` | Default allocator compatible with `lua_Alloc` typedef | ❌ missing |
+| `luaL_loadfilex` | Load file as Lua chunk (with mode) | ❌ missing |
+| `luaL_loadbufferx` | Load buffer as Lua chunk (with mode) | ❌ missing |
+| `luaL_loadstring` | Load string as Lua chunk | ❌ missing |
+| `luaL_makeseed` | Generate random seed for hashing | ❌ missing |
+| `luaL_getsubtable` | Get or create subtable in registry | ❌ missing |
+| `luaL_requiref` | Require library with C open function | ❌ missing |
+| `luaL_dofile` | Load and run file (macro in C) | ❌ missing |
 
 **Buffer auxlib functions:**
 
-| Function | Why needed |
-|----------|------------|
-| `luaL_addstring` | Add null-terminated string to buffer |
-| `luaL_buffinitsize` | Init buffer with preallocated size |
-| `luaL_prepbuffer` | Shortcut for `luaL_prepbuffsize(B, LUAL_BUFFERSIZE)` |
-| `luaL_bufflen` | Return current buffer length |
-| `luaL_buffaddr` | Return current buffer address |
-| `luaL_buffsub` | Subtract from buffer length |
+| Function | Why needed | Status |
+|----------|------------|--------|
+| `luaL_addstring` | Add null-terminated string to buffer | ❌ missing |
+| `luaL_buffinitsize` | Init buffer with preallocated size | ❌ missing |
+| `luaL_prepbuffer` | Shortcut for `luaL_prepbuffsize(B, LUAL_BUFFERSIZE)` | ❌ missing |
+| `luaL_bufflen` | Return current buffer length | ❌ missing |
+| `luaL_buffaddr` | Return current buffer address | ❌ missing |
+| `luaL_buffsub` | Subtract from buffer length | ❌ missing |
 
-### H.6 — CLI/REPL improvements (MEDIUM priority)
+Note: `luaL_buffinit`, `luaL_addlstring`, `luaL_addchar`, `luaL_addsize`, `luaL_prepbuffsize`,
+`luaL_addvalue`, `luaL_pushresult`, `luaL_pushresultsize` are already implemented in `lauxlib.zig`.
+
+### H.6 — CLI/REPL improvements (MEDIUM priority) — NOT STARTED
 
 The current CLI supports `luazig [script]` and a bare REPL. Missing:
 
@@ -440,10 +447,10 @@ The current CLI supports `luazig [script]` and a bare REPL. Missing:
 - Multi-line input in REPL (line-continuation detection for unfinished statements)
 - Readline/history/line-editing
 - REPL formatting for complex return values (expand tables via `pairs()`)
-- `arg` table creation from CLI args (requires `createargtable` implementation, H.1)
+- `arg` table creation from CLI args (already implemented via `createargtable`)
 - `--` argument separator handling
 
-### H.7 — Convenience macros (LOW priority)
+### H.7 — Convenience macros (LOW priority) — NOT STARTED
 
 The C `lua.h` defines macros that are convenient but not strictly necessary (callers can inline them):
 
@@ -460,7 +467,7 @@ The C `lua.h` defines macros that are convenient but not strictly necessary (cal
 | `lua_isthread(L, n)` | type predicate |
 | `lua_islightuserdata(L, n)` | type predicate |
 
-### H.8 — Deprecated compatibility aliases (LOW priority)
+### H.8 — Deprecated compatibility aliases (LOW priority) — NOT STARTED
 
 The Lua 5.5.1 `lua.h` retains these for backward compatibility:
 
@@ -473,20 +480,20 @@ The Lua 5.5.1 `lua.h` retains these for backward compatibility:
 
 ### H.9 — Missing constants and exports (LOW priority)
 
-| Constant | Description |
-|----------|-------------|
-| `LUA_GNAME` | `"_G"` — global environment name |
-| `LUA_ERRFILE` | Error code for file-level errors |
-| `LUA_LOADED_TABLE` | `"_LOADED"` — registry key for loaded modules |
-| `LUA_PRELOAD_TABLE` | `"_PRELOAD"` — registry key for preload cache |
-| `LUA_NOREF` | Sentinel for `luaL_ref` (requires H.4) |
-| `LUA_REFNIL` | Special ref for `nil` (requires H.4) |
-| `LUAL_NUMSIZES` | Size of `luaL_Reg` struct |
-| `LUA_COPYRIGHT` | Copyright banner string |
-| `LUA_AUTHORS` | Authors string |
-| `lua_ident` | Identification string array |
+| Constant | Description | Status |
+|----------|-------------|--------|
+| `LUA_GNAME` | `"_G"` — global environment name | ❌ missing |
+| `LUA_ERRFILE` | Error code for file-level errors | ❌ missing |
+| `LUA_LOADED_TABLE` | `"_LOADED"` — registry key for loaded modules | ❌ missing |
+| `LUA_PRELOAD_TABLE` | `"_PRELOAD"` — registry key for preload cache | ❌ missing |
+| `LUA_NOREF` | Sentinel for `luaL_ref` (requires H.4) | ❌ missing |
+| `LUA_REFNIL` | Special ref for `nil` (requires H.4) | ❌ missing |
+| `LUAL_NUMSIZES` | Size of `luaL_Reg` struct | ❌ missing |
+| `LUA_COPYRIGHT` | Copyright banner string | ✅ present |
+| `LUA_AUTHORS` | Authors string | ✅ present |
+| `lua_ident` | Identification string array | ❌ missing |
 
-### H.10 — GC completeness (LOW priority)
+### H.10 — GC completeness (LOW priority) — NOT STARTED
 
 - `lua_gc` option `LUA_GCPARAM` (9) — not handled
 - GC parameter get/set (`LUA_GCPMINORMUL`, `LUA_GCPSTEPMUL`, etc.)
