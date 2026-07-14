@@ -217,12 +217,12 @@ Silent no-ops that produce wrong results:
 `lua_newuserdata` ✅, `lua_getuservalue` ✅, `lua_setuservalue` ✅, `lua_resetthread` ✅ — `pub inline fn` delegating to their modern equivalents
 `lua_newuserdata`, `lua_getuservalue`, `lua_setuservalue`, `lua_resetthread`
 
-### H.9 — Missing constants and exports (LOW priority)
+### H.9 — Missing constants and exports (LOW priority) ✅ DONE (2026-07-14)
 - `LUA_GNAME` ✅, `LUA_ERRFILE` ✅, `LUA_LOADED_TABLE` ✅, `LUA_PRELOAD_TABLE` ✅ (added in H.5)
 - `LUA_NOREF` ✅, `LUA_REFNIL` ✅ (H.4)
 - `LUAL_NUMSIZES` ✅ (H.5)
 - `LUA_COPYRIGHT` ✅, `LUA_AUTHORS` ✅ (already present)
-- `lua_ident` ❌ not yet exported
+- `lua_ident` ✅ (2026-07-14) — `"$LuaVersion: ... $LuaAuthors: ... $"` as comptime `[]const u8`
 
 ### H.10 — GC completeness (LOW priority)
 - `LUA_GCPARAM` option 9 not handled

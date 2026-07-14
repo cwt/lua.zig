@@ -137,6 +137,11 @@ pub const LUA_COPYRIGHT = "Lua 5.5  Copyright (C) 1994-2026 Lua.org, PUC-Rio";
 pub const LUA_AUTHORS = "R. Ierusalimschy, L. H. de Figueiredo, W. Celes";
 pub const LUA_SIGNATURE = "\x1bLua";
 
+/// C API identification string (port of `lua_ident` from `lapi.c`).
+/// Provides version and author strings embedded at link time in the C
+/// reference; here a comptime `[]const u8` slice.
+pub const lua_ident: []const u8 = "$LuaVersion: " ++ LUA_COPYRIGHT ++ " $" ++ "$LuaAuthors: " ++ LUA_AUTHORS ++ " $";
+
 pub const LUA_VERSION_MAJOR_N: u8 = 5;
 pub const LUA_VERSION_MINOR_N: u8 = 5;
 pub const LUA_VERSION_RELEASE_N: u8 = 1;

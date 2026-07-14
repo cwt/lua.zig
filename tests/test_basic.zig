@@ -4209,6 +4209,24 @@ test "H.7 convenience macros (insert, remove, newtable, register, pushglobaltabl
     lua.lua_pop(&L, 1);
 }
 
+test "H.9 missing constants and exports (lua_ident, LUA_COPYRIGHT, LUA_AUTHORS)" {
+    // These are comptime consts — verify they exist and have expected content.
+    try std.testing.expectEqualStrings(
+        "Lua 5.5  Copyright (C) 1994-2026 Lua.org, PUC-Rio",
+        lua.LUA_COPYRIGHT,
+    );
+    try std.testing.expectEqualStrings(
+        "R. Ierusalimschy, L. H. de Figueiredo, W. Celes",
+        lua.LUA_AUTHORS,
+    );
+
+    // lua_ident should contain both version and author markers.
+    try std.testing.expect(std.mem.containsAtLeast(u8, lua.lua_ident, 1, "$LuaVersion:"));
+    try std.testing.expect(std.mem.containsAtLeast(u8, lua.lua_ident, 1, "$LuaAuthors:"));
+    try std.testing.expect(std.mem.containsAtLeast(u8, lua.lua_ident, 1, "Copyright"));
+    try std.testing.expect(std.mem.containsAtLeast(u8, lua.lua_ident, 1, "PUC-Rio"));
+}
+
 test "H.8 deprecated compatibility aliases (newuserdata, getuservalue, setuservalue, resetthread)" {
     const gpa = std.testing.allocator;
     var L: lua.lua_State = undefined;

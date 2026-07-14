@@ -6,6 +6,28 @@ tags: [log, changelog]
 timestamp: 2026-07-14T16:10:00Z
 ---
 
+## 2026-07-14 — H.9: Missing constants and exports (lua_ident)
+
+Added the one remaining missing H.9 item: `lua_ident`, the C API
+identification string that embeds version and author markers.
+Declared as a comptime `[]const u8` in `src/lua.zig`:
+
+```zig
+pub const lua_ident: []const u8 = "$LuaVersion: " ++ LUA_COPYRIGHT ++ " $" ++
+    "$LuaAuthors: " ++ LUA_AUTHORS ++ " $";
+```
+
+All other H.9 constants (`LUA_GNAME`, `LUA_ERRFILE`, `LUA_LOADED_TABLE`,
+`LUA_PRELOAD_TABLE`, `LUA_NOREF`, `LUA_REFNIL`, `LUAL_NUMSIZES`,
+`LUA_COPYRIGHT`, `LUA_AUTHORS`) already existed from earlier phases.
+
+Tests: verify string content (123/123 pass, zero leaks).
+
+§0.1 self-audit: comptime concatenation of existing string constants;
+no allocation, no error propagation, no runtime code.
+
+---
+
 ## 2026-07-14 — H.8: Deprecated compatibility aliases
 
 Added four deprecated backward-compatibility aliases as `pub inline fn` in

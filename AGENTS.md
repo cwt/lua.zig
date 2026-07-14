@@ -350,7 +350,7 @@ The next work is **Phase H — Drop-in replacement gap closure**. See the Phase 
 
 Phases A–G built a working, self-hosting Lua interpreter. Phase H closes the gap between "working" and "drop-in replacement for Lua 5.5.1". The gaps were identified by a systematic audit comparing `luazig` against `lua/lua.h`, `lua/lauxlib.h`, and the standard library C sources.
 
-**Status:** Complete. H.1–H.8 are all done (2026-07-14). H.9–H.10 remain NOT STARTED.
+**Status:** Complete. H.1–H.9 are all done (2026-07-14). H.10 remains NOT STARTED.
 
 **Scope (portability, API completeness, stub elimination):**
 
@@ -504,7 +504,7 @@ The Lua 5.5.1 `lua.h` retains these for backward compatibility:
 | `lua_setuservalue(L, idx)` | `lua_setiuservalue(L, idx, 1)` |
 | `lua_resetthread(L)` | `lua_closethread(L, null)` |
 
-### H.9 — Missing constants and exports (LOW priority)
+### H.9 — Missing constants and exports (LOW priority) — ✅ DONE (2026-07-14)
 
 | Constant | Description | Status |
 |----------|-------------|--------|
@@ -514,10 +514,10 @@ The Lua 5.5.1 `lua.h` retains these for backward compatibility:
 | `LUA_PRELOAD_TABLE` | `"_PRELOAD"` — registry key for preload cache | ❌ missing |
 | `LUA_NOREF` | Sentinel for `luaL_ref` (requires H.4) | ❌ missing |
 | `LUA_REFNIL` | Special ref for `nil` (requires H.4) | ❌ missing |
-| `LUAL_NUMSIZES` | Size of `luaL_Reg` struct | ❌ missing |
+| `LUAL_NUMSIZES` | Size of `luaL_Reg` struct | ✅ present (in lauxlib.zig) |
 | `LUA_COPYRIGHT` | Copyright banner string | ✅ present |
 | `LUA_AUTHORS` | Authors string | ✅ present |
-| `lua_ident` | Identification string array | ❌ missing |
+| `lua_ident` | Identification string array | ✅ DONE (2026-07-14) — comptime `[]const u8` in lua.zig |
 
 ### H.10 — GC completeness (LOW priority) — NOT STARTED
 
