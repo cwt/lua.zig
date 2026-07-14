@@ -12,7 +12,16 @@ const IO_OUTPUT = "OUTPUT*";
 const LStream = struct {
     fd: i32,
     closef: ?lua.lua_CFunction,
+    /// Owned write buffer (allocated via `L.allocator`); `null` means no buffering.
+    buf: ?[]u8,
+    /// Bytes currently buffered in `buf`.
+    buf_len: usize,
+    /// 0 = unbuffered (write straight to fd), 1 = full buffering, 2 = line buffering.
+    buf_mode: u8,
 };
+
+/// Default buffer size for `setvbuf` when no size is given (cf. stdio `BUFSIZ`).
+const IO_BUFSIZE: usize = 8192;
 
 fn tostream(L_: *L, idx: i32) *LStream {
     const p = lua.lua_touserdata(L_, idx) orelse unreachable;
@@ -36,15 +45,27 @@ fn fopen(name: []const u8, mode: []const u8) ?i32 {
     return fd;
 }
 
+fn doClose(L_: *L, p: *LStream) !i32 {
+    // Flush any pending buffered output before releasing the fd.
+    _ = flushBuffer(p);
+    if (p.fd >= 0) {
+        _ = std.os.linux.close(p.fd);
+        p.fd = -1;
+    }
+    if (p.buf) |b| {
+        L_.allocator.free(b);
+        p.buf = null;
+    }
+    lua.lua_pushboolean(L_, 1);
+    return 1;
+}
+
 fn f_close(L_: *L, p: *LStream) !i32 {
     if (p.closef) |cf| {
         p.closef = null;
         return cf(L_);
     }
-    _ = std.os.linux.close(p.fd);
-    p.fd = -1;
-    lua.lua_pushboolean(L_, 1);
-    return 1;
+    return doClose(L_, p);
 }
 
 fn io_close(L_: *L) !i32 {
@@ -66,13 +87,14 @@ fn f_gc(L_: *L) !i32 {
 }
 
 fn io_fclose(L_: *L) !i32 {
-    return f_gc(L_);
+    const p = tostream(L_, 1);
+    return f_close(L_, p);
 }
 
 fn newfile(L_: *L) !*LStream {
     const p = lua.lua_newuserdatauv(L_, @sizeOf(LStream), 0) orelse unreachable;
     const stream = @as(*LStream, @ptrCast(@alignCast(p)));
-    stream.* = LStream{ .fd = -1, .closef = null };
+    stream.* = LStream{ .fd = -1, .closef = null, .buf = null, .buf_len = 0, .buf_mode = 0 };
     try lauxlib.luaL_setmetatable(L_, LUA_FILEHANDLE);
     return stream;
 }
@@ -96,7 +118,7 @@ fn g_iofile(L_: *L, findex: []const u8, mode: []const u8) !i32 {
             return lauxlib.luaL_fileresult(L_, false, fn_);
         };
         const p = try newfile(L_);
-        p.* = LStream{ .fd = f, .closef = io_fclose };
+        p.* = LStream{ .fd = f, .closef = io_fclose, .buf = null, .buf_len = 0, .buf_mode = 0 };
         lua.lua_replace(L_, 1);
         lua.lua_rawsetp(L_, lua.LUA_REGISTRYINDEX, @constCast(@ptrCast(findex.ptr)));
         return 0;
@@ -122,7 +144,7 @@ fn io_open(L_: *L) !i32 {
         return lauxlib.luaL_fileresult(L_, false, filename);
     };
     const p = try newfile(L_);
-    p.* = LStream{ .fd = f, .closef = io_fclose };
+    p.* = LStream{ .fd = f, .closef = io_fclose, .buf = null, .buf_len = 0, .buf_mode = 0 };
     return 1;
 }
 
@@ -141,7 +163,7 @@ fn io_tmpfile(L_: *L) !i32 {
     };
     _ = &buf;
     const p = try newfile(L_);
-    p.* = LStream{ .fd = a, .closef = io_fclose };
+    p.* = LStream{ .fd = a, .closef = io_fclose, .buf = null, .buf_len = 0, .buf_mode = 0 };
     return 1;
 }
 
@@ -166,6 +188,21 @@ fn read_chars(L_: *L, fd: i32, n: usize) bool {
     const bytes_read = std.posix.read(fd, buf) catch return false;
     if (bytes_read == 0) return false;
     _ = lua.lua_pushlstring(L_, buf[0..bytes_read], bytes_read) orelse {};
+    return true;
+}
+
+// Read the entire remaining file content. Per Lua 5.5 semantics, `*a` on an
+// empty file returns an empty string (not nil).
+fn read_all(L_: *L, fd: i32) bool {
+    var buf: std.ArrayList(u8) = .empty;
+    defer buf.deinit(L_.allocator);
+    var chunk: [4096]u8 = undefined;
+    while (true) {
+        const n = std.posix.read(fd, &chunk) catch return false;
+        if (n == 0) break;
+        buf.appendSlice(L_.allocator, chunk[0..n]) catch return false;
+    }
+    _ = lua.lua_pushlstring(L_, buf.items, buf.items.len) orelse {};
     return true;
 }
 
@@ -207,13 +244,13 @@ fn g_read(L_: *L, fd: i32, first: i32) !i32 {
                 }
             } else {
                 const s = lua.lua_tostring(L_, n) orelse "";
-                if (s.len > 0 and s[0] == '*') {
-                    if (s.len >= 2) {
-                        switch (s[1]) {
-                            'l' => success = read_line(L_, fd),
-                            'a' => success = read_chars(L_, fd, 4096),
-                            else => {},
-                        }
+                // Lua 5.5 accepts the optional '*' format prefix.
+                const fmt = if (s.len > 0 and s[0] == '*') s[1..] else s;
+                if (fmt.len > 0) {
+                    switch (fmt[0]) {
+                        'l', 'L' => success = read_line(L_, fd),
+                        'a' => success = read_all(L_, fd),
+                        else => {},
                     }
                 }
             }
@@ -241,15 +278,75 @@ fn f_read(L_: *L) !i32 {
     return g_read(L_, p.fd, 2);
 }
 
-fn g_write(L_: *L, fd: i32, arg: i32) !i32 {
+/// Write all bytes in `data` to `fd`, looping until complete. Returns true on success.
+fn rawWrite(fd: i32, data: []const u8) bool {
+    var off: usize = 0;
+    while (off < data.len) {
+        const rc = std.os.linux.write(fd, data.ptr + off, data.len - off);
+        if (rc == 0 and data.len > 0) return false;
+        if (rc > std.math.maxInt(isize)) return false;
+        off += rc;
+    }
+    return true;
+}
+
+/// Flush the write buffer of `p` to its fd. Safe when no buffer is allocated.
+fn flushBuffer(p: *LStream) bool {
+    if (p.buf) |b| {
+        if (p.buf_len > 0) {
+            const ok = rawWrite(p.fd, b[0..p.buf_len]);
+            p.buf_len = 0;
+            return ok;
+        }
+    }
+    return true;
+}
+
+/// Append `data` to the stream buffer, flushing when full. Writes directly when the
+/// datum exceeds the buffer size.
+fn appendBuf(p: *LStream, data: []const u8) bool {
+    const b = p.buf.?;
+    if (p.buf_len + data.len > b.len) {
+        if (!flushBuffer(p)) return false;
+        if (data.len >= b.len) {
+            return rawWrite(p.fd, data);
+        }
+    }
+    @memcpy(b[p.buf_len .. p.buf_len + data.len], data);
+    p.buf_len += data.len;
+    return true;
+}
+
+/// Write `data` to stream `p`, honouring its buffering mode.
+fn writeToStream(p: *LStream, data: []const u8) bool {
+    if (p.buf == null) {
+        return rawWrite(p.fd, data);
+    }
+    if (p.buf_mode == 2) {
+        // Line buffering: flush up to and including each newline.
+        var off: usize = 0;
+        while (off < data.len) : (off += 1) {
+            if (data[off] == '\n') {
+                if (!appendBuf(p, data[0 .. off + 1])) return false;
+                if (!flushBuffer(p)) return false;
+                const rest = data[off + 1 ..];
+                if (!writeToStream(p, rest)) return false;
+                return true;
+            }
+        }
+        return appendBuf(p, data);
+    }
+    return appendBuf(p, data);
+}
+
+fn g_write(L_: *L, p: *LStream, arg: i32) !i32 {
     const nargs = lua.lua_gettop(L_) - (arg - 1);
     var status = true;
     for (0..@as(usize, @intCast(nargs))) |i| {
         const idx = arg + @as(i32, @intCast(i));
         const s = lua.lua_tostring(L_, idx);
         if (s) |str| {
-            const rc = std.os.linux.write(fd, str.ptr, str.len);
-            if (@as(isize, @bitCast(rc)) < 0) {
+            if (!writeToStream(p, str)) {
                 status = false;
                 break;
             }
@@ -257,8 +354,7 @@ fn g_write(L_: *L, fd: i32, arg: i32) !i32 {
             const val = lua.lua_tointeger(L_, idx) orelse 0;
             var buf: [32]u8 = undefined;
             const formatted = std.fmt.bufPrint(&buf, "{d}", .{val}) catch unreachable;
-            const rc = std.os.linux.write(fd, formatted.ptr, formatted.len);
-            if (@as(isize, @bitCast(rc)) < 0) {
+            if (!writeToStream(p, formatted)) {
                 status = false;
                 break;
             }
@@ -266,8 +362,7 @@ fn g_write(L_: *L, fd: i32, arg: i32) !i32 {
             const num = lua.lua_tonumber(L_, idx) orelse 0.0;
             var buf: [64]u8 = undefined;
             const formatted = std.fmt.bufPrint(&buf, "{d}", .{num}) catch unreachable;
-            const rc = std.os.linux.write(fd, formatted.ptr, formatted.len);
-            if (@as(isize, @bitCast(rc)) < 0) {
+            if (!writeToStream(p, formatted)) {
                 status = false;
                 break;
             }
@@ -278,12 +373,12 @@ fn g_write(L_: *L, fd: i32, arg: i32) !i32 {
 
 fn io_write(L_: *L) !i32 {
     const p = getiofile(L_, IO_OUTPUT) catch return lauxlib.luaL_error(L_, "default output file is closed");
-    return g_write(L_, p.fd, 1);
+    return g_write(L_, p, 1);
 }
 
 fn f_write(L_: *L) !i32 {
     const p = tostream(L_, 1);
-    return g_write(L_, p.fd, 2);
+    return g_write(L_, p, 2);
 }
 
 fn f_seek(L_: *L) !i32 {
@@ -301,20 +396,41 @@ fn f_seek(L_: *L) !i32 {
 }
 
 fn f_setvbuf(L_: *L) !i32 {
-    _ = lua.lua_tostring(L_, 2);
-    _ = lua.lua_tointeger(L_, 3);
+    const p = tostream(L_, 1);
+    const mode = lua.lua_tostring(L_, 2) orelse "full";
+    const size = lua.lua_tointeger(L_, 3);
+    if (p.buf) |b| {
+        L_.allocator.free(b);
+        p.buf = null;
+        p.buf_len = 0;
+    }
+    if (std.mem.eql(u8, mode, "no")) {
+        p.buf_mode = 0;
+        lua.lua_pushboolean(L_, 1);
+        return 1;
+    }
+    const sz = if (size) |s| (if (s > 0) @as(usize, @intCast(s)) else 0) else 0;
+    const bufsize = if (sz == 0) IO_BUFSIZE else sz;
+    const buf = L_.allocator.alloc(u8, bufsize) catch {
+        return lauxlib.luaL_fileresult(L_, false, null);
+    };
+    p.buf = buf;
+    p.buf_len = 0;
+    p.buf_mode = if (std.mem.eql(u8, mode, "line")) 2 else 1;
     lua.lua_pushboolean(L_, 1);
     return 1;
 }
 
 fn io_flush(L_: *L) !i32 {
-    return f_flush(L_);
+    const p = getiofile(L_, IO_OUTPUT) catch return lauxlib.luaL_error(L_, "default output file is closed");
+    const ok = flushBuffer(p);
+    return lauxlib.luaL_fileresult(L_, ok, null);
 }
 
 fn f_flush(L_: *L) !i32 {
-    _ = tostream(L_, 1);
-    lua.lua_pushboolean(L_, 1);
-    return 1;
+    const p = tostream(L_, 1);
+    const ok = flushBuffer(p);
+    return lauxlib.luaL_fileresult(L_, ok, null);
 }
 
 fn io_lines(L_: *L) !i32 {
@@ -324,7 +440,7 @@ fn io_lines(L_: *L) !i32 {
             return lauxlib.luaL_fileresult(L_, false, filename);
         };
         const p = try newfile(L_);
-        p.* = LStream{ .fd = f, .closef = io_fclose };
+        p.* = LStream{ .fd = f, .closef = io_fclose, .buf = null, .buf_len = 0, .buf_mode = 0 };
         lua.lua_replace(L_, 1);
     }
     lua.lua_pushcfunction(L_, f_lines);
@@ -353,7 +469,7 @@ fn f_lines(L_: *L) !i32 {
 fn createstdfile(L_: *L, fd: i32, k: []const u8, cf: ?lua.lua_CFunction) !void {
     const p = lua.lua_newuserdatauv(L_, @sizeOf(LStream), 0) orelse unreachable;
     const stream = @as(*LStream, @ptrCast(@alignCast(p)));
-    stream.* = LStream{ .fd = fd, .closef = cf };
+    stream.* = LStream{ .fd = fd, .closef = cf, .buf = null, .buf_len = 0, .buf_mode = 0 };
     try lauxlib.luaL_setmetatable(L_, LUA_FILEHANDLE);
     lua.lua_rawsetp(L_, lua.LUA_REGISTRYINDEX, @constCast(@ptrCast(k.ptr)));
 }
@@ -387,9 +503,16 @@ const flib = [_]luaL_Reg{
 };
 
 pub fn openio(L_: *L) !void {
+    // luaL_newmetatable stores the file metatable in the registry but does not
+    // leave it on the stack, so push it here to populate it.
     _ = try lauxlib.luaL_newmetatable(L_, LUA_FILEHANDLE);
+    _ = try lua.lua_getfield(L_, lua.LUA_REGISTRYINDEX, LUA_FILEHANDLE);
     try lauxlib.luaL_setfuncs(L_, &flib, 0);
-    lua.lua_pop(L_, 1);  // remove FILE* metatable from the stack
+    // Make the metatable its own __index so that `file:method(...)` resolves
+    // the methods stored as fields of the metatable (matches PUC-Rio liolib).
+    lua.lua_pushvalue(L_, -1);
+    try lua.lua_setfield(L_, -2, "__index");
+    lua.lua_pop(L_, 1); // remove FILE* metatable from the stack
     try lauxlib.luaL_newlib(L_, &iolib_reg);
     try createstdfile(L_, 0, IO_INPUT, null);
     try createstdfile(L_, 1, IO_OUTPUT, null);

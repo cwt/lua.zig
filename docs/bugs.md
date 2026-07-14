@@ -3,7 +3,7 @@ type: lessons_learned
 title: Bug Report — luazig (Zig port of Lua 5.5.1)
 description: Working document tracking known defects in the luazig codebase, ordered by priority.
 tags: [bugs, defects, tracking]
-timestamp: 2026-07-14T07:30:00Z
+timestamp: 2026-07-14T15:30:00Z
 ---
 
 # Bug Report — luazig (Zig port of Lua 5.5.1)
@@ -11,7 +11,7 @@ timestamp: 2026-07-14T07:30:00Z
 > Working document tracking known defects in the `luazig` codebase. Bugs are
 > numbered `BUG-001` … in priority order. Severity reflects runtime impact.
 > Each entry records the location, the defect, the impact, and the recommended fix.
-> Last updated: 2026-07-12 (BUG-031–035 appended after audit of rev 37 — the loadlib port).
+> Last updated: 2026-07-14 (BUG-040–041 appended after Phase H.3 — io buffering).
 
 Legend:
 - **[HIGH]** crashes, wrong control flow, or incorrect results on ordinary programs.
@@ -381,3 +381,15 @@ Legend:
 - **Impact:** Seed-dependent, GC-timing-dependent corruption of the global intern pool. With the default `@intFromPtr(L)` seed and enough prior tests triggering GC, `os.execute` (and potentially any interned-string global lookup) resolves to the wrong value — the original H.2 failure (`os.execute` → `setlocale`). Highly intermittent because it depends on which strings are live/dead at sweep time.
 - **Note:** The table node layer (`ltable.zig` `getStr`/`setHash`/`growNode`) was exhaustively tested for hash-collision integrity across 2000 seeds and is correct; the corruption is entirely in the GC sweep's misuse of the map iterator.
 - **Fix (rev 65, 2026-07-14):** The sweep now collects the `*lua_TString` values (whose `.s` bytes are stable and independent of `g.strt`'s key-array ordering) instead of slices into the map. Each dead entry is removed with `g.strt.swapRemove(ts.s)` (safe across the array reordering) and freed via `L.allocator.free(ts.s)` / `L.allocator.destroy(ts)`. No stale slices are retained across mutation. **88/88 tests pass, stable across repeated runs (seed-independent).**
+
+## BUG-040 — FILE metatable never populated / no `__index`: every `file:method` call fails  [HIGH] ✅ FIXED
+- **Location:** `src/lib/iolib.zig` `openio` (≈lines 490–498); root cause in `src/lauxlib.zig` `luaL_newmetatable` (≈432) and `luaL_setfuncs` (≈465).
+- **Defect:** luazig's `luaL_newmetatable` stores the file metatable in the registry and does **not** leave it on the stack (PUC-Rio Lua *does* push it). The original `openio` used the PUC-Rio pattern — `luaL_newmetatable` → `luaL_setfuncs` on the (assumed) top → `lua_pop` — so `luaL_setfuncs` operated on an invalid/empty stack index and the registry's FILE metatable was **never populated** with the `flib` methods. Additionally, `__index` was never set. With no `__index`, `luaV_gettable` (`src/ltm.zig:287-291`) returns `error.RuntimeError` for any field access on a file userdata, so every `file:method(...)` call errored with no error object (`lua_pcallk` then reports the generic `"error during execution"`).
+- **Impact:** [HIGH] All file-object method calls fail: `f:write`, `f:read`, `f:close`, `f:setvbuf`, `f:seek`, `f:lines`, `f:flush`. The global `io.*` functions (`io.open`, `io.write`, `io.read`, `io.close`, …) kept working because they live on the `io` table, not the metatable — so the bug was latent and unexercised until Phase H.3 added `file:*` tests.
+- **Fix (rev 66, 2026-07-14):** Rewrote `openio` to push the metatable from the registry (`lua_getfield(L, REGISTRYINDEX, LUA_FILEHANDLE)`), populate it with `luaL_setfuncs(&flib, 0)`, then set `metatable.__index = metatable` (pushvalue + `lua_setfield(L, -2, "__index")`) so `file:method` resolves through the metatable, and finally `lua_pop`. All `file:*` methods now resolve correctly. Verified by the three new H.3 tests and the full suite (**91/91 pass**). No regression to the global `io.*` API.
+
+## BUG-041 — `file:read("a")` (bare, no `*`) returns nil; read-all truncates / wrong on empty  [MED] ✅ FIXED
+- **Location:** `src/lib/iolib.zig` `g_read` format dispatch (≈lines 230–241) and `read_chars`.
+- **Defect:** `g_read` only handled the `"*a"` format (leading `*` required); the Lua 5.5-valid bare `"a"` (the `*` prefix is optional) fell through to `else => {}` and returned `nil`. Also `read "a"` used `read_chars(fd, 4096)`, which performs a single `std.posix.read` syscall — truncating files larger than 4096 bytes — and returns `nil` when `bytes_read == 0`, so an empty file yielded `nil` instead of `""`.
+- **Impact:** [MED] `file:read("a")` / `io.read("a")` returned `nil` instead of the file content; files >4096 bytes were truncated; empty files returned `nil` rather than `""` (violating Lua 5.5 `*a` semantics, where read-all of an empty file returns the empty string). Exposed by the H.3 tests, which assert the buffered-then-flushed content via `read("a")`.
+- **Fix (rev 66, 2026-07-14):** Added `read_all(L, fd)` — loops `std.posix.read` into a growable `std.ArrayList(u8)` until EOF and always pushes a string (`""` for an empty file, matching Lua 5.5 `*a`). `g_read` now strips an optional leading `*` from the format (`const fmt = if (s[0]=='*') s[1..] else s;`), dispatching `'a' => read_all`, `'l'/'L' => read_line`. The `"*n"` number format remains unimplemented (out of H.3 scope).

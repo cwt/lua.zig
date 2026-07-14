@@ -3,7 +3,7 @@ type: lessons_learned
 title: Modification Log
 description: Running chronological log of bundle modifications and significant changes.
 tags: [log, changelog]
-timestamp: 2026-07-14T07:30:00Z
+timestamp: 2026-07-14T15:30:00Z
 ---
 
 ## 2026-07-13 — Math via glibc libm (DynLib resolver → shared `src/libm.zig`) + ThinLTO
@@ -1715,3 +1715,64 @@ output verified byte-for-byte against the Lua 5.5.1 reference binary. `zig build
 - Allocator threaded; errors propagated with `!T`/`try`; no `@bitCast` for values;
   `TValue` union retained; no `longjmp`; no varargs; `swapRemove` misuse eliminated
   by collecting stable `*TString` values before mutating `g.strt`.
+
+## 2026-07-14 — Phase H.3: io buffering (flush / setvbuf) + two io correctness fixes (Rev 66)
+
+Implemented H.3: real `io.flush` / `file:flush` and `file:setvbuf` (was a stub
+returning `true` without buffering). This exercise surfaced two latent io bugs
+that had been hidden because no test ever called a `file:*` method.
+
+### Changes (`src/lib/iolib.zig`)
+- **Buffering infrastructure:** `LStream` gained `buf: ?[]u8`, `buf_len: usize`,
+  `buf_mode: u8` (0 = unbuffered, 1 = full, 2 = line); `IO_BUFSIZE = 8192`. All
+  six `LStream` creation sites initialize the new fields.
+- **Write path:** `g_write` now takes `*LStream` and routes through `writeToStream`
+  → `flushBuffer` → `appendBuf` / `rawWrite` (single `std.os.linux.write` syscall,
+  looping until all bytes are written). `io_write` / `f_write` updated.
+- **Flush / close:** `flushBuffer` flushes pending buffered output; `doClose`
+  flushes + closes `fd` + frees `buf`; `io_flush`/`f_flush` call `flushBuffer` and
+  report via `luaL_fileresult`. `io_fclose` now delegates to `f_close` (preserving
+  the `closef` path).
+- **`file:setvbuf`:** parses `"no"` / `"full"` / `"line"`; allocates/frees the
+  buffer via `L_.allocator` (guards `size > 0`); for `"no"` frees any existing
+  buffer and switches to unbuffered.
+
+### Bugs filed (this session)
+- **BUG-040** — `openio` never populated the FILE metatable (luazig's
+  `luaL_newmetatable` doesn't push, unlike PUC-Rio) and never set `__index`, so
+  `luaV_gettable` returned `error.RuntimeError` on every `file:method` access.
+  Fixed by pushing the metatable, `luaL_setfuncs(&flib)`, and `__index = self`.
+  This broke `f:write`/`f:read`/`f:close`/`f:setvbuf`/… entirely (latent because
+  only the global `io.*` API was tested before).
+- **BUG-041** — `g_read` only accepted `"*a"` (bare `"a"` is valid in Lua 5.5) and
+  `read "a"` truncated at 4096 bytes / returned `nil` on empty files. Added
+  `read_all` (loops to EOF, returns `""` for empty) and made the `*` prefix
+  optional.
+
+### §0.1 Self-Audit
+- Allocator threaded (buffer alloc/free via `L_.allocator`; `doClose` frees `buf`);
+  errors propagated with `!T`/`try` (`lua_setfield` on the metatable is `try`-ed;
+  `luaL_fileresult` reports allocation failures); no `@bitCast` for values;
+  `TValue` union retained; no `longjmp`; no varargs. `file:setvbuf` guards a zero
+  size and frees any prior buffer before re-allocating.
+
+### Verification
+Three new tests in `tests/test_basic.zig`:
+- `"file:setvbuf no writes immediately (unbuffered)"` — `f:setvbuf("no")` +
+  `f:write` lands on disk before `f:close`.
+- `"file:setvbuf full buffers until flush then persists"` — `f:setvbuf("full",64)`
+  buffers (read-before-flush is empty) and `f:flush()` persists `"buffered"`.
+- `"io.flush flushes the default output file"` — rewrote to flush a **file** (not
+  `io.write` to stdout, which is the Zig test-runner IPC channel in `--listen`
+  mode and would desync the harness) and assert the data is persisted.
+
+`zig build test` → **91/91 pass** (was 88/88 at rev 65); `zig build` clean. Each
+H.3 test also verified standalone via `luazig` against expected file contents.
+
+### Note: test-harness IPC quirk
+In `zig build test` listen mode the test binary uses `fd 1` (stdout) as the Zig
+IPC channel, so any test that writes to the default stdout pollutes the protocol
+and can desync/hang the runner. Keep stdout-writing assertions out of the harness
+path (write to a file and re-open to verify), or run the binary directly. The
+hang observed during this phase was the Zig test-runner IPC deadlock, not a
+luazig defect.

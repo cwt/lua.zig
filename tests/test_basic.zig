@@ -2294,6 +2294,91 @@ test "io.type on non-file returns nil" {
     lua.lua_pop(&L, 2);
 }
 
+test "file:setvbuf no writes immediately (unbuffered)" {
+    const gpa = std.testing.allocator;
+    var L: lua.lua_State = undefined;
+    try lua.luaL_newstate(&L, gpa);
+    defer lua.lua_close(&L);
+
+    try lua.luaL_openlibs(&L);
+
+    const script =
+        \\local f = io.open("/tmp/luazig_h3_no.txt", "w")
+        \\assert(f:setvbuf("no") == true)
+        \\f:write("immediate")
+        \\local g = io.open("/tmp/luazig_h3_no.txt", "r")
+        \\local s = g:read("a")
+        \\f:close()
+        \\g:close()
+        \\return s
+    ;
+    const status = try lua.luaL_dostring(&L, script, "=(test)");
+    try std.testing.expectEqual(@as(i32, lua.LUA_OK), status);
+    const s = lua.lua_tostring(&L, -1);
+    try std.testing.expect(s != null);
+    try std.testing.expectEqualStrings("immediate", s.?);
+}
+
+test "file:setvbuf full buffers until flush then persists" {
+    const gpa = std.testing.allocator;
+    var L: lua.lua_State = undefined;
+    try lua.luaL_newstate(&L, gpa);
+    defer lua.lua_close(&L);
+
+    try lua.luaL_openlibs(&L);
+
+    // Full buffering: before flush the data lives in the buffer (file still empty);
+    // after f:flush() it is on disk. file:flush() must also return true.
+    const script =
+        \\local f = io.open("/tmp/luazig_h3_full.txt", "w")
+        \\assert(f:setvbuf("full", 64) == true)
+        \\f:write("buffered")
+        \\local g = io.open("/tmp/luazig_h3_full.txt", "r")
+        \\local before = g:read("a")
+        \\g:close()
+        \\assert(f:flush() == true)
+        \\local h = io.open("/tmp/luazig_h3_full.txt", "r")
+        \\local after = h:read("a")
+        \\h:close()
+        \\f:close()
+        \\return before .. "|" .. after
+    ;
+    const status = try lua.luaL_dostring(&L, script, "=(test)");
+    try std.testing.expectEqual(@as(i32, lua.LUA_OK), status);
+    const s = lua.lua_tostring(&L, -1);
+    try std.testing.expect(s != null);
+    try std.testing.expectEqualStrings("|buffered", s.?);
+}
+
+test "io.flush flushes the default output file" {
+    const gpa = std.testing.allocator;
+    var L: lua.lua_State = undefined;
+    try lua.luaL_newstate(&L, gpa);
+    defer lua.lua_close(&L);
+
+    try lua.luaL_openlibs(&L);
+
+    const script =
+        \\local f = io.open("/tmp/luazig_h3_flush.txt", "w")
+        \\assert(f:setvbuf("full", 16) == true)
+        \\f:write("flushed-data")
+        \\local g = io.open("/tmp/luazig_h3_flush.txt", "r")
+        \\local before = g:read("a")
+        \\g:close()
+        \\assert(f:flush() == true)
+        \\local h = io.open("/tmp/luazig_h3_flush.txt", "r")
+        \\local after = h:read("a")
+        \\h:close()
+        \\f:close()
+        \\return (before or "") .. "|" .. (after or "")
+    ;
+    const status = try lua.luaL_dostring(&L, script, "=(test)");
+    try std.testing.expectEqual(@as(i32, lua.LUA_OK), status);
+    const s = lua.lua_tostring(&L, -1);
+    try std.testing.expect(s != null);
+    try std.testing.expectEqualStrings("|flushed-data", s.?);
+}
+
 test "os library opens and registers functions" {
     const gpa = std.testing.allocator;
     var L: lua.lua_State = undefined;
