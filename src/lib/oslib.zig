@@ -310,8 +310,10 @@ fn os_exit(L_: *L) !i32 {
         if (lua.lua_toboolean(L_, 1) != 0) @as(i32, 0) else @as(i32, 1)
     else
         @as(i32, @intCast(lua.lua_tointeger(L_, 1) orelse 0));
-    // Run __close / __gc finalizers before terminating.
-    lua.lua_close(L_);
+    // Only close the Lua state (run __close/__gc finalizers) if the
+    // caller explicitly requests it via the second argument.
+    if (lua.lua_toboolean(L_, 2) != 0)
+        lua.lua_close(L_);
     std.process.exit(@intCast(@as(i32, @max(0, @min(status, 255)))));
 }
 

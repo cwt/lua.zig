@@ -3486,3 +3486,26 @@ test "BUG-038 tail call between Lua functions propagates the argument" {
     try std.testing.expectEqual(@as(i32, lua.LUA_OK), status);
     try std.testing.expectEqual(@as(f64, 42), lua.lua_tonumber(&L, -1).?);
 }
+
+// ===================================================================
+// BUG-043 — os.exit honours the second argument (conditional lua_close)
+// ===================================================================
+
+test "BUG-043 os.exit is registered as a function" {
+    const gpa = std.testing.allocator;
+    var L: lua.lua_State = undefined;
+    try lua.luaL_newstate(&L, gpa);
+    defer lua.lua_close(&L);
+    try lua.luaL_openlibs(&L);
+
+    // Verify os.exit is accessible in the os table.
+    const status = try lua.luaL_dostring(&L, "return type(os.exit)", "=(test)");
+    try std.testing.expectEqual(@as(i32, lua.LUA_OK), status);
+    try std.testing.expectEqualStrings("function", lua.lua_tostring(&L, -1).?);
+    lua.lua_settop(&L, 0);
+
+    // We cannot test os.exit behavior in-process because os.exit always calls
+    // std.process.exit, which terminates the process immediately. The
+    // exit behavior is verified at the binary level by running the built
+    // luazig binary with scripts that call os.exit with various arguments.
+}
