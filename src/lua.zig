@@ -807,6 +807,43 @@ pub inline fn lua_isnoneornil(L: *lua_State, idx: i32) bool {
     return lua_type(L, idx) <= 0;
 }
 
+// ===================================================================
+// H.7 — Convenience macros (port of lua.h macro definitions)
+// ===================================================================
+
+/// Register a C function as a global. Equivalent to
+/// `lua_pushcfunction(L, f); lua_setglobal(L, n)`.
+pub inline fn lua_register(L: *lua_State, name: []const u8, func: lua_CFunction) void {
+    lua_pushcfunction(L, func);
+    lua_setglobal(L, name);
+}
+
+/// Push the global environment table onto the stack. Equivalent to
+/// `lua_rawgeti(L, LUA_REGISTRYINDEX, LUA_RIDX_GLOBALS)`.
+pub inline fn lua_pushglobaltable(L: *lua_State) void {
+    _ = lua_rawgeti(L, LUA_REGISTRYINDEX, llimits.LUA_RIDX_GLOBALS);
+}
+
+/// Push a string literal (or any `[]const u8`) onto the stack.
+pub inline fn lua_pushliteral(L: *lua_State, s: []const u8) ?[]const u8 {
+    return lua_pushstring(L, s);
+}
+
+/// Return true if the value at `idx` is a function.
+pub inline fn lua_isfunction(L: *lua_State, n: i32) bool {
+    return lua_type(L, n) == LUA_TFUNCTION;
+}
+
+/// Return true if the value at `idx` is a thread (coroutine).
+pub inline fn lua_isthread(L: *lua_State, n: i32) bool {
+    return lua_type(L, n) == LUA_TTHREAD;
+}
+
+/// Return true if the value at `idx` is light userdata.
+pub inline fn lua_islightuserdata(L: *lua_State, n: i32) bool {
+    return lua_type(L, n) == LUA_TLIGHTUSERDATA;
+}
+
 pub fn lua_isnone(L: *lua_State, idx: i32) i32 {
     return if (lua_type(L, idx) == LUA_TNONE) 1 else 0;
 }

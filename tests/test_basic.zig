@@ -4120,5 +4120,94 @@ test "H.5 lua_pushexternalstring as table key (equal-content externals match)" {
     lua.lua_pop(&L, 2);
 }
 
+test "H.7 convenience macros (insert, remove, newtable, register, pushglobaltable, pushliteral, type predicates)" {
+    const gpa = std.testing.allocator;
+    var L: lua.lua_State = undefined;
+    try lua.luaL_newstate(&L, gpa);
+    defer lua.lua_close(&L);
+
+    // --- lua_newtable ---
+    lua.lua_newtable(&L);
+    try std.testing.expectEqual(@as(i32, lua.LUA_TTABLE), lua.lua_type(&L, -1));
+    // Stack: [t]
+
+    // --- lua_pushliteral ---
+    const lit = lua.lua_pushliteral(&L, "hello").?;
+    try std.testing.expectEqualStrings("hello", lit);
+    try std.testing.expectEqual(@as(i32, lua.LUA_TSTRING), lua.lua_type(&L, -1));
+    // Stack: [t, "hello"]
+
+    // --- lua_insert: move "hello" from -1 to -2 (before t) ---
+    // lua_insert(L, -2) rotates the interval [-2, -1] up by 1:
+    // the element at -2 (the table) moves to top, "hello" shifts to -2.
+    // Result: ["hello", t]
+    lua.lua_insert(&L, -2);
+    try std.testing.expectEqual(@as(i32, lua.LUA_TTABLE), lua.lua_type(&L, -1));
+    try std.testing.expectEqual(@as(i32, lua.LUA_TSTRING), lua.lua_type(&L, -2));
+    try std.testing.expectEqualStrings("hello", lua.lua_tostring(&L, -2).?);
+    lua.lua_pop(&L, 2); // ["hello", t] → []
+
+    // --- lua_remove: push 3 strings, remove middle one ---
+    _ = lua.lua_pushstring(&L, "a");
+    _ = lua.lua_pushstring(&L, "b");
+    _ = lua.lua_pushstring(&L, "c");
+    // Stack: ["a", "b", "c"]
+    lua.lua_remove(&L, -2); // remove "b": ["a", "c"]
+    try std.testing.expectEqualStrings("c", lua.lua_tostring(&L, -1).?);
+    try std.testing.expectEqualStrings("a", lua.lua_tostring(&L, -2).?);
+    lua.lua_pop(&L, 2); // []
+
+    // --- lua_pushglobaltable ---
+    lua.lua_pushglobaltable(&L);
+    try std.testing.expectEqual(@as(i32, lua.LUA_TTABLE), lua.lua_type(&L, -1));
+    lua.lua_pop(&L, 1);
+
+    // --- lua_register ---
+    const myFn: lua.lua_CFunction = struct {
+        fn call(L2: *lua.lua_State) !i32 {
+            _ = lua.lua_pushstring(L2, "registered!");
+            return 1;
+        }
+    }.call;
+    lua.lua_register(&L, "my_test_fn", myFn);
+    _ = lua.lua_getglobal(&L, "my_test_fn");
+    try std.testing.expectEqual(@as(i32, lua.LUA_TFUNCTION), lua.lua_type(&L, -1));
+    lua.lua_pop(&L, 1);
+
+    // --- lua_isfunction ---
+    lua.lua_createtable(&L, 0, 0);
+    try std.testing.expect(!lua.lua_isfunction(&L, -1));
+    lua.lua_pop(&L, 1);
+    _ = lua.lua_getglobal(&L, "my_test_fn");
+    try std.testing.expect(lua.lua_isfunction(&L, -1));
+    lua.lua_pop(&L, 1);
+
+    // --- lua_isnoneornil ---
+    lua.lua_pushnil(&L);
+    try std.testing.expect(lua.lua_isnoneornil(&L, -1));
+    lua.lua_pop(&L, 1);
+    try std.testing.expect(lua.lua_isnoneornil(&L, 999)); // invalid index
+    lua.lua_pushinteger(&L, 42);
+    try std.testing.expect(!lua.lua_isnoneornil(&L, -1));
+    lua.lua_pop(&L, 1);
+
+    // --- lua_isthread ---
+    lua.lua_pushinteger(&L, 42);
+    try std.testing.expect(!lua.lua_isthread(&L, -1));
+    lua.lua_pop(&L, 1);
+    const co = try lua.lua_newthread(&L);
+    _ = co;
+    try std.testing.expectEqual(@as(i32, lua.LUA_TTHREAD), lua.lua_type(&L, -1));
+    try std.testing.expect(lua.lua_isthread(&L, -1));
+    lua.lua_pop(&L, 1);
+
+    // --- lua_islightuserdata ---
+    var dummy: i32 = 0;
+    lua.lua_pushlightuserdata(&L, @ptrCast(&dummy));
+    try std.testing.expect(lua.lua_islightuserdata(&L, -1));
+    try std.testing.expect(!lua.lua_islightuserdata(&L, -2));
+    lua.lua_pop(&L, 1);
+}
+
 
 

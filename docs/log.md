@@ -6,6 +6,29 @@ tags: [log, changelog]
 timestamp: 2026-07-14T16:10:00Z
 ---
 
+## 2026-07-14 — H.7: Convenience macros
+
+Implemented all Phase H.7 convenience macros as `pub inline fn` in
+`src/lua.zig`. Four (`lua_insert`, `lua_remove`, `lua_newtable`,
+`lua_isnoneornil`) already existed from earlier work. Six were added:
+
+- `lua_register(L, name, func)` — `lua_pushcfunction + lua_setglobal`
+- `lua_pushglobaltable(L)` — `lua_rawgeti(REGISTRY, RIDX_GLOBALS)`
+- `lua_pushliteral(L, s)` — alias for `lua_pushstring`
+- `lua_isfunction(L, n)` — `lua_type == LUA_TFUNCTION`
+- `lua_isthread(L, n)` — `lua_type == LUA_TTHREAD`
+- `lua_islightuserdata(L, n)` — `lua_type == LUA_TLIGHTUSERDATA`
+
+Tests: single comprehensive test (121/121 pass, zero leaks) covering all 10
+macros: `newtable`/`pushliteral`/`insert`/`remove` (stack manipulation),
+`pushglobaltable`/`register` (globals), `isfunction`/`isnoneornil`/`isthread`/
+`islightuserdata` (type predicates).
+
+§0.1 self-audit: thin wrappers over existing API; no allocation, no error
+propagation, no numeric conversion, no setjmp/longjmp, no C strings.
+
+---
+
 ## 2026-07-14 — H.5 finisher: lua_pushexternalstring (external strings)
 
 Implemented the last deferred H.5 item: Lua 5.5 `lua_pushexternalstring`, which

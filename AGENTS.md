@@ -350,10 +350,7 @@ The next work is **Phase H — Drop-in replacement gap closure**. See the Phase 
 
 Phases A–G built a working, self-hosting Lua interpreter. Phase H closes the gap between "working" and "drop-in replacement for Lua 5.5.1". The gaps were identified by a systematic audit comparing `luazig` against `lua/lua.h`, `lua/lauxlib.h`, and the standard library C sources.
 
-**Status:** Complete. H.1, H.2, H.3, H.4, H.5, and H.6 are all done (2026-07-14).
-`lua_pushexternalstring` (the last deferred H.5 item) is now implemented — it adds
-a non-interned `lua_TString` variant backed by a caller-provided `lua_Alloc`.
-H.7–H.10 remain NOT STARTED.
+**Status:** Complete. H.1–H.7 are all done (2026-07-14). H.8–H.10 remain NOT STARTED.
 
 **Scope (portability, API completeness, stub elimination):**
 
@@ -479,7 +476,7 @@ options (port of `lua/lua.c` argument handling):
 and table expansion via the `pairs()` metamethod (the REPL uses raw `lua_next` to avoid
 metamethod side effects).
 
-### H.7 — Convenience macros (LOW priority) — NOT STARTED
+### H.7 — Convenience macros (LOW priority) ✅ DONE (2026-07-14)
 
 The C `lua.h` defines macros that are convenient but not strictly necessary (callers can inline them):
 

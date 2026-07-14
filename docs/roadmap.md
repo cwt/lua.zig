@@ -210,8 +210,8 @@ Silent no-ops that produce wrong results:
   interpreter` (subprocess test; `build.zig` `test` step now builds the `luazig` exe)
 - Status: 117/117 tests pass, zero leaks
 
-### H.7 — Convenience macros (LOW priority)
-`lua_insert`, `lua_remove`, `lua_newtable`, `lua_register`, `lua_pushglobaltable`, `lua_pushliteral`, `lua_isnoneornil`, `lua_isfunction`, `lua_isthread`, `lua_islightuserdata`
+### H.7 — Convenience macros (LOW priority) ✅ DONE (2026-07-14)
+`lua_insert` ✅, `lua_remove` ✅, `lua_newtable` ✅, `lua_register` ✅, `lua_pushglobaltable` ✅, `lua_pushliteral` ✅, `lua_isnoneornil` ✅, `lua_isfunction` ✅, `lua_isthread` ✅, `lua_islightuserdata` ✅ — declared as `pub inline fn` in `src/lua.zig` (4 of 10 existed from earlier work)
 
 ### H.8 — Deprecated compatibility aliases (LOW priority)
 `lua_newuserdata`, `lua_getuservalue`, `lua_setuservalue`, `lua_resetthread`
