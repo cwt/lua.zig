@@ -6,6 +6,60 @@ tags: [log, changelog]
 timestamp: 2026-07-14T16:10:00Z
 ---
 
+## 2026-07-14 — H.5 finisher: lua_pushexternalstring (external strings)
+
+Implemented the last deferred H.5 item: Lua 5.5 `lua_pushexternalstring`, which
+pushes a string whose bytes live in caller-owned memory (managed by a C
+`lua_Alloc`) instead of being copied into Lua's intern pool.
+
+### Design
+- `lua_TString` gains three fields: `externally_owned: bool` (marks non-interned
+external strings), `falloc: ?lua_Alloc` (the external deallocation callback;
+  null for interned strings and for LSTRFIX fixed strings), and `ud: ?*anyopaque`.
+- `lua_pushexternalstring(L, s, len, falloc, ud)` creates a `lua_TString` whose
+  `.s` views `s[0..len]` (the external bytes), sets `hash = seed` (matching the C
+  reference, so external strings never collide with content-hashed interned
+  strings of equal content in a large table), marks it `externally_owned`, and
+  registers it as a GC object via `registerGC`. On OOM (header or VMGCObject
+  alloc) an LSTRMEM buffer is returned to `falloc`; LSTRFIX buffers are left to
+  the caller.
+- GC: external strings are now first-class `VMGCObject`s (`ValUnion.string`).
+  `markValue` marks the wrapping object for externally-owned strings;
+  `freeGCObject` calls `falloc(ud, ts.s.ptr, ts.len+1, 0)` for LSTRMEM and always
+  destroys the `lua_TString` struct. LSTRFIX bytes are static and never freed.
+- Table keys: `ltable.getStr` previously compared string keys by pointer
+  identity only (valid because the port interns every string). External strings
+  are distinct objects with equal content, so `getStr` now also does a content
+  comparison — but only when at least one side is `externally_owned`, keeping
+  interned-key lookups (the dominant case) free of per-node `memcmp`.
+
+### Verification
+- 3 new tests in `tests/test_basic.zig`: LSTRMEM frees the external buffer on
+  GC (free-count assertion via a custom `lua_Alloc`), LSTRFIX keeps static bytes
+  and is a distinct object from an equal-content interned string, and an
+  equal-content external string round-trips as a table key (matching C, where
+  external strings carry hash = seed and compare by content).
+- `zig build test` -> 120/120 pass, zero leaks. `zig build` clean.
+
+§0.1 self-audit:
+- Allocator threaded (external TString + VMGCObject allocated via L.allocator);
+  the external `falloc` is only ever a free callback on collection, never used
+  for our own allocations. ✅
+- Errors propagated (`!T`/`try`); OOM paths return null and restore LSTRMEM
+  buffers to `falloc`. ✅
+- No setjmp/longjmp; pure Zig error unions. ✅
+- Numeric conversions: none new; `hash = @as(u32, @truncate(g.seed))` is the
+  same seed->hash truncation the rest of the port uses. ✅
+- `lua_Alloc` (C fn-pointer typedef) is retained ONLY to store/invoke the
+  caller's external deallocation callback — a necessary, documented exception
+  to §0.1 rule 1, since the external memory is owned by the C caller. ✅
+- No @bitCast value conversions; TValue union retained; single type model. ✅
+- Unmanaged containers unchanged; GC list (`allgc`) extended with `.string`. ✅
+- No empty catch {} (OOM handled via `catch` returning null). ✅
+- Type predicates precise. ✅
+
+---
+
 ## 2026-07-14 — Phase H.6 (CLI / REPL improvements)
 
 Completed the standalone CLI driver in `src/luazig.zig` (port of `lua/lua.c`

@@ -4018,3 +4018,107 @@ test "H.6 CLI luazig behaves like the reference interpreter" {
     }
 }
 
+/// Helper `lua_Alloc` for the LSTRMEM external-string test: frees the caller's
+/// bytes via the test allocator and counts free calls.
+const ExtAllocCtx = struct {
+    alloc: std.mem.Allocator,
+    free_count: usize,
+};
+
+fn testExtAlloc(ud: ?*anyopaque, ptr: ?*anyopaque, osize: usize, nsize: usize) ?*anyopaque {
+    const ctx = @as(*ExtAllocCtx, @ptrCast(@alignCast(ud.?)));
+    if (nsize == 0) {
+        if (ptr) |p| {
+            const bytes: [*]u8 = @ptrCast(@alignCast(p));
+            const slice = bytes[0..osize];
+            ctx.alloc.free(slice);
+            ctx.free_count += 1;
+        }
+        return null;
+    } else if (ptr == null) {
+        const slice = ctx.alloc.alloc(u8, nsize) catch return null;
+        return slice.ptr;
+    }
+    const old_bytes: [*]u8 = @ptrCast(@alignCast(ptr.?));
+    const old = old_bytes[0..osize];
+    const new_slice = ctx.alloc.realloc(old, nsize) catch return null;
+    return new_slice.ptr;
+}
+
+test "H.5 lua_pushexternalstring (LSTRMEM) frees external bytes on GC" {
+    const gpa = std.testing.allocator;
+    var L: lua.lua_State = undefined;
+    try lua.luaL_newstate(&L, gpa);
+    defer lua.lua_close(&L);
+
+    var ctx: ExtAllocCtx = .{ .alloc = gpa, .free_count = 0 };
+    // 11 bytes, NUL-terminated (C contract: s[len] == 0).
+    const external = try gpa.dupeZ(u8, "external!!");
+    const s = lua.lua_pushexternalstring(
+        &L,
+        external,
+        10,
+        testExtAlloc,
+        @ptrCast(@alignCast(&ctx)),
+    ) orelse return error.OutOfMemory;
+    try std.testing.expectEqualStrings("external!!", s);
+    try std.testing.expectEqual(@as(i32, lua.LUA_TSTRING), lua.lua_type(&L, -1));
+
+    // Remove the only reference and collect: the external buffer must be freed.
+    lua.lua_pop(&L, 1);
+    _ = lua.lua_gc(&L, lua.LUA_GCCOLLECT, 0);
+    try std.testing.expectEqual(@as(usize, 1), ctx.free_count);
+}
+
+test "H.5 lua_pushexternalstring (LSTRFIX) keeps static bytes, distinct from interned" {
+    const gpa = std.testing.allocator;
+    var L: lua.lua_State = undefined;
+    try lua.luaL_newstate(&L, gpa);
+    defer lua.lua_close(&L);
+
+    const static_str = "fixed-external";
+    const s = lua.lua_pushexternalstring(
+        &L,
+        static_str,
+        static_str.len,
+        null,
+        null,
+    ) orelse return error.OutOfMemory;
+    try std.testing.expectEqualStrings("fixed-external", s);
+
+    // An equal-content interned string is a distinct object (not deduplicated).
+    const interned = lua.lua_pushstring(&L, "fixed-external").?;
+    try std.testing.expectEqualStrings("fixed-external", interned);
+    try std.testing.expect(@intFromPtr(interned.ptr) != @intFromPtr(s.ptr));
+
+    // GC must not free the static bytes (falloc == null): no use-after-free.
+    lua.lua_pop(&L, 2);
+    _ = lua.lua_gc(&L, lua.LUA_GCCOLLECT, 0);
+    try std.testing.expectEqualStrings("fixed-external", static_str);
+}
+
+test "H.5 lua_pushexternalstring as table key (equal-content externals match)" {
+    const gpa = std.testing.allocator;
+    var L: lua.lua_State = undefined;
+    try lua.luaL_newstate(&L, gpa);
+    defer lua.lua_close(&L);
+
+    lua.lua_createtable(&L, 0, 1); // t
+    _ = lua.lua_pushexternalstring(&L, "k", 1, null, null); // t, extkey
+    _ = lua.lua_pushstring(&L, "ext"); // t, extkey, "ext"
+    try lua.lua_settable(&L, -3); // t[extkey] = "ext"
+
+    // Another external "k" of equal content is the SAME key: external strings
+    // carry hash = seed and compare by content, so equal-content externals
+    // index the same slot (matching the C reference). The external string is a
+    // distinct *object* from an equal-content interned string (see the LSTRFIX
+    // test); here we verify the table round-trip behaviour.
+    _ = lua.lua_pushexternalstring(&L, "k", 1, null, null); // t, extkey2
+    _ = try lua.lua_gettable(&L, -2); // t, "ext"
+    try std.testing.expectEqual(@as(i32, lua.LUA_TSTRING), lua.lua_type(&L, -1));
+    try std.testing.expectEqualStrings("ext", lua.lua_tostring(&L, -1).?);
+    lua.lua_pop(&L, 2);
+}
+
+
+

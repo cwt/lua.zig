@@ -177,7 +177,7 @@ Silent no-ops that produce wrong results:
 ### H.5 — Missing C API functions (MEDIUM priority) ✅ DONE except `lua_pushexternalstring` (2026-07-14)
 - `lua_atpanic` ✅ (`global_State.panic` added)
 - `lua_version` ✅ (returns `LUA_VERSION_NUM` = 505.0)
-- `lua_pushexternalstring` ❌ deferred (needs new `lua_TString` variant)
+- `lua_pushexternalstring` ✅ (2026-07-14) — non-interned `lua_TString` with `falloc`/`ud`; GC frees LSTRMEM bytes
 - `lua_numbertocstring` ✅
 - `luaL_checkversion_` ✅
 - `luaL_callmeta` ✅

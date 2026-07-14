@@ -350,10 +350,10 @@ The next work is **Phase H — Drop-in replacement gap closure**. See the Phase 
 
 Phases A–G built a working, self-hosting Lua interpreter. Phase H closes the gap between "working" and "drop-in replacement for Lua 5.5.1". The gaps were identified by a systematic audit comparing `luazig` against `lua/lua.h`, `lua/lauxlib.h`, and the standard library C sources.
 
-**Status:** Almost complete. H.1, H.2, H.3, H.4, H.5 (except `lua_pushexternalstring`),
-and H.6 are done (2026-07-14). `lua_pushexternalstring` (H.5) is deferred — it requires a
-new `lua_TString` variant for external-allocator-backed strings. H.7–H.10 remain NOT STARTED.
-Updated 2026-07-14 with H.4 reference system, H.5 missing C API functions, and H.6 CLI/REPL.
+**Status:** Complete. H.1, H.2, H.3, H.4, H.5, and H.6 are all done (2026-07-14).
+`lua_pushexternalstring` (the last deferred H.5 item) is now implemented — it adds
+a non-interned `lua_TString` variant backed by a caller-provided `lua_Alloc`.
+H.7–H.10 remain NOT STARTED.
 
 **Scope (portability, API completeness, stub elimination):**
 
@@ -402,13 +402,13 @@ Port from `lua/lauxlib.c`. Needed by any C extension that persists Lua values.
 
 ### H.5 — Missing C API functions (MEDIUM priority)
 
-**Core API (`lua.h`):** — ✅ DONE except `lua_pushexternalstring` (2026-07-14)
+**Core API (`lua.h`):** — ✅ DONE (2026-07-14)
 
 | Function | Why needed | Status |
 |----------|------------|--------|
 | `lua_atpanic` | C API consumers need a panic handler for unprotected errors | ✅ real impl — `global_State.panic` field added; returns previous handler |
 | `lua_version` | Version number query (returns `lua_Number`) | ✅ real impl — returns `LUA_VERSION_NUM` (505.0) |
-| `lua_pushexternalstring` | Lua 5.5 new feature — push string backed by external allocator | ❌ deferred — requires new `lua_TString` variant + external-allocator lifetime management |
+| `lua_pushexternalstring` | Lua 5.5 new feature — push string backed by external allocator | ✅ DONE (2026-07-14) — non-interned `lua_TString` with `falloc`/`ud`; freed on GC |
 | `lua_numbertocstring` | Convert number to C string buffer (`LUA_N2SBUFFSZ`-sized) | ✅ real impl — formats via `std.fmt.bufPrint` into caller slice |
 
 **Auxlib (`lauxlib.h`):** — ✅ DONE (2026-07-14)

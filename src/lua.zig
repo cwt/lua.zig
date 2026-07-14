@@ -155,6 +155,17 @@ pub const lua_TString = struct {
     len: usize,
     hash: u32,
     marked: bool = false,
+    /// External strings (Lua 5.5 `lua_pushexternalstring`): the bytes in `s` are
+    /// owned by a caller-provided allocator, not by Lua. `externally_owned` marks
+    /// such strings so the GC tracks and frees them via `falloc`. Interned
+    /// strings are always `false`.
+    externally_owned: bool = false,
+    /// External deallocation callback (Lua 5.5 `lua_Alloc` ABI). `null` for
+    /// interned strings and for fixed external strings (LSTRFIX) whose bytes are
+    /// static and never freed.
+    falloc: ?lua_Alloc = null,
+    /// User data passed back to `falloc` when freeing an LSTRMEM external string.
+    ud: ?*anyopaque = null,
 };
 
 pub const lua_Udata = struct {
@@ -549,6 +560,7 @@ pub const VMGCObject = struct {
         upval: *UpVal,
         proto: *lua_Proto,
         userdata: *lua_Udata,
+        string: *lua_TString,
     };
 };
 
@@ -588,6 +600,7 @@ pub fn registerGC(L: *lua_State, val: anytype) !void {
         *UpVal => VMGCObject.ValUnion{ .upval = val },
         *lua_Proto => VMGCObject.ValUnion{ .proto = val },
         *lua_Udata => VMGCObject.ValUnion{ .userdata = val },
+        *lua_TString => VMGCObject.ValUnion{ .string = val },
         else => @compileError("Unsupported type for GC registration"),
     };
     gc.* = .{
@@ -1105,6 +1118,51 @@ pub fn lua_pushlstring(L: *lua_State, s: []const u8, len: usize) ?[]const u8 {
 
 pub fn lua_pushstring(L: *lua_State, s: []const u8) ?[]const u8 {
     return lua_pushlstring(L, s, s.len);
+}
+
+/// Lua 5.5 `lua_pushexternalstring`: push a string whose bytes are owned by a
+/// caller-provided allocator rather than copied by Lua. `s[0..len]` is the
+/// string content (the C contract requires `s[len] == 0`); `falloc`/`ud` are
+/// the external `lua_Alloc` and its user data. When `falloc` is non-null
+/// (LSTRMEM) Lua takes ownership of the bytes and frees them via `falloc` when
+/// the string is collected; when `falloc` is null (LSTRFIX) the bytes are
+/// static and never freed. External strings are never interned, so equal
+/// content yields distinct `lua_TString` objects. Returns the string content
+/// pointer, or `null` on out-of-memory (in which case an LSTRMEM external
+/// buffer is freed back to `falloc`).
+pub fn lua_pushexternalstring(
+    L: *lua_State,
+    s: []const u8,
+    len: usize,
+    falloc: ?lua_Alloc,
+    ud: ?*anyopaque,
+) ?[]const u8 {
+    const g = G(L);
+    const ts = L.allocator.create(lua_TString) catch {
+        // Could not allocate the header; an LSTRMEM buffer we were meant to
+        // own must be returned to its allocator.
+        if (falloc) |f| _ = f(ud, @constCast(s.ptr), len + 1, 0);
+        return null;
+    };
+    ts.* = .{
+        .s = s[0..len],
+        .len = len,
+        // External strings share a constant hash (the C reference uses the
+        // global seed), so they never collide with interned (content-hashed)
+        // strings of equal content.
+        .hash = @as(u32, @truncate(g.seed)),
+        .externally_owned = true,
+        .falloc = falloc,
+        .ud = ud,
+    };
+    registerGC(L, ts) catch {
+        if (falloc) |f| _ = f(ud, @constCast(ts.s.ptr), ts.len + 1, 0);
+        L.allocator.destroy(ts);
+        return null;
+    };
+    L.stack[L.top] = TValue{ .string = ts };
+    L.top += 1;
+    return ts.s;
 }
 
 pub fn lua_pushvfstring(L: *lua_State, fmt: []const u8, argp: ?*anyopaque) ?[]const u8 {
@@ -2686,6 +2744,7 @@ fn getGCObject(g: *global_State, ptr: anytype) ?*VMGCObject {
             .upval => |uv| if (@intFromPtr(uv) == @intFromPtr(ptr)) return gc,
             .proto => |p| if (@intFromPtr(p) == @intFromPtr(ptr)) return gc,
             .userdata => |ud| if (@intFromPtr(ud) == @intFromPtr(ptr)) return gc,
+            .string => |s| if (@intFromPtr(s) == @intFromPtr(ptr)) return gc,
         }
         curr = gc.next;
     }
@@ -2704,6 +2763,11 @@ fn markValue(L: *lua_State, gray_list: *std.ArrayList(*VMGCObject), val: TValue)
     switch (val) {
         .string => |s| if (s) |str| {
             str.marked = true;
+            // External strings are real GC objects; mark their VMGCObject so
+            // the sweep keeps them alive while referenced.
+            if (str.externally_owned) {
+                if (getGCObject(g, str)) |gc| try markObject(L, gc, gray_list);
+            }
         },
         .table => |t| if (t) |tbl| if (getGCObject(g, tbl)) |gc| try markObject(L, gc, gray_list),
         .function => |f| if (f) |cl| if (getGCObject(g, cl)) |gc| try markObject(L, gc, gray_list),
@@ -2741,6 +2805,16 @@ fn freeGCObject(L: *lua_State, gc: *VMGCObject) void {
         .userdata => |u| {
             L.allocator.free(u.data);
             L.allocator.destroy(u);
+        },
+        .string => |ts| {
+            // External strings only. Free the caller-owned bytes via the
+            // external allocator (LSTRMEM); fixed external strings (LSTRFIX,
+            // falloc == null) keep their static bytes. Always free the
+            // lua_TString struct itself, which Lua allocated.
+            if (ts.falloc) |falloc| {
+                _ = falloc(ts.ud, @constCast(ts.s.ptr), ts.len + 1, 0);
+            }
+            L.allocator.destroy(ts);
         },
     }
     L.allocator.destroy(gc);
@@ -2873,6 +2947,8 @@ pub fn luaC_collectgarbage(L: *lua_State) !void {
                     }
                 }
             },
+            // Strings (external) have no outgoing references to traverse.
+            .string => {},
         }
     }
 

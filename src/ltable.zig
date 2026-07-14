@@ -284,7 +284,17 @@ inline fn getStr(t: *Table, key: *const TString) TValue {
         if (k == .nil) return TValue{ .nil = {} };
         if (k == .string) {
             if (k.string) |ks| {
+                // Interned strings are unique per content, so pointer identity
+                // (the fast path) suffices for them and for a repeat lookup of
+                // the very same external string. External strings
+                // (lua_pushexternalstring) are distinct objects that may share
+                // content, so fall back to a content comparison -- but only
+                // when at least one side is external, to keep interned-key
+                // lookups (the dominant case) free of per-node memcmp.
                 if (ks == key) return t.node.items[n].val;
+                if (key.externally_owned or ks.externally_owned) {
+                    if (std.mem.eql(u8, ks.s, key.s)) return t.node.items[n].val;
+                }
             }
         }
         if (t.node.items[n].next == -1) return TValue{ .nil = {} };
