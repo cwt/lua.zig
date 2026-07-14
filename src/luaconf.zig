@@ -87,4 +87,4 @@ pub const LUA_EXTRASPACE: usize = @sizeOf(void);
 pub const LUA_IDSIZE: usize = 60;
 
 // LUAL_BUFFERSIZE: initial buffer size used by the lauxlib buffer system
-pub const LUAL_BUFFERSIZE: usize = 16 * @sizeOf(void) * @sizeOf(LUA_NUMBER);
+pub const LUAL_BUFFERSIZE: usize = 16 * @sizeOf(*anyopaque) * @sizeOf(LUA_NUMBER);

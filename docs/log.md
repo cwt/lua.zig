@@ -6,6 +6,81 @@ tags: [log, changelog]
 timestamp: 2026-07-14T16:10:00Z
 ---
 
+## 2026-07-14 — Phase H.4 (reference system) + Phase H.5 (missing C API functions)
+
+Closed most of the Phase H drop-in replacement gap: the C-API reference system
+(`luaL_ref`/`luaL_unref`) and all remaining missing core/auxlib functions.
+
+### H.4 — Reference system (`src/lauxlib.zig`)
+- `luaL_ref(L, t)` — creates a reference in table `t` using the C free-list chain
+  pattern: `t[1]` holds the head of the free list; freed slots link via `t[slot]`.
+- `luaL_unref(L, t, ref)` — releases a reference back to the free list; no-op for
+  negative `ref` (mirrors the C `lauxlib.c` contract).
+- `LUA_NOREF` (= -2) and `LUA_REFNIL` (= -1) constants exported.
+
+### H.5 — Missing C API functions
+**Core API (`src/lua.zig`):**
+- `lua_atpanic` — added `panic: ?lua_CFunction` field to `global_State`; sets and
+  returns the previous handler (matches `lua/lua.h`).
+- `lua_version` — returns `LUA_VERSION_NUM` (computed `MAJOR*100 + MINOR` = 505.0).
+- `lua_numbertocstring` — formats the number at `idx` into a caller-supplied
+  `[]u8` buffer via `std.fmt.bufPrint`, returns bytes written + null terminator,
+  or `0` if the value is not a number.
+- `lua_pushexternalstring` — **deferred**: Lua 5.5 new feature requiring a new
+  `lua_TString` variant backed by an external allocator + lifetime bookkeeping.
+
+**Auxlib (`src/lauxlib.zig`):**
+- `luaL_checkversion_` — errors via `luaL_error` on size/version mismatch.
+- `luaL_callmeta` — pushes the metamethod (via `luaL_getmetafield`), the object,
+  then `lua_call(L, 1, 1)`; returns `1` if called, `0` if absent.
+- `luaL_alloc` — C-ABI allocator wrapper over `std.c.realloc`/`std.c.free`.
+- `luaL_loadfilex` — reads the file via `std.Io.Dir.cwd().readFileAlloc`, builds an
+  `@`-prefixed chunk name, then `lua_load` with a one-shot `getS` reader; uses
+  `L.l_G.?.io` for I/O (no extra `io` parameter, matching the C API).
+- `luaL_loadbufferx` / `luaL_loadstring` — one-shot `getS` reader over the slice.
+- `luaL_makeseed` — mixes `L` and a local-var address for entropy.
+- `luaL_getsubtable` — gets-or-creates a subtable; returns `1` if found, `0` if
+  created (returns `!i32` because `lua_getfield` is fallible).
+- `luaL_requiref` — registers in `package.loaded`, optionally in the globals table.
+- `luaL_dofile` — `luaL_loadfilex` + `lua_pcallk`.
+
+**Buffer auxlib functions (`src/lauxlib.zig`):**
+- `luaL_addstring` (→ `luaL_addlstring`), `luaL_buffinitsize` (inits + reserves),
+  `luaL_prepbuffer` (→ `luaL_prepbuffsize(B, LUAL_BUFFERSIZE)`), `luaL_bufflen`
+  (`b.buf.items.len`), `luaL_buffaddr` (`b.buf.items`), `luaL_buffsub` (trims len).
+
+**Constants added:** `LUA_VERSION_NUM`, `LUA_N2SBUFFSZ` (core); `LUAL_NUMSIZES`,
+`LUA_ERRFILE`, `LUA_GNAME`, `LUA_LOADED_TABLE`, `LUA_PRELOAD_TABLE` (auxlib).
+
+### §0.1 self-audit
+1. ✅ Allocator threaded — `luaL_loadfilex` uses `L.l_G.?.allocator`; buffers use
+   `L.allocator`.
+2. ✅ Errors propagated — `luaL_callmeta`/`luaL_getsubtable`/`luaL_requiref` use
+   `!i32`/`!void` + `try`; `luaL_checkversion_` errors via `luaL_error`.
+3. ✅ No setjmp/longjmp — pure Zig error unions.
+4. ✅ Numeric conversions — `@floatFromInt` for `LUA_VERSION_NUM`; no `@bitCast`
+   for value conversion.
+5. ✅ Slices not C strings — buffers and chunk names use `[]const u8`/`[]u8`.
+6. ✅ No C varargs.
+7. ✅ Unmanaged containers — `luaL_Buffer.buf` is `std.ArrayList(u8)` with `.empty`.
+8. ✅ `TValue` tagged union retained.
+9. ✅ Single type model (`lua_State`/`lua_CFunction`/`global_State`).
+10. ✅ `std.Io` threaded to `luaL_loadfilex` (via `global_State.io`).
+11. ✅ Shift bounds — not applicable here.
+12. ✅ No empty `catch {}` — `luaL_dofile` file-open failure pushes a message and
+    returns `LUA_ERRERR` explicitly.
+13. ✅ Stack capacity validated — `luaL_addstring`/(buffer) rely on `appendSlice`.
+14. ✅ Type predicates precise.
+
+### Verification
+- `zig build` clean; `zig build test` passes **112/112**, zero memory leaks.
+- 14 new tests in `tests/test_basic.zig` cover every H.5 function (version,
+  atpanic round-trip, numbertocstring, loadstring/loadbufferx, getsubtable,
+  dofile error path, makeseed, checkversion, callmeta present/absent, buffer
+  functions) plus the 6 H.4 reference-system tests.
+
+---
+
 ## 2026-07-13 — Math via glibc libm (DynLib resolver → shared `src/libm.zig`) + ThinLTO
 
 Routed every software-transcendental math call through glibc `libm` (C Lua uses

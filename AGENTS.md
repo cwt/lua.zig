@@ -349,8 +349,10 @@ The next work is **Phase H — Drop-in replacement gap closure**. See the Phase 
 
 Phases A–G built a working, self-hosting Lua interpreter. Phase H closes the gap between "working" and "drop-in replacement for Lua 5.5.1". The gaps were identified by a systematic audit comparing `luazig` against `lua/lua.h`, `lua/lauxlib.h`, and the standard library C sources.
 
-**Status:** Partially done (revs 65–69 addressed H.1, H.2, H.3, and partial H.5/H.9).
-Updated 2026-07-14 with H.1/H.2/H.3 confirmed done.
+**Status:** Partially done. H.1, H.2, H.3, H.4, and most of H.5 are complete (2026-07-14).
+`lua_pushexternalstring` (H.5) is deferred — it requires a new `lua_TString` variant for
+external-allocator-backed strings. H.6–H.10 remain NOT STARTED.
+Updated 2026-07-14 with H.4 reference system and H.5 missing C API functions.
 
 **Scope (portability, API completeness, stub elimination):**
 
@@ -386,55 +388,56 @@ Updated 2026-07-14 with H.1/H.2/H.3 confirmed done.
 | `file:setvbuf` | ✅ real buffering (rev 66) |
 | `file:read("*n")` | ✅ ported PUC-Rio `read_number`; `LStream.unget` pushback (rev 67) |
 
-### H.4 — Reference system (MEDIUM priority) — NOT STARTED
+### H.4 — Reference system (MEDIUM priority) — ✅ DONE (2026-07-14)
 
-The Lua C API provides a reference system (`luaL_ref`/`luaL_unref`) for storing values without pinning them to the stack:
+The Lua C API reference system (`luaL_ref`/`luaL_unref`) is implemented in `src/lauxlib.zig`:
 
-- `luaL_ref(L, t)` — creates a reference in table `t`, returns `int` reference key
-- `luaL_unref(L, t, ref)` — releases a reference
-- Constants `LUA_NOREF`, `LUA_REFNIL` must be exported
+- `luaL_ref(L, t)` — creates a reference in table `t` using a free-list chain (t[1] = head, freed slots link via t[slot])
+- `luaL_unref(L, t, ref)` — releases a reference back to the free list; no-op for negative refs
+- `LUA_NOREF` (= -2) and `LUA_REFNIL` (= -1) constants exported
+- 6 tests in `tests/test_basic.zig` cover the ref sequence, nil ref, free-list reuse, rawgeti retrieval, negative-ref no-op, and Lua-level interaction
 
 Port from `lua/lauxlib.c`. Needed by any C extension that persists Lua values.
 
 ### H.5 — Missing C API functions (MEDIUM priority)
 
-**Core API (`lua.h`):**
+**Core API (`lua.h`):** — ✅ DONE except `lua_pushexternalstring` (2026-07-14)
 
 | Function | Why needed | Status |
 |----------|------------|--------|
-| `lua_atpanic` | C API consumers need a panic handler for unprotected errors | ❌ missing |
-| `lua_version` | Version number query (returns `lua_Number`) | ❌ missing |
-| `lua_pushexternalstring` | Lua 5.5 new feature — push string backed by external allocator | ❌ missing |
-| `lua_numbertocstring` | Convert number to C string buffer (`LUA_N2SBUFFSZ`-sized) | ❌ missing |
+| `lua_atpanic` | C API consumers need a panic handler for unprotected errors | ✅ real impl — `global_State.panic` field added; returns previous handler |
+| `lua_version` | Version number query (returns `lua_Number`) | ✅ real impl — returns `LUA_VERSION_NUM` (505.0) |
+| `lua_pushexternalstring` | Lua 5.5 new feature — push string backed by external allocator | ❌ deferred — requires new `lua_TString` variant + external-allocator lifetime management |
+| `lua_numbertocstring` | Convert number to C string buffer (`LUA_N2SBUFFSZ`-sized) | ✅ real impl — formats via `std.fmt.bufPrint` into caller slice |
 
-**Auxlib (`lauxlib.h`):**
-
-| Function | Why needed | Status |
-|----------|------------|--------|
-| `luaL_checkversion_` / `luaL_checkversion` | Version/ABI check called by every library `open` function | ❌ missing |
-| `luaL_callmeta` | Calls a metamethod by name | ❌ missing |
-| `luaL_alloc` | Default allocator compatible with `lua_Alloc` typedef | ❌ missing |
-| `luaL_loadfilex` | Load file as Lua chunk (with mode) | ❌ missing |
-| `luaL_loadbufferx` | Load buffer as Lua chunk (with mode) | ❌ missing |
-| `luaL_loadstring` | Load string as Lua chunk | ❌ missing |
-| `luaL_makeseed` | Generate random seed for hashing | ❌ missing |
-| `luaL_getsubtable` | Get or create subtable in registry | ❌ missing |
-| `luaL_requiref` | Require library with C open function | ❌ missing |
-| `luaL_dofile` | Load and run file (macro in C) | ❌ missing |
-
-**Buffer auxlib functions:**
+**Auxlib (`lauxlib.h`):** — ✅ DONE (2026-07-14)
 
 | Function | Why needed | Status |
 |----------|------------|--------|
-| `luaL_addstring` | Add null-terminated string to buffer | ❌ missing |
-| `luaL_buffinitsize` | Init buffer with preallocated size | ❌ missing |
-| `luaL_prepbuffer` | Shortcut for `luaL_prepbuffsize(B, LUAL_BUFFERSIZE)` | ❌ missing |
-| `luaL_bufflen` | Return current buffer length | ❌ missing |
-| `luaL_buffaddr` | Return current buffer address | ❌ missing |
-| `luaL_buffsub` | Subtract from buffer length | ❌ missing |
+| `luaL_checkversion_` / `luaL_checkversion` | Version/ABI check called by every library `open` function | ✅ real impl — errors via `luaL_error` on mismatch |
+| `luaL_callmeta` | Calls a metamethod by name | ✅ real impl — returns 1 if called, 0 if absent |
+| `luaL_alloc` | Default allocator compatible with `lua_Alloc` typedef | ✅ real impl — C-ABI wrapper over `std.c.realloc`/`std.c.free` |
+| `luaL_loadfilex` | Load file as Lua chunk (with mode) | ✅ real impl — reads file via `std.Io`, `@`-prefixed chunk name |
+| `luaL_loadbufferx` | Load buffer as Lua chunk (with mode) | ✅ real impl — one-shot reader over the buffer slice |
+| `luaL_loadstring` | Load string as Lua chunk | ✅ real impl — delegates to `luaL_loadbufferx` with `"t"` mode |
+| `luaL_makeseed` | Generate random seed for hashing | ✅ real impl — mixes `L` and local-var addresses |
+| `luaL_getsubtable` | Get or create subtable in registry | ✅ real impl — returns 1 if found, 0 if created |
+| `luaL_requiref` | Require library with C open function | ✅ real impl — registers in `package.loaded`, optional global |
+| `luaL_dofile` | Load and run file (macro in C) | ✅ real impl — `luaL_loadfilex` + `lua_pcallk` |
+
+**Buffer auxlib functions:** — ✅ DONE (2026-07-14)
+
+| Function | Why needed | Status |
+|----------|------------|--------|
+| `luaL_addstring` | Add null-terminated string to buffer | ✅ real impl — delegates to `luaL_addlstring` |
+| `luaL_buffinitsize` | Init buffer with preallocated size | ✅ real impl — inits + reserves `sz` bytes |
+| `luaL_prepbuffer` | Shortcut for `luaL_prepbuffsize(B, LUAL_BUFFERSIZE)` | ✅ real impl — see `luaL_prepbuffsize` |
+| `luaL_bufflen` | Return current buffer length | ✅ real impl — `b.buf.items.len` |
+| `luaL_buffaddr` | Return current buffer address | ✅ real impl — `b.buf.items` slice |
+| `luaL_buffsub` | Subtract from buffer length | ✅ real impl — trims `b.buf.items.len` |
 
 Note: `luaL_buffinit`, `luaL_addlstring`, `luaL_addchar`, `luaL_addsize`, `luaL_prepbuffsize`,
-`luaL_addvalue`, `luaL_pushresult`, `luaL_pushresultsize` are already implemented in `lauxlib.zig`.
+`luaL_addvalue`, `luaL_pushresult`, `luaL_pushresultsize` were already implemented in `lauxlib.zig`.
 
 ### H.6 — CLI/REPL improvements (MEDIUM priority) — NOT STARTED
 

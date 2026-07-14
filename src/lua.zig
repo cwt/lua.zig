@@ -31,6 +31,7 @@ pub const LUA_OK: i32 = llimits.LUA_OK;
 pub const LUA_YIELD: i32 = llimits.LUA_YIELD;
 pub const LUA_ERRRUN: i32 = llimits.LUA_ERRRUN;
 pub const LUA_ERRMEM: i32 = llimits.LUA_ERRMEM;
+pub const LUA_ERRERR: i32 = llimits.LUA_ERRERR;
 pub const LUA_ERRSYNTAX: i32 = llimits.LUA_ERRSYNTAX;
 pub const LUA_MINSTACK: i32 = llimits.LUA_MINSTACK;
 pub const LUA_NUMTYPES: i32 = llimits.LUA_NUMTYPES;
@@ -130,6 +131,8 @@ pub const LUA_MASKRET: u32 = llimits.LUA_MASKRET;
 pub const LUA_MASKLINE: u32 = llimits.LUA_MASKLINE;
 pub const LUA_MASKCOUNT: u32 = llimits.LUA_MASKCOUNT;
 
+pub const LUA_VERSION_NUM: lua_Number = @as(f64, @floatFromInt(@as(usize, LUA_VERSION_MAJOR_N) * 100 + LUA_VERSION_MINOR_N));
+pub const LUA_N2SBUFFSZ: usize = 64;
 pub const LUA_COPYRIGHT = "Lua 5.5  Copyright (C) 1994-2026 Lua.org, PUC-Rio";
 pub const LUA_AUTHORS = "R. Ierusalimschy, L. H. de Figueiredo, W. Celes";
 pub const LUA_SIGNATURE = "\x1bLua";
@@ -569,6 +572,7 @@ pub const global_State = struct {
     mainthread: ?*lua_State = null,
     thread_list: ?*lua_State = null,
     clibs: std.ArrayList(*std.DynLib),
+    panic: ?lua_CFunction = null,
 };
 
 inline fn G(L: *lua_State) *global_State {
@@ -3149,6 +3153,35 @@ pub fn lua_stringtonumber(L: *lua_State, s: []const u8) usize {
     return j + 1;
 }
 
+/// Converts the number at stack index `idx` to a string and writes it into
+/// `buff`. Returns the number of bytes written (including a trailing null)
+/// on success, or 0 if the value is not a number. `buff` should be at least
+/// `LUA_N2SBUFFSZ` bytes.
+pub fn lua_numbertocstring(L: *lua_State, idx: i32, buff: []u8) usize {
+    const v = stackAt(L, idx);
+    switch (v) {
+        .number => |n| {
+            const s = std.fmt.bufPrint(buff, "{d}", .{n}) catch return 0;
+            if (s.len >= buff.len) return 0;
+            buff[s.len] = 0;
+            return s.len + 1;
+        },
+        else => return 0,
+    }
+}
+
+pub fn lua_atpanic(L: *lua_State, panicf: ?lua_CFunction) ?lua_CFunction {
+    const g = G(L);
+    const old = g.panic;
+    g.panic = panicf;
+    return old;
+}
+
+pub fn lua_version(L: *lua_State) lua_Number {
+    _ = L;
+    return LUA_VERSION_NUM;
+}
+
 pub fn lua_getallocf(L: *lua_State, ud: ?*?*anyopaque) lua_Alloc {
     const g = G(L);
     if (ud) |p| p.* = g.alloc_ud;
@@ -3281,7 +3314,7 @@ pub fn luaL_dostring(L: *lua_State, s: []const u8, name: []const u8) !i32 {
     return lua_pcallk(L, 0, LUA_MULTRET, 0, 0, null);
 }
 
-fn luaL_dostringReader(L: *lua_State, data: ?*anyopaque, size: ?*usize) ?[]const u8 {
+pub fn luaL_dostringReader(L: *lua_State, data: ?*anyopaque, size: ?*usize) ?[]const u8 {
     _ = L;
     const slice_ptr = @as(?*[]const u8, @ptrCast(@alignCast(data))) orelse return null;
     if (slice_ptr.*.len == 0) {

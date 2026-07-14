@@ -3649,3 +3649,282 @@ test "H.4 luaL_ref works via Lua code (internal C API interaction)" {
 
     lua.lua_settop(&L, 0);
 }
+
+// ===================================================================
+// Phase H.5 - Missing C API functions
+// ===================================================================
+
+test "H.5 lua_version returns the version number" {
+    const gpa = std.testing.allocator;
+    var L: lua.lua_State = undefined;
+    try lua.luaL_newstate(&L, gpa);
+    defer lua.lua_close(&L);
+
+    const ver = lua.lua_version(&L);
+    try std.testing.expectEqual(@as(f64, 505.0), ver);
+}
+
+test "H.5 lua_atpanic sets and returns old panic handler" {
+    const gpa = std.testing.allocator;
+    var L: lua.lua_State = undefined;
+    try lua.luaL_newstate(&L, gpa);
+    defer lua.lua_close(&L);
+
+    const old = lua.lua_atpanic(&L, null);
+    try std.testing.expectEqual(@as(?lua.lua_CFunction, null), old);
+
+    const handler: lua.lua_CFunction = struct {
+        fn panic(L_: *lua.lua_State) anyerror!i32 {
+            _ = L_;
+            return 0;
+        }
+    }.panic;
+    const prev = lua.lua_atpanic(&L, handler);
+    try std.testing.expectEqual(@as(?lua.lua_CFunction, null), prev);
+
+    // Setting it again should return the previously stored handler.
+    const prev2 = lua.lua_atpanic(&L, null);
+    try std.testing.expect(prev2 == handler);
+}
+
+test "H.5 lua_numbertocstring formats a number" {
+    const gpa = std.testing.allocator;
+    var L: lua.lua_State = undefined;
+    try lua.luaL_newstate(&L, gpa);
+    defer lua.lua_close(&L);
+
+    lua.lua_pushnumber(&L, 42.5);
+    var buf: [64]u8 = undefined;
+    const n = lua.lua_numbertocstring(&L, -1, &buf);
+    try std.testing.expect(n > 0);
+    const s = buf[0 .. n - 1];
+    try std.testing.expectEqualStrings("42.5", s);
+
+    lua.lua_settop(&L, 0);
+}
+
+test "H.5 lua_numbertocstring returns 0 for non-number" {
+    const gpa = std.testing.allocator;
+    var L: lua.lua_State = undefined;
+    try lua.luaL_newstate(&L, gpa);
+    defer lua.lua_close(&L);
+
+    _ = lua.lua_pushstring(&L, "not a number");
+    var buf: [64]u8 = undefined;
+    const n = lua.lua_numbertocstring(&L, -1, &buf);
+    try std.testing.expectEqual(@as(usize, 0), n);
+
+    lua.lua_settop(&L, 0);
+}
+
+test "H.5 luaL_loadstring loads a Lua chunk" {
+    const gpa = std.testing.allocator;
+    var L: lua.lua_State = undefined;
+    try lua.luaL_newstate(&L, gpa);
+    defer lua.lua_close(&L);
+
+    const status = lauxlib.luaL_loadstring(&L, "return 42");
+    try std.testing.expectEqual(@as(i32, lua.LUA_OK), status);
+
+    const call_status = lua.lua_pcallk(&L, 0, lua.LUA_MULTRET, 0, 0, null);
+    try std.testing.expectEqual(@as(i32, lua.LUA_OK), call_status);
+
+    const val = lua.lua_tointeger(&L, -1) orelse 0;
+    try std.testing.expectEqual(@as(i64, 42), val);
+
+    lua.lua_settop(&L, 0);
+}
+
+test "H.5 luaL_loadbufferx loads a Lua chunk from a buffer" {
+    const gpa = std.testing.allocator;
+    var L: lua.lua_State = undefined;
+    try lua.luaL_newstate(&L, gpa);
+    defer lua.lua_close(&L);
+
+    const chunk = "return 'hello'";
+    const status = lauxlib.luaL_loadbufferx(&L, chunk, "=(buffer)", "t");
+    try std.testing.expectEqual(@as(i32, lua.LUA_OK), status);
+
+    const call_status = lua.lua_pcallk(&L, 0, lua.LUA_MULTRET, 0, 0, null);
+    try std.testing.expectEqual(@as(i32, lua.LUA_OK), call_status);
+
+    const s = lua.lua_tostring(&L, -1) orelse "";
+    try std.testing.expectEqualStrings("hello", s);
+
+    lua.lua_settop(&L, 0);
+}
+
+test "H.5 luaL_getsubtable creates or gets a subtable" {
+    const gpa = std.testing.allocator;
+    var L: lua.lua_State = undefined;
+    try lua.luaL_newstate(&L, gpa);
+    defer lua.lua_close(&L);
+
+    lua.lua_createtable(&L, 0, 0);
+    const t = lua.lua_gettop(&L);
+
+    const created = try lauxlib.luaL_getsubtable(&L, t, "sub");
+    try std.testing.expectEqual(@as(i32, 0), created);
+    lua.lua_pop(&L, 1);
+
+    const found = try lauxlib.luaL_getsubtable(&L, t, "sub");
+    try std.testing.expectEqual(@as(i32, 1), found);
+    lua.lua_pop(&L, 1);
+
+    lua.lua_settop(&L, 0);
+}
+
+test "H.5 luaL_dofile fails gracefully for nonexistent file" {
+    const gpa = std.testing.allocator;
+    var L: lua.lua_State = undefined;
+    try lua.luaL_newstate(&L, gpa);
+    defer lua.lua_close(&L);
+
+    const status = lauxlib.luaL_dofile(&L, "/nonexistent/file.lua");
+    try std.testing.expect(status != lua.LUA_OK);
+
+    lua.lua_settop(&L, 0);
+}
+
+test "H.5 luaL_makeseed returns a non-zero seed" {
+    const gpa = std.testing.allocator;
+    var L: lua.lua_State = undefined;
+    try lua.luaL_newstate(&L, gpa);
+    defer lua.lua_close(&L);
+
+    const seed = lauxlib.luaL_makeseed(&L);
+    try std.testing.expect(seed != 0);
+}
+
+test "H.5 luaL_checkversion_ succeeds for matching version" {
+    const gpa = std.testing.allocator;
+    var L: lua.lua_State = undefined;
+    try lua.luaL_newstate(&L, gpa);
+    defer lua.lua_close(&L);
+
+    try lauxlib.luaL_checkversion_(&L, 505.0, lauxlib.LUAL_NUMSIZES);
+}
+
+test "H.5 luaL_checkversion convenience wrapper succeeds" {
+    const gpa = std.testing.allocator;
+    var L: lua.lua_State = undefined;
+    try lua.luaL_newstate(&L, gpa);
+    defer lua.lua_close(&L);
+
+    try lauxlib.luaL_checkversion(&L);
+}
+
+test "H.5 luaL_loadfilex loads and runs a real file" {
+    const gpa = std.testing.allocator;
+    var L: lua.lua_State = undefined;
+    try lua.luaL_newstate(&L, gpa);
+    defer lua.lua_close(&L);
+
+    var threaded = std.Io.Threaded.init(gpa, .{});
+    const io = threaded.io();
+    defer threaded.deinit();
+
+    const tmp_path = "test_h5_loadfile_tmp.lua";
+    const content = "return 99";
+    try std.Io.Dir.cwd().writeFile(io, .{ .sub_path = tmp_path, .data = content });
+    defer std.Io.Dir.cwd().deleteFile(io, tmp_path) catch {};
+
+    const status = lauxlib.luaL_loadfilex(&L, tmp_path, "t");
+    try std.testing.expectEqual(@as(i32, lua.LUA_OK), status);
+
+    const call_status = lua.lua_pcallk(&L, 0, lua.LUA_MULTRET, 0, 0, null);
+    try std.testing.expectEqual(@as(i32, lua.LUA_OK), call_status);
+
+    const val = lua.lua_tointeger(&L, -1) orelse 0;
+    try std.testing.expectEqual(@as(i64, 99), val);
+
+    lua.lua_settop(&L, 0);
+}
+
+test "H.5 luaL_callmeta calls __tostring on a table with metatable" {
+    const gpa = std.testing.allocator;
+    var L: lua.lua_State = undefined;
+    try lua.luaL_newstate(&L, gpa);
+    defer lua.lua_close(&L);
+
+    // Create a table with a __tostring metamethod, using the C API directly.
+    const Meta_tostr: lua.lua_CFunction = struct {
+        fn tostr(L_: *lua.lua_State) anyerror!i32 {
+            _ = lua.lua_pushstring(L_, "custom");
+            return 1;
+        }
+    }.tostr;
+
+    lua.lua_createtable(&L, 0, 0); // the table
+    lua.lua_createtable(&L, 0, 1); // the metatable
+    lua.lua_pushcfunction(&L, Meta_tostr);
+    try lua.lua_setfield(&L, -2, "__tostring");
+    _ = lua.lua_setmetatable(&L, -2); // attach metatable to the table
+
+    const called = try lauxlib.luaL_callmeta(&L, -1, "__tostring");
+    try std.testing.expectEqual(@as(i32, 1), called);
+    const s = lua.lua_tostring(&L, -1) orelse "";
+    try std.testing.expectEqualStrings("custom", s);
+
+    lua.lua_settop(&L, 0);
+}
+
+test "H.5 luaL_callmeta returns 0 when no metamethod" {
+    const gpa = std.testing.allocator;
+    var L: lua.lua_State = undefined;
+    try lua.luaL_newstate(&L, gpa);
+    defer lua.lua_close(&L);
+
+    lua.lua_createtable(&L, 0, 0);
+    const called = try lauxlib.luaL_callmeta(&L, -1, "__nonexistent");
+    try std.testing.expectEqual(@as(i32, 0), called);
+
+    lua.lua_settop(&L, 0);
+}
+
+test "H.5 luaL_buffer functions: addstring, bufflen, buffaddr, buffsub" {
+    const gpa = std.testing.allocator;
+    var L: lua.lua_State = undefined;
+    try lua.luaL_newstate(&L, gpa);
+    defer lua.lua_close(&L);
+
+    var b: lauxlib.luaL_Buffer = .{};
+    lauxlib.luaL_buffinit(&L, &b);
+    defer b.buf.deinit(L.allocator);
+
+    try lauxlib.luaL_addstring(&L, &b, "hello");
+    try lauxlib.luaL_addstring(&L, &b, " world");
+
+    try std.testing.expectEqual(@as(usize, 11), lauxlib.luaL_bufflen(&b));
+
+    const addr = lauxlib.luaL_buffaddr(&b);
+    try std.testing.expectEqualStrings("hello world", addr);
+
+    lauxlib.luaL_buffsub(&b, 6);
+    try std.testing.expectEqual(@as(usize, 5), lauxlib.luaL_bufflen(&b));
+}
+
+test "H.5 luaL_buffinitsize and luaL_prepbuffer reserve capacity" {
+    const gpa = std.testing.allocator;
+    var L: lua.lua_State = undefined;
+    try lua.luaL_newstate(&L, gpa);
+    defer lua.lua_close(&L);
+
+    var b: lauxlib.luaL_Buffer = .{};
+    const slice = try lauxlib.luaL_buffinitsize(&L, &b, 32);
+    defer b.buf.deinit(L.allocator);
+
+    try std.testing.expectEqual(@as(usize, 0), lauxlib.luaL_bufflen(&b));
+    try std.testing.expect(slice.len >= 32);
+
+    // Write into the prepared buffer, then commit via luaL_addsize.
+    @memcpy(slice[0..5], "hello");
+    lauxlib.luaL_addsize(&b, 5);
+    try std.testing.expectEqual(@as(usize, 5), lauxlib.luaL_bufflen(&b));
+    const addr = lauxlib.luaL_buffaddr(&b);
+    try std.testing.expectEqualStrings("hello", addr);
+
+    // luaL_prepbuffer should reserve additional capacity (>= 1 byte).
+    const p = try lauxlib.luaL_prepbuffer(&L, &b);
+    try std.testing.expect(p.len >= 1);
+}

@@ -164,19 +164,32 @@ Silent no-ops that produce wrong results:
 - `os_time` — table form (requires year/month/day) via `mktime`; non-table falls back to `clock_gettime`.
 - Note: `std.c` on this Zig version exposes only `setlocale`/`LC`/`time_t` (no `time`/`strftime`/`mktime`/`localtime_r`/`gmtime_r`/`tm`), so those are bound directly with `extern "c"`.
 
-### H.3 — iolib stubs (LOW priority)
-- `io.flush` / `file:flush` — no-op
-- `file:setvbuf` — no-op
+### H.3 — iolib stubs (LOW priority) ✅ DONE (revs 66-67)
+- `io.flush` / `file:flush` — real flush
+- `file:setvbuf` — real buffering
+- `file:read("*n")` — ported PUC-Rio `read_number`
 
 ### H.4 — Reference system (MEDIUM priority) ✅ DONE (2026-07-14)
 - `luaL_ref` / `luaL_unref` — needed by C extensions
 - `LUA_NOREF` / `LUA_REFNIL` constants
 - Port from `lua/lauxlib.c`
 
-### H.5 — Missing C API functions (MEDIUM priority)
-- `lua_atpanic`, `lua_version`, `lua_pushexternalstring`, `lua_numbertocstring`
-- `luaL_checkversion_`, `luaL_callmeta`, `luaL_alloc`, `luaL_loadfilex`, `luaL_loadbufferx`, `luaL_loadstring`, `luaL_makeseed`, `luaL_getsubtable`, `luaL_requiref`, `luaL_dofile`
-- Buffer aux: `luaL_addstring`, `luaL_buffinitsize`, `luaL_prepbuffer`, `luaL_bufflen`, `luaL_buffaddr`, `luaL_buffsub`
+### H.5 — Missing C API functions (MEDIUM priority) ✅ DONE except `lua_pushexternalstring` (2026-07-14)
+- `lua_atpanic` ✅ (`global_State.panic` added)
+- `lua_version` ✅ (returns `LUA_VERSION_NUM` = 505.0)
+- `lua_pushexternalstring` ❌ deferred (needs new `lua_TString` variant)
+- `lua_numbertocstring` ✅
+- `luaL_checkversion_` ✅
+- `luaL_callmeta` ✅
+- `luaL_alloc` ✅
+- `luaL_loadfilex` ✅ (reads via `std.Io`)
+- `luaL_loadbufferx` ✅
+- `luaL_loadstring` ✅
+- `luaL_makeseed` ✅
+- `luaL_getsubtable` ✅
+- `luaL_requiref` ✅
+- `luaL_dofile` ✅
+- Buffer aux: `luaL_addstring` ✅, `luaL_buffinitsize` ✅, `luaL_prepbuffer` ✅, `luaL_bufflen` ✅, `luaL_buffaddr` ✅, `luaL_buffsub` ✅
 
 ### H.6 — CLI/REPL improvements (MEDIUM priority)
 - `-e`, `-l`, `-i`, `-v` flags
@@ -192,7 +205,11 @@ Silent no-ops that produce wrong results:
 `lua_newuserdata`, `lua_getuservalue`, `lua_setuservalue`, `lua_resetthread`
 
 ### H.9 — Missing constants and exports (LOW priority)
-`LUA_GNAME`, `LUA_ERRFILE`, `LUA_LOADED_TABLE`, `LUA_PRELOAD_TABLE`, `LUA_NOREF`, `LUA_REFNIL`, `LUAL_NUMSIZES`, `LUA_COPYRIGHT`, `LUA_AUTHORS`, `lua_ident`
+- `LUA_GNAME` ✅, `LUA_ERRFILE` ✅, `LUA_LOADED_TABLE` ✅, `LUA_PRELOAD_TABLE` ✅ (added in H.5)
+- `LUA_NOREF` ✅, `LUA_REFNIL` ✅ (H.4)
+- `LUAL_NUMSIZES` ✅ (H.5)
+- `LUA_COPYRIGHT` ✅, `LUA_AUTHORS` ✅ (already present)
+- `lua_ident` ❌ not yet exported
 
 ### H.10 — GC completeness (LOW priority)
 - `LUA_GCPARAM` option 9 not handled

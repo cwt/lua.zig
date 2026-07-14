@@ -6,6 +6,7 @@
 
 const std = @import("std");
 const lua = @import("lua.zig");
+const luaconf = @import("luaconf.zig");
 const lprefix = @import("lprefix.zig");
 const llimits = @import("llimits.zig");
 const lualib = @import("lualib.zig");
@@ -421,6 +422,159 @@ pub fn luaL_unref(L: *lua.lua_State, t: i32, ref: i32) void {
 }
 
 // ===================================================================
+// Version check, callmeta, allocator
+// ===================================================================
+
+pub const LUAL_NUMSIZES: usize = @sizeOf(lua.lua_Integer) * 16 + @sizeOf(lua.lua_Number);
+pub const LUA_ERRFILE: i32 = 5;
+pub const LUA_GNAME: []const u8 = "_G";
+pub const LUA_LOADED_TABLE: []const u8 = "_LOADED";
+pub const LUA_PRELOAD_TABLE: []const u8 = "_PRELOAD";
+
+/// Version/ABI check called by every library `open_` function.
+pub fn luaL_checkversion_(L: *lua.lua_State, ver: lua.lua_Number, sz: usize) !void {
+    const v = lua.lua_version(L);
+    if (sz != LUAL_NUMSIZES)
+        return luaL_error(L, "core and library have incompatible numeric types");
+    if (v != ver)
+        return luaL_error(L, "version mismatch");
+}
+
+/// Convenience wrapper around `luaL_checkversion_` with the default version
+/// and numeric-sizes constants.
+pub fn luaL_checkversion(L: *lua.lua_State) !void {
+    return luaL_checkversion_(L, lua.LUA_VERSION_NUM, LUAL_NUMSIZES);
+}
+
+/// Calls a metamethod by name. Returns 1 if the metamethod was found and
+/// called, 0 otherwise.
+pub fn luaL_callmeta(L: *lua.lua_State, obj: i32, event: []const u8) !i32 {
+    const abs_obj = lua.lua_absindex(L, obj);
+    if (luaL_getmetafield(L, abs_obj, event) == lua.LUA_TNIL) return 0;
+    lua.lua_pushvalue(L, abs_obj);
+    try lua.lua_call(L, 1, 1);
+    return 1;
+}
+
+/// Default C-ABI allocator compatible with `lua_Alloc` typedef.
+pub fn luaL_alloc(ud: ?*anyopaque, ptr: ?*anyopaque, osize: usize, nsize: usize) ?*anyopaque {
+    _ = ud;
+    _ = osize;
+    if (nsize == 0) {
+        std.c.free(ptr);
+        return null;
+    }
+    return std.c.realloc(ptr, nsize);
+}
+
+// ===================================================================
+// Load functions (luaL_loadfilex, luaL_loadbufferx, luaL_loadstring)
+// ===================================================================
+
+const LoadS = struct {
+    s: []const u8,
+    done: bool = false,
+};
+
+fn getS(L: *lua.lua_State, ud: ?*anyopaque, size: ?*usize) ?[]const u8 {
+    _ = L;
+    const ls = @as(?*LoadS, @ptrCast(@alignCast(ud))) orelse return null;
+    if (ls.done) return null;
+    ls.done = true;
+    if (size) |s| s.* = ls.s.len;
+    return ls.s;
+}
+
+/// Load file as Lua chunk (with mode). If `filename` is null, reads from
+/// stdin (not yet implemented — use named files).
+pub fn luaL_loadfilex(L: *lua.lua_State, filename: ?[]const u8, mode: []const u8) i32 {
+    const g = L.l_G orelse return lua.LUA_ERRERR;
+
+    const chunkname = if (filename) |fn_| blk: {
+        var buf: [512]u8 = undefined;
+        const s = std.fmt.bufPrint(&buf, "@{s}", .{fn_}) catch "=stdin";
+        break :blk s;
+    } else "=stdin";
+
+    if (filename) |fn_| {
+        const content = std.Io.Dir.cwd().readFileAlloc(g.io, fn_, L.allocator, .unlimited) catch {
+            _ = lua.lua_pushstring(L, "cannot open file") orelse {};
+            return lua.LUA_ERRERR;
+        };
+        defer L.allocator.free(content);
+
+        var ls = LoadS{ .s = content, .done = false };
+        return lua.lua_load(L, getS, @as(?*anyopaque, @ptrCast(&ls)), chunkname, mode);
+    }
+
+    // stdin: not yet supported via reader (would need a streaming reader).
+    _ = lua.lua_pushstring(L, "stdin not supported") orelse {};
+    return lua.LUA_ERRERR;
+}
+
+/// Load buffer as Lua chunk (with mode).
+pub fn luaL_loadbufferx(L: *lua.lua_State, buff: []const u8, name: []const u8, mode: []const u8) i32 {
+    var ls = LoadS{ .s = buff, .done = false };
+    return lua.lua_load(L, getS, @as(?*anyopaque, @ptrCast(&ls)), name, mode);
+}
+
+/// Load string as Lua chunk.
+pub fn luaL_loadstring(L: *lua.lua_State, s: []const u8) i32 {
+    return luaL_loadbufferx(L, s, s, "t");
+}
+
+// ===================================================================
+// Subtable, require, dofile
+// ===================================================================
+
+/// Get or create subtable in registry (or any table at `idx`).
+pub fn luaL_getsubtable(L: *lua.lua_State, idx: i32, fname: []const u8) !i32 {
+    if (try lua.lua_getfield(L, idx, fname) == lua.LUA_TTABLE) return 1;
+    lua.lua_pop(L, 1);
+    const abs_idx = lua.lua_absindex(L, idx);
+    lua.lua_createtable(L, 0, 0);
+    lua.lua_pushvalue(L, -1);
+    try lua.lua_setfield(L, abs_idx, fname);
+    return 0;
+}
+
+/// Require library with C open function. Registers the module in
+/// `package.loaded` and optionally in the global table.
+pub fn luaL_requiref(L: *lua.lua_State, modname: []const u8, openf: lua.lua_CFunction, glb: i32) !void {
+    _ = try luaL_getsubtable(L, lua.LUA_REGISTRYINDEX, LUA_LOADED_TABLE);
+    _ = lua.lua_getfield(L, -1, modname);
+    if (lua.lua_toboolean(L, -1) == 0) {
+        lua.lua_pop(L, 1);
+        lua.lua_pushcfunction(L, openf);
+        _ = lua.lua_pushstring(L, modname);
+        try lua.lua_call(L, 1, 1);
+        lua.lua_pushvalue(L, -1);
+        lua.lua_setfield(L, -3, modname);
+    }
+    lua.lua_remove(L, -2);
+    if (glb != 0) {
+        lua.lua_pushvalue(L, -1);
+        lua.lua_setglobal(L, modname);
+    }
+}
+
+/// Load and run a file.
+pub fn luaL_dofile(L: *lua.lua_State, filename: ?[]const u8) i32 {
+    const status = luaL_loadfilex(L, filename, "t");
+    if (status != lua.LUA_OK) return status;
+    return lua.lua_pcallk(L, 0, lua.LUA_MULTRET, 0, 0, null);
+}
+
+/// Generate a random seed for hashing.
+pub fn luaL_makeseed(L: *lua.lua_State) u32 {
+    // Use the address of the state and the address of a local variable as
+    // entropy (the C reference uses *(unsigned int*)(&L) plus extra mixing).
+    var local: usize = undefined;
+    const addr_seed = @intFromPtr(L) ^ @intFromPtr(&local);
+    return @truncate(addr_seed);
+}
+
+// ===================================================================
 // String buffer (luaL_Buffer)
 // ===================================================================
 
@@ -442,6 +596,31 @@ pub fn luaL_addchar(L: *lua.lua_State, b: *luaL_Buffer, c: u8) !void {
 
 pub fn luaL_addsize(b: *luaL_Buffer, n: usize) void {
     b.buf.items.len += n;
+}
+
+pub fn luaL_addstring(L: *lua.lua_State, b: *luaL_Buffer, s: []const u8) !void {
+    try luaL_addlstring(L, b, s);
+}
+
+pub fn luaL_buffinitsize(L: *lua.lua_State, b: *luaL_Buffer, sz: usize) ![]u8 {
+    b.* = .{};
+    return luaL_prepbuffsize(L, b, sz);
+}
+
+pub fn luaL_prepbuffer(L: *lua.lua_State, b: *luaL_Buffer) ![]u8 {
+    return luaL_prepbuffsize(L, b, luaconf.LUAL_BUFFERSIZE);
+}
+
+pub fn luaL_bufflen(b: *const luaL_Buffer) usize {
+    return b.buf.items.len;
+}
+
+pub fn luaL_buffaddr(b: *const luaL_Buffer) []const u8 {
+    return b.buf.items;
+}
+
+pub fn luaL_buffsub(b: *luaL_Buffer, s: usize) void {
+    b.buf.items.len -= s;
 }
 
 pub fn luaL_prepbuffsize(L: *lua.lua_State, b: *luaL_Buffer, sz: usize) ![]u8 {
