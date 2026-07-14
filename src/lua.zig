@@ -3294,7 +3294,8 @@ fn luaL_dostringReader(L: *lua_State, data: ?*anyopaque, size: ?*usize) ?[]const
     return chunk;
 }
 
-pub const luaL_openlibs = @import("lauxlib.zig").luaL_openlibs;
+pub const lauxlib = @import("lauxlib.zig");
+pub const luaL_openlibs = lauxlib.luaL_openlibs;
 pub const luaL_newmetatable = @import("lauxlib.zig").luaL_newmetatable;
 pub const luaL_setmetatable = @import("lauxlib.zig").luaL_setmetatable;
 pub const luaL_testudata = @import("lauxlib.zig").luaL_testudata;

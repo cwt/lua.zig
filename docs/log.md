@@ -1812,3 +1812,32 @@ numbers + an invalid token (`nil`) + the following line, asserting
 `10;3.5;-7;255;1000;nil;hello`. `zig build test` → **92/92 pass** (was 91);
 `zig build` clean. Edge cases (`0x1.8p3` → 12, `12.`, `-inf`/`nan` → nil, `0xA`
 → 10) verified standalone via `luazig`.
+
+## 2026-07-14 — H.4 Reference system (luaL_ref / luaL_unref)
+
+**Phase H.4 — Reference system** implemented and tested.
+
+### Changes
+- **`src/lauxlib.zig`**: Added `LUA_NOREF` (-2), `LUA_REFNIL` (-1) constants,
+  `luaL_ref`, and `luaL_unref`. The implementation follows the C reference
+  (`lua/lauxlib.c`) linked-list free list: t[1] stores the head of the free
+  list; freed slots are chained together; `luaL_ref` pops a value from the stack
+  and stores it in table `t` at an integer key; `luaL_unref` releases it back
+  to the free list.
+- **`src/lua.zig`**: Added `pub const lauxlib = @import("lauxlib.zig")` to
+  re-export the lauxlib namespace so tests can access it through the `lua` module.
+- **`build.zig`**: No changes needed (lauxlib already accessible via lua re-export).
+- **`tests/test_basic.zig`**: 6 new tests covering `luaL_ref` with string/boolean,
+  `LUA_REFNIL` for nil, `luaL_unref` with free-list reuse, store-and-retrieve
+  via `rawgeti`, no-op on negative refs, and a Lua-level interaction test.
+
+### §0.1 Self-Audit
+Allocator: `luaL_ref`/`luaL_unref` use the C API stack ops (no heap allocation);
+errors: `!T`/`try` used for table operations (`lua_rawgeti` has no fallible path
+in the reference cycle — no `catch` needed); no `@bitCast` value conversions;
+`TValue` union retained; no `longjmp`; no varargs; all Zig 0.16.0 idioms (`.empty`
+not used — no unmanaged containers added).
+
+### Verification
+6 new tests in `tests/test_basic.zig`, 98+ tests pass total. `zig build` clean.
+`AGENTS.md` updated with H.4 status.

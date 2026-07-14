@@ -168,7 +168,7 @@ Silent no-ops that produce wrong results:
 - `io.flush` / `file:flush` — no-op
 - `file:setvbuf` — no-op
 
-### H.4 — Reference system (MEDIUM priority)
+### H.4 — Reference system (MEDIUM priority) ✅ DONE (2026-07-14)
 - `luaL_ref` / `luaL_unref` — needed by C extensions
 - `LUA_NOREF` / `LUA_REFNIL` constants
 - Port from `lua/lauxlib.c`

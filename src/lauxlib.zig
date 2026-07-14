@@ -359,6 +359,68 @@ pub fn luaL_traceback(L: *lua.lua_State, L2: *lua.lua_State, msg: []const u8, le
 }
 
 // ===================================================================
+// Reference system (luaL_ref / luaL_unref)
+// ===================================================================
+
+pub const LUA_NOREF: i32 = -2;
+pub const LUA_REFNIL: i32 = -1;
+
+/// Creates a reference in table `t` for the value at the top of the stack.
+/// Pops the value from the stack (unless it's nil, in which case LUA_REFNIL
+/// is returned and the stack is still popped).
+pub fn luaL_ref(L: *lua.lua_State, t: i32) i32 {
+    // If the top value is nil, return the fixed nil reference.
+    if (lua.lua_isnil(L, -1) != 0) {
+        lua.lua_pop(L, 1);
+        return LUA_REFNIL;
+    }
+
+    const abs_t = lua.lua_absindex(L, t);
+
+    // t[1] stores the head of the free-list linked chain.
+    // If t[1] is a number, it's the head of the free list.
+    // Otherwise (first access), we need to initialize.
+    const free_head: i64 = if (lua.lua_rawgeti(L, abs_t, 1) == lua.LUA_TNUMBER)
+        lua.lua_tointeger(L, -1) orelse 0
+    else blk: {
+        // First access: initialize empty free list (t[1] = 0).
+        lua.lua_pushinteger(L, 0);
+        lua.lua_rawseti(L, abs_t, 1);
+        break :blk 0;
+    };
+    lua.lua_pop(L, 1); // Remove t[1] from the stack.
+
+    const ref: i64 = if (free_head != 0) blk: {
+        // Pop the next free slot from the list.
+        // t[ref] holds the next free index; move it to t[1].
+        _ = lua.lua_rawgeti(L, abs_t, free_head);
+        lua.lua_rawseti(L, abs_t, 1); // t[1] = t[ref]
+        break :blk free_head;
+    } else blk: {
+        // No free slots: allocate a new one past the end of the table.
+        const raw_len = lua.lua_rawlen(L, abs_t);
+        break :blk @as(i64, @intCast(raw_len)) + 1;
+    };
+
+    // Store the value (currently on top of stack) at the reference slot.
+    lua.lua_rawseti(L, abs_t, ref);
+
+    return @as(i32, @intCast(ref));
+}
+
+/// Releases a reference previously created by `luaL_ref`.
+/// The freed slot is added to the free list and will be reused.
+pub fn luaL_unref(L: *lua.lua_State, t: i32, ref: i32) void {
+    if (ref < 0) return;
+    const abs_t = lua.lua_absindex(L, t);
+    // Push the current free-list head (t[1]) and link the freed slot.
+    _ = lua.lua_rawgeti(L, abs_t, 1); // push t[1] (old head)
+    lua.lua_rawseti(L, abs_t, @intCast(ref)); // t[ref] = old head
+    lua.lua_pushinteger(L, @intCast(ref));
+    lua.lua_rawseti(L, abs_t, 1); // t[1] = ref (new head)
+}
+
+// ===================================================================
 // String buffer (luaL_Buffer)
 // ===================================================================
 
