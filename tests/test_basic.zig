@@ -3928,3 +3928,93 @@ test "H.5 luaL_buffinitsize and luaL_prepbuffer reserve capacity" {
     const p = try lauxlib.luaL_prepbuffer(&L, &b);
     try std.testing.expect(p.len >= 1);
 }
+
+test "H.6 luaL_tolstring pushes a copy (string contract)" {
+    const gpa = std.testing.allocator;
+    var L: lua.lua_State = undefined;
+    try lua.luaL_newstate(&L, gpa);
+    defer lua.lua_close(&L);
+
+    _ = lua.lua_pushstring(&L, "hello");
+    const top_before = lua.lua_gettop(&L);
+    const s = lauxlib.luaL_tolstring(&L, -1, null);
+    try std.testing.expect(s != null);
+    try std.testing.expectEqualStrings("hello", s.?);
+    const top_after = lua.lua_gettop(&L);
+    // luaL_tolstring must always leave exactly one value on top. For a string
+    // it pushes a copy, so the stack grows by one and the original remains.
+    try std.testing.expectEqual(@as(i32, top_before + 1), top_after);
+    lua.lua_pop(&L, 1);
+    try std.testing.expectEqualStrings("hello", lua.lua_tostring(&L, -1).?);
+}
+
+test "H.6 CLI luazig behaves like the reference interpreter" {
+    const gpa = std.testing.allocator;
+    // Build a spawn-capable I/O instance (the global single-threaded one uses a
+    // failing allocator, so it cannot spawn child processes).
+    var threaded = std.Io.Threaded.init(gpa, .{});
+    defer threaded.deinit();
+    const io = threaded.io();
+
+    // `zig build test` builds the interpreter into zig-out/bin/luazig.
+    const bin = "zig-out/bin/luazig";
+    std.Io.Dir.cwd().access(io, bin, .{}) catch |err| switch (err) {
+        error.FileNotFound => return, // binary not built; skip
+        else => return err,
+    };
+
+    const runCapture = struct {
+        fn runCapture(ally: std.mem.Allocator, i: std.Io, argv: []const []const u8) ![]u8 {
+            const result = try std.process.run(ally, i, .{ .argv = argv });
+            ally.free(result.stderr);
+            return result.stdout; // caller frees
+        }
+    }.runCapture;
+
+    // -e "print(42)" => "42\n"
+    {
+        const out = try runCapture(gpa, io, &[_][]const u8{ bin, "-e", "print(42)" });
+        defer gpa.free(out);
+        try std.testing.expectEqualStrings("42\n", out);
+    }
+
+    // arithmetic via -e
+    {
+        const out = try runCapture(gpa, io, &[_][]const u8{ bin, "-e", "print(1+2)" });
+        defer gpa.free(out);
+        try std.testing.expectEqualStrings("3\n", out);
+    }
+
+    // -v prints the Lua 5.5 copyright banner
+    {
+        const out = try runCapture(gpa, io, &[_][]const u8{ bin, "-v" });
+        defer gpa.free(out);
+        try std.testing.expect(std.mem.indexOf(u8, out, "Lua 5.5") != null);
+    }
+
+    // -l math loads the math library; -e then uses it
+    {
+        const out = try runCapture(gpa, io, &[_][]const u8{ bin, "-l", "math", "-e", "print(math.pi)" });
+        defer gpa.free(out);
+        try std.testing.expect(std.mem.indexOf(u8, out, "3.14159265358979") != null);
+    }
+
+    // script file
+    {
+        const tmp = try std.Io.Dir.cwd().createFile(io, "h6_cli_tmp.lua", .{});
+        defer std.Io.Dir.cwd().deleteFile(io, "h6_cli_tmp.lua") catch {};
+        defer tmp.close(io);
+        try tmp.writeStreamingAll(io, "print(\"hi\")");
+        const out = try runCapture(gpa, io, &[_][]const u8{ bin, "h6_cli_tmp.lua" });
+        defer gpa.free(out);
+        try std.testing.expectEqualStrings("hi\n", out);
+    }
+
+    // -- stops option parsing: "-e" after -- is a script name, not an option
+    {
+        const out = try runCapture(gpa, io, &[_][]const u8{ bin, "--", "-e", "print(7)" });
+        defer gpa.free(out);
+        try std.testing.expect(std.mem.indexOf(u8, out, "7") == null);
+    }
+}
+

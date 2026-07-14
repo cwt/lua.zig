@@ -494,16 +494,23 @@ fn utf8esc(buff: *[4]u8, x: u32) u8 {
 // Error reporting
 // ---------------------------------------------------------------------------
 fn lexerror(ls: *LexState, msg: []const u8) LexError {
-    ls.errmsg = msg;
+    // Build the reference-style "<msg> near <token>" message and persist it in
+    // the lexer's scratch buffer. That buffer outlives this call (it is freed
+    // by luaD_protectedparser, or by a direct caller's ls.buff.deinit), so the
+    // caller's msg may point into a stack buffer (copied here synchronously).
+    // At EOF the token is TK_EOS, whose token2str is "<eof>", which is what the
+    // REPL uses to detect incomplete input.
+    const token_str = token2str(ls.t.token);
+    ls.buff.clearRetainingCapacity();
+    ls.buff.appendSlice(ls.allocator, msg) catch {};
+    ls.buff.appendSlice(ls.allocator, " near ") catch {};
+    ls.buff.appendSlice(ls.allocator, token_str) catch {};
+    ls.errmsg = ls.buff.items;
+    ls.errmsg_allocated = false;
     return error.SyntaxError;
 }
 
 pub fn luaX_syntaxerror(ls: *LexState, msg: []const u8) LexError {
-    return lexerror(ls, msg);
-}
-
-pub fn luaX_syntaxerror_alloc(ls: *LexState, msg: []const u8) LexError {
-    ls.errmsg_allocated = true;
     return lexerror(ls, msg);
 }
 

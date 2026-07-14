@@ -1035,12 +1035,7 @@ fn primaryexp(ls: *llex.LexState, v: *expdesc) !void {
         },
         llex.TK_NAME => try singlevar(ls, v),
         else => {
-            const tok_str = llex.token2str(ls.t.token);
-            if (std.fmt.allocPrint(ls.allocator, "unexpected symbol near '{s}'", .{tok_str})) |msg| {
-                return llex.luaX_syntaxerror_alloc(ls, msg);
-            } else |_| {
-                return llex.luaX_syntaxerror(ls, "unexpected symbol");
-            }
+            return llex.luaX_syntaxerror(ls, "unexpected symbol");
         },
     }
 }

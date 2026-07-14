@@ -339,7 +339,8 @@ Phases A–F are **complete**: the port runs precompiled Lua 5.5.1 bytecode thro
 
 ## 8. What to work on next
 
-All phases A–G are **done** (VM, runtime, compiler, and all 10 standard libraries, 73/73 tests passing, zero leaks). The port is fully functional and can run Lua source text directly.
+All phases A–G are **done** (VM, runtime, compiler, all 10 standard libraries, and
+H.4–H.6). 117/117 tests passing, zero leaks. The port runs Lua source text directly.
 
 The next work is **Phase H — Drop-in replacement gap closure**. See the Phase H section below for the full breakdown.
 
@@ -349,10 +350,10 @@ The next work is **Phase H — Drop-in replacement gap closure**. See the Phase 
 
 Phases A–G built a working, self-hosting Lua interpreter. Phase H closes the gap between "working" and "drop-in replacement for Lua 5.5.1". The gaps were identified by a systematic audit comparing `luazig` against `lua/lua.h`, `lua/lauxlib.h`, and the standard library C sources.
 
-**Status:** Partially done. H.1, H.2, H.3, H.4, and most of H.5 are complete (2026-07-14).
-`lua_pushexternalstring` (H.5) is deferred — it requires a new `lua_TString` variant for
-external-allocator-backed strings. H.6–H.10 remain NOT STARTED.
-Updated 2026-07-14 with H.4 reference system and H.5 missing C API functions.
+**Status:** Almost complete. H.1, H.2, H.3, H.4, H.5 (except `lua_pushexternalstring`),
+and H.6 are done (2026-07-14). `lua_pushexternalstring` (H.5) is deferred — it requires a
+new `lua_TString` variant for external-allocator-backed strings. H.7–H.10 remain NOT STARTED.
+Updated 2026-07-14 with H.4 reference system, H.5 missing C API functions, and H.6 CLI/REPL.
 
 **Scope (portability, API completeness, stub elimination):**
 
@@ -439,19 +440,44 @@ Port from `lua/lauxlib.c`. Needed by any C extension that persists Lua values.
 Note: `luaL_buffinit`, `luaL_addlstring`, `luaL_addchar`, `luaL_addsize`, `luaL_prepbuffsize`,
 `luaL_addvalue`, `luaL_pushresult`, `luaL_pushresultsize` were already implemented in `lauxlib.zig`.
 
-### H.6 — CLI/REPL improvements (MEDIUM priority) — NOT STARTED
+### H.6 — CLI/REPL improvements (MEDIUM priority) — ✅ DONE (2026-07-14)
 
-The current CLI supports `luazig [script]` and a bare REPL. Missing:
+The standalone CLI driver in `src/luazig.zig` now matches the reference `lua` interpreter
+options (port of `lua/lua.c` argument handling):
 
-- `-e <chunk>` — execute inline Lua chunk
-- `-l <name>` — require library before running
-- `-i` — interactive mode after running script
-- `-v` — print version banner
-- Multi-line input in REPL (line-continuation detection for unfinished statements)
-- Readline/history/line-editing
-- REPL formatting for complex return values (expand tables via `pairs()`)
-- `arg` table creation from CLI args (already implemented via `createargtable`)
-- `--` argument separator handling
+- `-e <chunk>` — execute an inline Lua chunk (may repeat; chunks run before the script)
+- `-l <name>` — load a library: registers it in `package.loaded[name]` if present as a
+  global (`_G[name]`), otherwise falls back to `require(name)` via a protected call
+- `-i` — interactive REPL after running the script / `-e` chunks
+- `-v` — print the `LUA_COPYRIGHT` banner; suppresses the REPL banner when combined with `-i`
+- `--` — stop option parsing; remaining args become the script name and `arg[2..]`
+- `-` — read the script from stdin (`readAllStdin`) instead of a file
+- `arg` table — built from CLI args via `createargtable` (`arg[0]`=program/script path,
+  `arg[1]`=script or `nil`, `arg[2..]`=extra args after `--`)
+- Multi-line REPL — accumulates lines; detects incomplete input when `luaL_loadstring`
+  returns `LUA_ERRSYNTAX` whose message contains `<eof>` (the lexer now appends the
+  ` near <eof>` suffix, matching the C reference), then continues reading
+- REPL value formatting — `printValue` expands tables (raw `lua_next`, depth cap 3) instead
+  of the raw pointer string, so complex return values print readably
+
+**Supporting bug fixes (port-correctness, not just stubs):**
+- `lauxlib.luaL_tolstring` now pushes a copy for `LUA_TSTRING` (previously it left the stack
+  unchanged for strings, violating the "always pushes a result" contract that `printValue`
+  relies on). Fixes table-expansion corruption in the REPL.
+- `llex.lexerror` now stores the formatted `"<msg> near <token>"` into the persistent
+  `ls.buff` (no heap allocation, no dangling pointer) and sets `ls.errmsg_allocated =
+  false`; `lparser.error_expected`/`check_match` were rewritten to use it instead of storing
+  a pointer into a stack-local buffer (latent use-after-free / garbage syntax errors).
+
+**Verification:** 117/117 tests pass, zero leaks. New tests:
+- `H.6 luaL_tolstring pushes a copy (string contract)` — locks in the contract fix
+- `H.6 CLI luazig behaves like the reference interpreter` — subprocess test spawning the
+  built `luazig` binary, asserting `-e`, `-v`, `-l math`, script file, and `--` behavior.
+  (`build.zig` `test` step now also builds the `luazig` exe so the test can spawn it.)
+
+**Not implemented (intentionally out of scope for H.6):** readline/history/line-editing,
+and table expansion via the `pairs()` metamethod (the REPL uses raw `lua_next` to avoid
+metamethod side effects).
 
 ### H.7 — Convenience macros (LOW priority) — NOT STARTED
 

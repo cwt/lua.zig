@@ -191,12 +191,24 @@ Silent no-ops that produce wrong results:
 - `luaL_dofile` ✅
 - Buffer aux: `luaL_addstring` ✅, `luaL_buffinitsize` ✅, `luaL_prepbuffer` ✅, `luaL_bufflen` ✅, `luaL_buffaddr` ✅, `luaL_buffsub` ✅
 
-### H.6 — CLI/REPL improvements (MEDIUM priority)
-- `-e`, `-l`, `-i`, `-v` flags
-- Multi-line input in REPL
-- Readline/history/line-editing
-- `arg` table (depends on H.1 `createargtable`)
-- `--` argument separator
+### H.6 — CLI/REPL improvements (MEDIUM priority) ✅ DONE (2026-07-14)
+- `src/luazig.zig` rewritten as a complete CLI driver (port of `lua/lua.c` arg handling)
+- `-e <chunk>` ✅ (repeatable; runs before the script)
+- `-l <name>` ✅ (registers in `package.loaded[name]` if `_G[name]` exists, else `require(name)`)
+- `-i` ✅ (REPL after script / `-e` chunks; `-v` suppresses the REPL banner)
+- `-v` ✅ (prints `LUA_COPYRIGHT`; suppresses REPL banner when combined with `-i`)
+- `--` ✅ (stops option parsing; remaining args → script name + `arg[2..]`)
+- `-` ✅ (reads script from stdin via `readAllStdin`)
+- `arg` table ✅ (via H.1 `createargtable`; `arg[0]`=script, `arg[2..]`=extra args)
+- Multi-line REPL ✅ (line-continuation via `LUA_ERRSYNTAX` + `<eof>` detection)
+- REPL table expansion ✅ (`printValue` raw `lua_next`, depth cap 3)
+- Supporting fixes: `luaL_tolstring` pushes a copy for strings (contract fix);
+  `llex.lexerror` stores message in persistent `ls.buff` + ` near <eof>` suffix
+  (fixes `lparser.error_expected`/`check_match` dangling-pointer garbage)
+- Out of scope: readline/history editing; `pairs()`-based REPL expansion (raw `lua_next` used)
+- Tests: `H.6 luaL_tolstring pushes a copy`, `H.6 CLI luazig behaves like the reference
+  interpreter` (subprocess test; `build.zig` `test` step now builds the `luazig` exe)
+- Status: 117/117 tests pass, zero leaks
 
 ### H.7 — Convenience macros (LOW priority)
 `lua_insert`, `lua_remove`, `lua_newtable`, `lua_register`, `lua_pushglobaltable`, `lua_pushliteral`, `lua_isnoneornil`, `lua_isfunction`, `lua_isthread`, `lua_islightuserdata`

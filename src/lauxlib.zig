@@ -217,7 +217,13 @@ pub fn luaL_checkstack(L: *lua.lua_State, n: i32, msg: []const u8) !void {
 pub fn luaL_tolstring(L: *lua.lua_State, idx: i32, len: ?*usize) ?[]const u8 {
     const actual_type = lua.lua_type(L, idx);
     switch (actual_type) {
-        lua.LUA_TSTRING => return lua.lua_tolstring(L, idx, len),
+        lua.LUA_TSTRING => {
+            // Push a copy so the contract (always leaves the result on top)
+            // holds for every type, matching the reference luaL_tolstring.
+            const s = lua.lua_tolstring(L, idx, len) orelse "";
+            _ = lua.lua_pushstring(L, s);
+            return lua.lua_tolstring(L, -1, len);
+        },
         lua.LUA_TNUMBER => {
             var buf: [128]u8 = undefined;
             if (lua.lua_isinteger(L, idx) != 0) {

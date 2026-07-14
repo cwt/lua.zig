@@ -6,6 +6,53 @@ tags: [log, changelog]
 timestamp: 2026-07-14T16:10:00Z
 ---
 
+## 2026-07-14 — Phase H.6 (CLI / REPL improvements)
+
+Completed the standalone CLI driver in `src/luazig.zig` (port of `lua/lua.c`
+argument handling) plus two supporting port-correctness fixes.
+
+### H.6 — CLI / REPL (`src/luazig.zig`, `build.zig`)
+- `parseArgs` — handles `-e` (repeatable, runs before script), `-l <name>`, `-i`,
+  `-v`, `--` (stops option parsing), and `-` (stdin script). Returns `ParsedArgs`.
+- `createargtable` now driven from the parsed `arg[0]`/`script`/`extra_args` so the
+  `arg` table is populated correctly for scripts, `-e`, and `--` combinations.
+- `runString` — wraps `luaL_loadstring` + `lua_pcallk`; prints errors to stderr.
+- `runRepl` — multi-line reader: accumulates lines, loads with `luaL_loadstring`;
+  on `LUA_ERRSYNTAX` whose message contains `<eof>` it treats input as incomplete and
+  continues reading (otherwise pops the error and prints it).
+- `printValue` / `printResults` — expands tables via raw `lua_next` (depth cap 3) for
+  readable REPL output; falls back to `luaL_tolstring` for scalars.
+- `main` — `defer lua.lua_close(L)` on every exit path (including option-parse errors)
+  so the Lua state is always released.
+
+### Supporting fixes
+- `lauxlib.luaL_tolstring` — for `LUA_TSTRING` it now pushes a copy, honouring the
+  "always leaves a result on top" contract that `printValue` relies on (previously it
+  left the stack unchanged for strings, corrupting table expansion).
+- `llex.lexerror` — stores the formatted `"<msg> near <token>"` into the persistent
+  `ls.buff` (no heap, no dangling pointer) and sets `ls.errmsg_allocated = false`;
+  appends the ` near <eof>` suffix. `lparser.error_expected`/`check_match` rewritten to
+  use it instead of storing a pointer into a stack-local buffer (latent use-after-free /
+  garbage syntax-error messages).
+
+### Verification
+- 117/117 unit tests pass, zero leaks (`zig build test`).
+- New tests: `H.6 luaL_tolstring pushes a copy (string contract)`;
+  `H.6 CLI luazig behaves like the reference interpreter` (subprocess test that spawns
+  the built `luazig` binary — `build.zig` `test` step now also builds the `luazig` exe).
+- Manual checks: `-e`, `-v`, `-l math`, `--`, `-` (stdin), multi-line REPL, `arg` table
+  (with and without `-e` mixing), non-zero exit on unrecognized option.
+
+§0.1 self-audit: allocator threaded (`parseArgs`/`readAllStdin`/`runRepl` use
+`.empty` + explicit allocator on every `append`/`appendSlice`); errors propagated via
+`!T`/`try` (option errors return the error union, running `defer lua_close`); no
+`setjmp`/`longjmp`; no `@bitCast` value conversions; `TValue` union retained; single
+type model; `std.Io` threaded to `stdoutWrite`/`stderrWrite`/`readLine`; unmanaged
+containers correct; no empty `catch {}`; stack slots reserved before write; type
+predicates precise.
+
+---
+
 ## 2026-07-14 — Phase H.4 (reference system) + Phase H.5 (missing C API functions)
 
 Closed most of the Phase H drop-in replacement gap: the C-API reference system
