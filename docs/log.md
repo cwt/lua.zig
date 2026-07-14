@@ -3,7 +3,7 @@ type: lessons_learned
 title: Modification Log
 description: Running chronological log of bundle modifications and significant changes.
 tags: [log, changelog]
-timestamp: 2026-07-14T15:30:00Z
+timestamp: 2026-07-14T16:10:00Z
 ---
 
 ## 2026-07-13 — Math via glibc libm (DynLib resolver → shared `src/libm.zig`) + ThinLTO
@@ -1776,3 +1776,39 @@ and can desync/hang the runner. Keep stdout-writing assertions out of the harnes
 path (write to a file and re-open to verify), or run the binary directly. The
 hang observed during this phase was the Zig test-runner IPC deadlock, not a
 luazig defect.
+
+## 2026-07-14 — file:read("*n") number parsing (BUG-042, Rev 67)
+
+Implemented the Lua 5.5 `"*n"` number format for `file:read` / `io.read`, the
+last piece of `file:read` deferred as "out of H.3 scope" when BUG-040/041 were
+fixed. Ported PUC-Rio `liolib.c` `read_number` (≈428–510).
+
+### Changes (`src/lib/iolib.zig`)
+- **Pushback slot:** `LStream` gained `unget: ?u8` (one-level read pushback),
+  initialized at all six creation sites. Required because `read_number` reads a
+  single look-ahead byte that must be visible to the next read (`read("*n","*l")`,
+  repeated reads). `read_byte` honors the pending byte; `read_all` / `read_line`
+  / `read_chars` / `f_lines` were switched to take `*LStream` and consume it.
+- **`read_number`:** builds a valid numeral prefix (`[+-]? 0x? [0-9a-f]*
+  [.] [0-9a-f]* [eEpP [+-]? [0-9]*]`) into a 201-byte buffer via an `RN`
+  look-ahead reader (mirrors C `RN` / `next` / `test2` / `readdigits`), then
+  converts with the existing `lua.lua_stringtonumber` (pushes the number,
+  returns consumed length). `g_read` dispatches `'n' => read_number`.
+- Matches C semantics exactly: standalone `inf` / `nan` (and a stream pointer
+  left on the offending letter) return `nil`; `12.` → `12`, `-3.5` → `-3.5`,
+  `0xA`/`0xFF` → `10`/`255`, `1e3` → `1000`.
+
+### §0.1 Self-Audit
+Allocator threaded (number buffer is stack/`[]u8` scratch, no heap); errors
+propagated via `!T`/`try` (read helpers return `bool`; `g_read` is `!i32`);
+no `@bitCast` value conversions; `TValue` union retained; no `longjmp`; no
+varargs. `read_number` leaves the number (or nothing) on the stack exactly as
+the C API expects, so `g_read`'s failure path stays correct.
+
+### Verification
+One new test in `tests/test_basic.zig`: `"file:read(\"*n\") parses integers,
+floats, hex and invalids"` — writes `10 3.5 -7 0xFF 1e3\nhello\n`, reads the five
+numbers + an invalid token (`nil`) + the following line, asserting
+`10;3.5;-7;255;1000;nil;hello`. `zig build test` → **92/92 pass** (was 91);
+`zig build` clean. Edge cases (`0x1.8p3` → 12, `12.`, `-inf`/`nan` → nil, `0xA`
+→ 10) verified standalone via `luazig`.

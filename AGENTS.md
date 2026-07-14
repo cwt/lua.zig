@@ -374,12 +374,13 @@ Real scripts depend on these:
 | `os.exit` | Calls `std.process.exit()` without `lua_close` first — no GC finalizers or `__close` run. |
 | `os.setlocale` | Always returns `"C"` regardless of input. |
 
-### H.3 — iolib stubs (LOW priority)
+### H.3 — iolib stubs (LOW priority) — ✅ DONE (rev 67)
 
-| Function | Issue |
-|----------|-------|
-| `io.flush` / `file:flush` | Returns `true` without flushing. |
-| `file:setvbuf` | Ignores arguments, returns `true`. |
+| Function | Issue | Status |
+|----------|-------|--------|
+| `io.flush` / `file:flush` | Returns `true` without flushing. | ✅ real flush (rev 66) |
+| `file:setvbuf` | Ignores arguments, returns `true`. | ✅ real buffering (rev 66) |
+| `file:read("*n")` | Number format not implemented (deferred from H.3). | ✅ ported PUC-Rio `read_number`; `LStream.unget` pushback added (BUG-042, rev 67) |
 
 ### H.4 — Reference system (MEDIUM priority)
 

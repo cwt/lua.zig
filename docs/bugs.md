@@ -3,7 +3,7 @@ type: lessons_learned
 title: Bug Report — luazig (Zig port of Lua 5.5.1)
 description: Working document tracking known defects in the luazig codebase, ordered by priority.
 tags: [bugs, defects, tracking]
-timestamp: 2026-07-14T15:30:00Z
+timestamp: 2026-07-14T16:10:00Z
 ---
 
 # Bug Report — luazig (Zig port of Lua 5.5.1)
@@ -11,7 +11,7 @@ timestamp: 2026-07-14T15:30:00Z
 > Working document tracking known defects in the `luazig` codebase. Bugs are
 > numbered `BUG-001` … in priority order. Severity reflects runtime impact.
 > Each entry records the location, the defect, the impact, and the recommended fix.
-> Last updated: 2026-07-14 (BUG-040–041 appended after Phase H.3 — io buffering).
+> Last updated: 2026-07-14 (BUG-040–042 appended after Phase H.3 — io buffering + read("*n")).
 
 Legend:
 - **[HIGH]** crashes, wrong control flow, or incorrect results on ordinary programs.
@@ -392,4 +392,11 @@ Legend:
 - **Location:** `src/lib/iolib.zig` `g_read` format dispatch (≈lines 230–241) and `read_chars`.
 - **Defect:** `g_read` only handled the `"*a"` format (leading `*` required); the Lua 5.5-valid bare `"a"` (the `*` prefix is optional) fell through to `else => {}` and returned `nil`. Also `read "a"` used `read_chars(fd, 4096)`, which performs a single `std.posix.read` syscall — truncating files larger than 4096 bytes — and returns `nil` when `bytes_read == 0`, so an empty file yielded `nil` instead of `""`.
 - **Impact:** [MED] `file:read("a")` / `io.read("a")` returned `nil` instead of the file content; files >4096 bytes were truncated; empty files returned `nil` rather than `""` (violating Lua 5.5 `*a` semantics, where read-all of an empty file returns the empty string). Exposed by the H.3 tests, which assert the buffered-then-flushed content via `read("a")`.
-- **Fix (rev 66, 2026-07-14):** Added `read_all(L, fd)` — loops `std.posix.read` into a growable `std.ArrayList(u8)` until EOF and always pushes a string (`""` for an empty file, matching Lua 5.5 `*a`). `g_read` now strips an optional leading `*` from the format (`const fmt = if (s[0]=='*') s[1..] else s;`), dispatching `'a' => read_all`, `'l'/'L' => read_line`. The `"*n"` number format remains unimplemented (out of H.3 scope).
+- **Fix (rev 66, 2026-07-14):** Added `read_all(L, fd)` — loops `std.posix.read` into a growable `std.ArrayList(u8)` until EOF and always pushes a string (`""` for an empty file, matching Lua 5.5 `*a`). `g_read` now strips an optional leading `*` from the format (`const fmt = if (s[0]=='*') s[1..] else s;`), dispatching `'a' => read_all`, `'l'/'L' => read_line`. The `"*n"` number format was subsequently implemented in **BUG-042** (rev 67).
+
+## BUG-042 — `file:read("*n")` (number format) not implemented  [MED] ✅ FIXED
+- **Location:** `src/lib/iolib.zig` `g_read` format dispatch (was missing the `'n'` case) and the read helpers.
+- **Defect:** `g_read` only dispatched `'l'/'L'`/`'a'` (and numeric byte counts); the Lua 5.5 `"*n"` number format had no handler, so `file:read("*n")` / `io.read("*n")` silently returned no value (fell through `else => {}`), leaving the result slot unset. This was the one piece of `file:read` deferred as "out of H.3 scope" when BUG-040/041 were fixed.
+- **Impact:** [MED] Any program reading numbers from a file via `read("*n")` (the canonical idiom in `lua/testes/iotest.lua`) failed or produced wrong results — blocking full drop-in-replacement compatibility with the Lua 5.5.1 test suite.
+- **Fix (rev 67, 2026-07-14):** Ported PUC-Rio `liolib.c` `read_number` (≈lines 428–510). Added a one-byte pushback slot `LStream.unget: ?u8` so the look-ahead char is returned to the stream (required for `read("*n", "*l")` / repeated reads). `read_number` builds a valid numeral prefix (`[+-]? 0x? [0-9a-f]* [.] [0-9a-f]* [eEpP [+-]? [0-9]*]`) into a buffer, then converts via the existing `lua.lua_stringtonumber` (which pushes the parsed number and returns the consumed length). `read_all` / `read_line` / `read_chars` / `f_lines` all take `*LStream` and consume the pending `unget` byte. `g_read` now dispatches `'n' => read_number`. Matches C semantics exactly: standalone `inf`/`nan` (and a pointer left on the offending letter) return `nil`, as in PUC-Rio; `12.` → `12`, `-3.5` → `-3.5`, `0xA`/`0xFF` → `10`/`255`, `1e3` → `1000`.
+- **Verification:** New test `file:read("*n") parses integers, floats, hex and invalids` in `tests/test_basic.zig` asserts `f:write("10 3.5 -7 0xFF 1e3\nhello\n")` then `read("*n",…,"*n","*l")` yields `10;3.5;-7;255;1000;nil;hello`. Suite is **92/92 pass** (was 91).

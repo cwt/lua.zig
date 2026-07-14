@@ -2379,6 +2379,34 @@ test "io.flush flushes the default output file" {
     try std.testing.expectEqualStrings("|flushed-data", s.?);
 }
 
+test "file:read(\"*n\") parses integers, floats, hex and invalids" {
+    const gpa = std.testing.allocator;
+    var L: lua.lua_State = undefined;
+    try lua.luaL_newstate(&L, gpa);
+    defer lua.lua_close(&L);
+
+    try lua.luaL_openlibs(&L);
+
+    // Writes "10 3.5 -7 0xFF 1e3\nhello\n", then reads the five numbers, an
+    // invalid token (nil), and the following line — exercising the one-byte
+    // pushback so the trailing char of each number is visible to later reads.
+    const script =
+        \\local f = io.open("/tmp/luazig_h3_n.txt", "w")
+        \\f:write("10 3.5 -7 0xFF 1e3\nhello\n")
+        \\f:close()
+        \\local g = io.open("/tmp/luazig_h3_n.txt", "r")
+        \\local a, b, c, d, e, nn = g:read("*n", "*n", "*n", "*n", "*n", "*n")
+        \\local s = g:read("*l")
+        \\g:close()
+        \\return tostring(a) .. ";" .. tostring(b) .. ";" .. tostring(c) .. ";" .. tostring(d) .. ";" .. tostring(e) .. ";" .. tostring(nn) .. ";" .. tostring(s)
+    ;
+    const status = try lua.luaL_dostring(&L, script, "=(test)");
+    try std.testing.expectEqual(@as(i32, lua.LUA_OK), status);
+    const s = lua.lua_tostring(&L, -1);
+    try std.testing.expect(s != null);
+    try std.testing.expectEqualStrings("10;3.5;-7;255;1000;nil;hello", s.?);
+}
+
 test "os library opens and registers functions" {
     const gpa = std.testing.allocator;
     var L: lua.lua_State = undefined;

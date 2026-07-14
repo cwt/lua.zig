@@ -18,6 +18,9 @@ const LStream = struct {
     buf_len: usize,
     /// 0 = unbuffered (write straight to fd), 1 = full buffering, 2 = line buffering.
     buf_mode: u8,
+    /// Pending unread byte (one-level pushback) so read helpers can return a
+    /// look-ahead char to the stream. `null` means no pending byte.
+    unget: ?u8,
 };
 
 /// Default buffer size for `setvbuf` when no size is given (cf. stdio `BUFSIZ`).
@@ -94,7 +97,7 @@ fn io_fclose(L_: *L) !i32 {
 fn newfile(L_: *L) !*LStream {
     const p = lua.lua_newuserdatauv(L_, @sizeOf(LStream), 0) orelse unreachable;
     const stream = @as(*LStream, @ptrCast(@alignCast(p)));
-    stream.* = LStream{ .fd = -1, .closef = null, .buf = null, .buf_len = 0, .buf_mode = 0 };
+    stream.* = LStream{ .fd = -1, .closef = null, .buf = null, .buf_len = 0, .buf_mode = 0, .unget = null };
     try lauxlib.luaL_setmetatable(L_, LUA_FILEHANDLE);
     return stream;
 }
@@ -118,7 +121,7 @@ fn g_iofile(L_: *L, findex: []const u8, mode: []const u8) !i32 {
             return lauxlib.luaL_fileresult(L_, false, fn_);
         };
         const p = try newfile(L_);
-        p.* = LStream{ .fd = f, .closef = io_fclose, .buf = null, .buf_len = 0, .buf_mode = 0 };
+        p.* = LStream{ .fd = f, .closef = io_fclose, .buf = null, .buf_len = 0, .buf_mode = 0, .unget = null };
         lua.lua_replace(L_, 1);
         lua.lua_rawsetp(L_, lua.LUA_REGISTRYINDEX, @constCast(@ptrCast(findex.ptr)));
         return 0;
@@ -144,7 +147,7 @@ fn io_open(L_: *L) !i32 {
         return lauxlib.luaL_fileresult(L_, false, filename);
     };
     const p = try newfile(L_);
-    p.* = LStream{ .fd = f, .closef = io_fclose, .buf = null, .buf_len = 0, .buf_mode = 0 };
+    p.* = LStream{ .fd = f, .closef = io_fclose, .buf = null, .buf_len = 0, .buf_mode = 0, .unget = null };
     return 1;
 }
 
@@ -163,7 +166,7 @@ fn io_tmpfile(L_: *L) !i32 {
     };
     _ = &buf;
     const p = try newfile(L_);
-    p.* = LStream{ .fd = a, .closef = io_fclose, .buf = null, .buf_len = 0, .buf_mode = 0 };
+    p.* = LStream{ .fd = a, .closef = io_fclose, .buf = null, .buf_len = 0, .buf_mode = 0, .unget = null };
     return 1;
 }
 
@@ -182,23 +185,53 @@ fn io_type(L_: *L) !i32 {
     return 1;
 }
 
-fn read_chars(L_: *L, fd: i32, n: usize) bool {
+// Maximum length of a numeral accepted by `read_number` (cf. C `L_MAXLENNUM`).
+const L_MAXLENNUM: usize = 200;
+
+// Read a single byte from stream `p`, honoring a pending unget. Returns `null`
+// on EOF or read error (callers treat both as end-of-input).
+fn read_byte(p: *LStream) ?u8 {
+    if (p.unget) |b| {
+        p.unget = null;
+        return b;
+    }
+    var one: [1]u8 = undefined;
+    const n = std.posix.read(p.fd, &one) catch return null;
+    if (n == 0) return null;
+    return one[0];
+}
+
+fn read_chars(L_: *L, p: *LStream, n: usize) bool {
     var buf = L_.allocator.alloc(u8, n) catch return false;
     defer L_.allocator.free(buf);
-    const bytes_read = std.posix.read(fd, buf) catch return false;
-    if (bytes_read == 0) return false;
-    _ = lua.lua_pushlstring(L_, buf[0..bytes_read], bytes_read) orelse {};
+    var got: usize = 0;
+    if (p.unget) |b| {
+        buf[0] = b;
+        p.unget = null;
+        got = 1;
+    }
+    while (got < n) {
+        const r = std.posix.read(p.fd, buf[got..]) catch break;
+        if (r == 0) break;
+        got += r;
+    }
+    if (got == 0) return false;
+    _ = lua.lua_pushlstring(L_, buf[0..got], got) orelse {};
     return true;
 }
 
 // Read the entire remaining file content. Per Lua 5.5 semantics, `*a` on an
 // empty file returns an empty string (not nil).
-fn read_all(L_: *L, fd: i32) bool {
+fn read_all(L_: *L, p: *LStream) bool {
     var buf: std.ArrayList(u8) = .empty;
     defer buf.deinit(L_.allocator);
+    if (p.unget) |b| {
+        buf.append(L_.allocator, b) catch return false;
+        p.unget = null;
+    }
     var chunk: [4096]u8 = undefined;
     while (true) {
-        const n = std.posix.read(fd, &chunk) catch return false;
+        const n = std.posix.read(p.fd, &chunk) catch return false;
         if (n == 0) break;
         buf.appendSlice(L_.allocator, chunk[0..n]) catch return false;
     }
@@ -206,15 +239,13 @@ fn read_all(L_: *L, fd: i32) bool {
     return true;
 }
 
-fn read_line(L_: *L, fd: i32) bool {
+fn read_line(L_: *L, p: *LStream) bool {
     var buf: std.ArrayList(u8) = .empty;
     defer buf.deinit(L_.allocator);
-    var single: [1]u8 = undefined;
     while (true) {
-        const n = std.posix.read(fd, &single) catch break;
-        if (n == 0) break;
-        if (single[0] == '\n') break;
-        buf.append(L_.allocator, single[0]) catch break;
+        const c = read_byte(p) orelse break;
+        if (c == '\n') break;
+        buf.append(L_.allocator, c) catch break;
     }
     if (buf.items.len > 0) {
         _ = lua.lua_pushlstring(L_, buf.items, buf.items.len) orelse {};
@@ -223,7 +254,96 @@ fn read_line(L_: *L, fd: i32) bool {
     return false;
 }
 
-fn g_read(L_: *L, fd: i32, first: i32) !i32 {
+// Auxiliary state for `read_number`: a single-byte look-ahead reader that builds
+// a valid numeral prefix into `buff` (mirrors C `liolib.c` `RN` / `read_number`).
+const RN = struct {
+    c: ?u8,
+    n: usize,
+    buff: [L_MAXLENNUM + 1]u8,
+    p: *LStream,
+
+    fn next(rn: *RN) bool {
+        if (rn.n >= L_MAXLENNUM) {
+            rn.buff[0] = 0;
+            return false;
+        }
+        if (rn.c) |ch| {
+            rn.buff[rn.n] = ch;
+            rn.n += 1;
+        }
+        rn.c = read_byte(rn.p);
+        return true;
+    }
+
+    fn test2(rn: *RN, set: []const u8) bool {
+        if (rn.c) |ch| {
+            if (ch == set[0] or ch == set[1]) {
+                _ = rn.next();
+                return true;
+            }
+        }
+        return false;
+    }
+
+    fn readdigits(rn: *RN, hex: bool) usize {
+        var count: usize = 0;
+        while (rn.c) |ch| {
+            const isd = if (hex)
+                (std.ascii.isDigit(ch) or (ch >= 'a' and ch <= 'f') or (ch >= 'A' and ch <= 'F'))
+            else
+                std.ascii.isDigit(ch);
+            if (!isd) break;
+            _ = rn.next();
+            count += 1;
+        }
+        return count;
+    }
+};
+
+// Read a Lua number (`*n` format): read a valid numeral prefix into a buffer,
+// then convert it with `lua_stringtonumber`. On success the number is left on
+// the stack; on failure nothing is pushed (the caller pushes `nil`).
+fn read_number(L_: *L, p: *LStream) bool {
+    var rn: RN = .{ .c = null, .n = 0, .buff = undefined, .p = p };
+    // skip leading whitespace
+    while (true) {
+        rn.c = read_byte(p);
+        if (rn.c == null) break;
+        if (!std.ascii.isWhitespace(rn.c.?)) break;
+    }
+    var hex = false;
+    var count: usize = 0;
+    _ = rn.test2("-+");
+    if (rn.test2("00")) {
+        if (rn.test2("xX")) hex = true else {
+            count = 1; // leading '0' counts as a digit
+        }
+    }
+    count += rn.readdigits(hex);
+    if (rn.c) |ch| {
+        if (ch == '.') {
+            _ = rn.next();
+            count += rn.readdigits(hex);
+        }
+    }
+    if (count > 0) {
+        if (rn.c) |ch| {
+            const is_exp = if (hex) (ch == 'p' or ch == 'P') else (ch == 'e' or ch == 'E');
+            if (is_exp) {
+                _ = rn.next();
+                _ = rn.test2("-+");
+                _ = rn.readdigits(false);
+            }
+        }
+    }
+    if (rn.c) |ch| {
+        p.unget = ch; // push back the first non-numeral char
+    }
+    rn.buff[rn.n] = 0;
+    return lua.lua_stringtonumber(L_, rn.buff[0..rn.n]) > 0;
+}
+
+fn g_read(L_: *L, p: *LStream, first: i32) !i32 {
     var n: i32 = first;
     var nread: i32 = 0;
     const top = lua.lua_gettop(L_);
@@ -235,12 +355,12 @@ fn g_read(L_: *L, fd: i32, first: i32) !i32 {
     for (0..@as(usize, @intCast(nargs))) |_| {
         var success = false;
         if (n == 0) {
-            success = read_line(L_, fd);
+            success = read_line(L_, p);
         } else {
             const fmt_int = lua.lua_tointeger(L_, n);
             if (fmt_int) |num| {
                 if (num > 0) {
-                    success = read_chars(L_, fd, @as(usize, @intCast(num)));
+                    success = read_chars(L_, p, @as(usize, @intCast(num)));
                 }
             } else {
                 const s = lua.lua_tostring(L_, n) orelse "";
@@ -248,8 +368,9 @@ fn g_read(L_: *L, fd: i32, first: i32) !i32 {
                 const fmt = if (s.len > 0 and s[0] == '*') s[1..] else s;
                 if (fmt.len > 0) {
                     switch (fmt[0]) {
-                        'l', 'L' => success = read_line(L_, fd),
-                        'a' => success = read_all(L_, fd),
+                        'l', 'L' => success = read_line(L_, p),
+                        'a' => success = read_all(L_, p),
+                        'n' => success = read_number(L_, p),
                         else => {},
                     }
                 }
@@ -270,12 +391,12 @@ fn g_read(L_: *L, fd: i32, first: i32) !i32 {
 
 fn io_read(L_: *L) !i32 {
     const p = getiofile(L_, IO_INPUT) catch return lauxlib.luaL_error(L_, "default input file is closed");
-    return g_read(L_, p.fd, 2);
+    return g_read(L_, p, 2);
 }
 
 fn f_read(L_: *L) !i32 {
     const p = tostream(L_, 1);
-    return g_read(L_, p.fd, 2);
+    return g_read(L_, p, 2);
 }
 
 /// Write all bytes in `data` to `fd`, looping until complete. Returns true on success.
@@ -440,7 +561,7 @@ fn io_lines(L_: *L) !i32 {
             return lauxlib.luaL_fileresult(L_, false, filename);
         };
         const p = try newfile(L_);
-        p.* = LStream{ .fd = f, .closef = io_fclose, .buf = null, .buf_len = 0, .buf_mode = 0 };
+        p.* = LStream{ .fd = f, .closef = io_fclose, .buf = null, .buf_len = 0, .buf_mode = 0, .unget = null };
         lua.lua_replace(L_, 1);
     }
     lua.lua_pushcfunction(L_, f_lines);
@@ -452,12 +573,10 @@ fn f_lines(L_: *L) !i32 {
     const p = tostream(L_, 1);
     var buf: std.ArrayList(u8) = .empty;
     defer buf.deinit(L_.allocator);
-    var single: [1]u8 = undefined;
     while (true) {
-        const n = std.posix.read(p.fd, &single) catch break;
-        if (n == 0) break;
-        if (single[0] == '\n') break;
-        buf.append(L_.allocator, single[0]) catch break;
+        const c = read_byte(p) orelse break;
+        if (c == '\n') break;
+        buf.append(L_.allocator, c) catch break;
     }
     if (buf.items.len > 0) {
         _ = lua.lua_pushlstring(L_, buf.items, buf.items.len) orelse {};
@@ -469,7 +588,7 @@ fn f_lines(L_: *L) !i32 {
 fn createstdfile(L_: *L, fd: i32, k: []const u8, cf: ?lua.lua_CFunction) !void {
     const p = lua.lua_newuserdatauv(L_, @sizeOf(LStream), 0) orelse unreachable;
     const stream = @as(*LStream, @ptrCast(@alignCast(p)));
-    stream.* = LStream{ .fd = fd, .closef = cf, .buf = null, .buf_len = 0, .buf_mode = 0 };
+    stream.* = LStream{ .fd = fd, .closef = cf, .buf = null, .buf_len = 0, .buf_mode = 0, .unget = null };
     try lauxlib.luaL_setmetatable(L_, LUA_FILEHANDLE);
     lua.lua_rawsetp(L_, lua.LUA_REGISTRYINDEX, @constCast(@ptrCast(k.ptr)));
 }
