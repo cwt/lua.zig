@@ -213,7 +213,8 @@ Silent no-ops that produce wrong results:
 ### H.7 — Convenience macros (LOW priority) ✅ DONE (2026-07-14)
 `lua_insert` ✅, `lua_remove` ✅, `lua_newtable` ✅, `lua_register` ✅, `lua_pushglobaltable` ✅, `lua_pushliteral` ✅, `lua_isnoneornil` ✅, `lua_isfunction` ✅, `lua_isthread` ✅, `lua_islightuserdata` ✅ — declared as `pub inline fn` in `src/lua.zig` (4 of 10 existed from earlier work)
 
-### H.8 — Deprecated compatibility aliases (LOW priority)
+### H.8 — Deprecated compatibility aliases (LOW priority) ✅ DONE (2026-07-14)
+`lua_newuserdata` ✅, `lua_getuservalue` ✅, `lua_setuservalue` ✅, `lua_resetthread` ✅ — `pub inline fn` delegating to their modern equivalents
 `lua_newuserdata`, `lua_getuservalue`, `lua_setuservalue`, `lua_resetthread`
 
 ### H.9 — Missing constants and exports (LOW priority)

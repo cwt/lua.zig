@@ -6,6 +6,35 @@ tags: [log, changelog]
 timestamp: 2026-07-14T16:10:00Z
 ---
 
+## 2026-07-14 — H.8: Deprecated compatibility aliases
+
+Added four deprecated backward-compatibility aliases as `pub inline fn` in
+`src/lua.zig`:
+
+- `lua_newuserdata(L, s)` → `lua_newuserdatauv(L, s, 1)`
+- `lua_getuservalue(L, idx)` → `lua_getiuservalue(L, idx, 1)`
+- `lua_setuservalue(L, idx)` → `lua_setiuservalue(L, idx, 1)`
+- `lua_resetthread(L)` → `lua_closethread(L, null)`
+
+Also fixed `lua_closethread` signature: `from` parameter changed from
+`*lua_State` to `?*lua_State` to accept `null` (matching the C ABI,
+where `lua_closethread(from)` accepts `NULL`).
+
+Note: `lua_getiuservalue` and `lua_setiuservalue` remain stubs (return 1,
+push nil) from the initial port — this is unchanged, the aliases are
+purely mechanical. Runtime behaviour will be addressed when those
+underlying functions are implemented.
+
+Tests: single comprehensive test (122/122 pass, zero leaks) verifying all
+4 aliases compile and return expected values.
+
+§0.1 self-audit: thin delegating wrappers; no allocation, error
+propagation, numeric conversion, or setjmp/longjmp. `lua_closethread`
+parameter type fix is a one-line signature change without semantic
+alteration.
+
+---
+
 ## 2026-07-14 — H.7: Convenience macros
 
 Implemented all Phase H.7 convenience macros as `pub inline fn` in

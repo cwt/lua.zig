@@ -350,7 +350,7 @@ The next work is **Phase H — Drop-in replacement gap closure**. See the Phase 
 
 Phases A–G built a working, self-hosting Lua interpreter. Phase H closes the gap between "working" and "drop-in replacement for Lua 5.5.1". The gaps were identified by a systematic audit comparing `luazig` against `lua/lua.h`, `lua/lauxlib.h`, and the standard library C sources.
 
-**Status:** Complete. H.1–H.7 are all done (2026-07-14). H.8–H.10 remain NOT STARTED.
+**Status:** Complete. H.1–H.8 are all done (2026-07-14). H.9–H.10 remain NOT STARTED.
 
 **Scope (portability, API completeness, stub elimination):**
 
@@ -493,7 +493,7 @@ The C `lua.h` defines macros that are convenient but not strictly necessary (cal
 | `lua_isthread(L, n)` | type predicate |
 | `lua_islightuserdata(L, n)` | type predicate |
 
-### H.8 — Deprecated compatibility aliases (LOW priority) — NOT STARTED
+### H.8 — Deprecated compatibility aliases (LOW priority) ✅ DONE (2026-07-14)
 
 The Lua 5.5.1 `lua.h` retains these for backward compatibility:
 

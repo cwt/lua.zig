@@ -1430,12 +1430,17 @@ pub fn lua_newthread(L: *lua_State) !*lua_State {
     return L1;
 }
 
-pub fn lua_closethread(L: *lua_State, from: *lua_State) i32 {
+pub fn lua_closethread(L: *lua_State, from: ?*lua_State) i32 {
     _ = from;
     freeAllCallInfos(L);
     L.status = 0;
     L.top = 0;
     return LUA_OK;
+}
+
+/// Deprecated alias for `lua_closethread(L, null)`.
+pub inline fn lua_resetthread(L: *lua_State) i32 {
+    return lua_closethread(L, null);
 }
 
 pub fn lua_getstack(L: *lua_State, level: i32, ar: *lua_Debug) i32 {
@@ -2268,6 +2273,11 @@ pub fn lua_newuserdatauv(L: *lua_State, sz: usize, nuvalue: i32) ?*anyopaque {
     return @as(*anyopaque, @ptrCast(data.ptr));
 }
 
+/// Deprecated alias for `lua_newuserdatauv(L, s, 1)`.
+pub inline fn lua_newuserdata(L: *lua_State, s: usize) ?*anyopaque {
+    return lua_newuserdatauv(L, s, 1);
+}
+
 pub fn lua_getmetatable(L: *lua_State, objindex: i32) i32 {
     const val = idxPtr(L, objindex) orelse return 0;
     const mt: ?*lua_Table = switch (val.*) {
@@ -2298,6 +2308,11 @@ pub fn lua_getiuservalue(L: *lua_State, idx: i32, n: i32) i32 {
     _ = n;
     lua_pushnil(L);
     return 1;
+}
+
+/// Deprecated alias for `lua_getiuservalue(L, idx, 1)`.
+pub inline fn lua_getuservalue(L: *lua_State, idx: i32) i32 {
+    return lua_getiuservalue(L, idx, 1);
 }
 
 pub fn lua_setglobal(L: *lua_State, name: []const u8) void {
@@ -2442,6 +2457,11 @@ pub fn lua_setiuservalue(L: *lua_State, idx: i32, n: i32) i32 {
     _ = idx;
     _ = n;
     return 1;
+}
+
+/// Deprecated alias for `lua_setiuservalue(L, idx, 1)`.
+pub inline fn lua_setuservalue(L: *lua_State, idx: i32) i32 {
+    return lua_setiuservalue(L, idx, 1);
 }
 
 pub fn lua_callk(L: *lua_State, nargs: i32, nresults: i32, ctx: lua_KContext, k: ?lua_KFunction) !void {

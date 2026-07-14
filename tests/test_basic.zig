@@ -4209,5 +4209,41 @@ test "H.7 convenience macros (insert, remove, newtable, register, pushglobaltabl
     lua.lua_pop(&L, 1);
 }
 
+test "H.8 deprecated compatibility aliases (newuserdata, getuservalue, setuservalue, resetthread)" {
+    const gpa = std.testing.allocator;
+    var L: lua.lua_State = undefined;
+    try lua.luaL_newstate(&L, gpa);
+    defer lua.lua_close(&L);
+
+    // --- lua_newuserdata: alias for lua_newuserdatauv(L, s, 1) ---
+    const ud = lua.lua_newuserdata(&L, 8);
+    try std.testing.expect(ud != null);
+    try std.testing.expectEqual(@as(i32, lua.LUA_TUSERDATA), lua.lua_type(&L, -1));
+    lua.lua_pop(&L, 1);
+
+    // --- lua_getuservalue: alias for lua_getiuservalue(L, idx, 1) ---
+    // Currently a stub (pushes nil, returns 1); verify it compiles and runs.
+    lua.lua_createtable(&L, 0, 0);
+    const r1 = lua.lua_getuservalue(&L, -1);
+    try std.testing.expectEqual(@as(i32, 1), r1);
+    try std.testing.expectEqual(@as(i32, lua.LUA_TNIL), lua.lua_type(&L, -1));
+    lua.lua_pop(&L, 2); // pop nil + table
+
+    // --- lua_setuservalue: alias for lua_setiuservalue(L, idx, 1) ---
+    // Currently a stub (returns 1); verify it compiles and runs.
+    lua.lua_createtable(&L, 0, 0);
+    const r2 = lua.lua_setuservalue(&L, -1);
+    try std.testing.expectEqual(@as(i32, 1), r2);
+    lua.lua_pop(&L, 1);
+
+    // --- lua_resetthread: alias for lua_closethread(L, null) ---
+    const r3 = lua.lua_resetthread(&L);
+    try std.testing.expectEqual(@as(i32, lua.LUA_OK), r3);
+    // The state should still be usable after reset.
+    lua.lua_pushinteger(&L, 99);
+    try std.testing.expectEqual(@as(i32, lua.LUA_TNUMBER), lua.lua_type(&L, -1));
+    lua.lua_pop(&L, 1);
+}
+
 
 
