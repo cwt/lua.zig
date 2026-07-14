@@ -941,13 +941,26 @@ pub fn run(L: *lua.lua_State, active_ci: *lua.CallInfo) anyerror!void {
                 const cl_call = val.function.?;
                 switch (cl_call.*) {
                     .c => |cc| {
-                        // Correct 'ci.func' for PF_VAHID functions before the
-                        // tail call reuses the current CallInfo.
+                        // Tail call to a C function reuses the current CallInfo.
+                        // Move the called function and its arguments down to the
+                        // frame base (mirroring the `.lua` branch below and PUC-Rio's
+                        // memmove of `ra` into `ci->func`). This discards the
+                        // tail-calling function's own frame so the C function's
+                        // results land exactly where the caller expects them
+                        // (`func_idx`), instead of above the discarded frame.
                         const nparams1 = GETARG_C(instruction);
                         if (nparams1 != 0) {
+                            // Caller is PF_VAHID: buildhiddenargs relocated the
+                            // frame; undo it before re-pointing ci at ra_idx.
                             ci.func -= @as(usize, @intCast(@as(i32, @intCast(ci.nextraargs)) + nparams1));
-                            ci.base = ci.func + 1;
                         }
+                        var k2: usize = 0;
+                        while (k2 < @as(usize, @intCast(b))) : (k2 += 1) {
+                            L.stack[ci.func + k2] = L.stack[ra_idx + k2];
+                        }
+                        ci.base = ci.func + 1;
+                        L.top = ci.func + @as(usize, @intCast(b));
+                        ci.top = L.top + 20;
                         const n = try cc.f(L);
                         const num_returned = @as(usize, @intCast(n));
                         const first_result = L.top - num_returned;

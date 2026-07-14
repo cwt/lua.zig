@@ -3289,25 +3289,28 @@ test "H.2 os.time returns epoch and round-trips with '*t'" {
     try std.testing.expectEqual(@as(i32, 1), lua.lua_toboolean(&L, -1));
 }
 
-test "H.2 os.execute reports success/failure with status code" {
-    const gpa = std.testing.allocator;
-    var L: lua.lua_State = undefined;
-    try lua.luaL_newstate(&L, gpa);
-    defer lua.lua_close(&L);
-    try lua.luaL_openlibs(&L);
+ test "H.2 os.execute reports success/failure with status code" {
+     const gpa = std.testing.allocator;
+     var L: lua.lua_State = undefined;
+     try lua.luaL_newstate(&L, gpa);
+     defer lua.lua_close(&L);
+     try lua.luaL_openlibs(&L);
 
-    // Success: status 0 -> first result is boolean true.
-    // (Non-tail-call form avoids a separate pre-existing VM TAILCALL bug.)
-    var status = try lua.luaL_dostring(&L, "local r = os.execute('true'); return r", "=(test)");
-    try std.testing.expectEqual(@as(i32, lua.LUA_OK), status);
-    try std.testing.expectEqual(@as(i32, 1), lua.lua_toboolean(&L, -1));
-    lua.lua_settop(&L, 0);
+     // `os.execute` returns three values: (status, "exit", code). The first
+     // result (at index -3) is `true` on success and `nil` on failure.
+     // Failure: status non-zero -> first result is nil.
+     var status = try lua.luaL_dostring(&L, "return os.execute('false')", "=(test)");
+     try std.testing.expectEqual(@as(i32, lua.LUA_OK), status);
+     try std.testing.expectEqual(@as(i32, 3), lua.lua_gettop(&L));
+     try std.testing.expectEqual(@as(i32, lua.LUA_TNIL), lua.lua_type(&L, -3));
+     lua.lua_settop(&L, 0);
 
-    // Failure: status non-zero -> first result is nil.
-    status = try lua.luaL_dostring(&L, "local r = os.execute('false'); return r", "=(test)");
-    try std.testing.expectEqual(@as(i32, lua.LUA_OK), status);
-    try std.testing.expectEqual(@as(i32, lua.LUA_TNIL), lua.lua_type(&L, -1));
-}
+     // Success: status 0 -> first result is boolean true.
+     status = try lua.luaL_dostring(&L, "return os.execute('true')", "=(test)");
+     try std.testing.expectEqual(@as(i32, lua.LUA_OK), status);
+     try std.testing.expectEqual(@as(i32, 3), lua.lua_gettop(&L));
+     try std.testing.expectEqual(@as(i32, 1), lua.lua_toboolean(&L, -3));
+ }
 
 test "H.2 os.setlocale returns the active locale" {
     const gpa = std.testing.allocator;
@@ -3321,4 +3324,52 @@ test "H.2 os.setlocale returns the active locale" {
     const loc = lua.lua_tostring(&L, -1).?;
     try std.testing.expectEqual(@as(usize, 1), loc.len);
     try std.testing.expectEqual(@as(u8, 'C'), loc[0]);
+}
+
+// ===================================================================
+// BUG-038 — VM TAILCALL with a C function must deliver its arguments
+// ===================================================================
+
+test "BUG-038 tail call to C function delivers the argument" {
+    const gpa = std.testing.allocator;
+    var L: lua.lua_State = undefined;
+    try lua.luaL_newstate(&L, gpa);
+    defer lua.lua_close(&L);
+    try lua.luaL_openlibs(&L);
+
+    // `return os.execute('true')` is a tail call: the string arg was being lost.
+    // `os.execute` returns three values (status, "exit", code); the first
+    // result (-3) is `true` on success.
+    var status = try lua.luaL_dostring(&L, "return os.execute('true')", "=(test)");
+    try std.testing.expectEqual(@as(i32, lua.LUA_OK), status);
+    try std.testing.expectEqual(@as(i32, 1), lua.lua_toboolean(&L, -3));
+    lua.lua_settop(&L, 0);
+
+    // C function receiving a value computed by the caller (Lua -> C tail call).
+    status = try lua.luaL_dostring(
+        &L,
+        "function g(x) return string.rep('ab', x) end; return g(3)",
+        "=(test)",
+    );
+    try std.testing.expectEqual(@as(i32, lua.LUA_OK), status);
+    const s = lua.lua_tostring(&L, -1).?;
+    try std.testing.expectEqual(@as(usize, 6), s.len);
+    try std.testing.expectEqual(@as(u8, 'a'), s[0]);
+}
+
+test "BUG-038 tail call between Lua functions propagates the argument" {
+    const gpa = std.testing.allocator;
+    var L: lua.lua_State = undefined;
+    try lua.luaL_newstate(&L, gpa);
+    defer lua.lua_close(&L);
+    try lua.luaL_openlibs(&L);
+
+    // f is called only in tail position; the argument must flow through.
+    const status = try lua.luaL_dostring(
+        &L,
+        "function f(x) return x + 1 end; function g(x) return f(x) end; return g(41)",
+        "=(test)",
+    );
+    try std.testing.expectEqual(@as(i32, lua.LUA_OK), status);
+    try std.testing.expectEqual(@as(f64, 42), lua.lua_tonumber(&L, -1).?);
 }

@@ -3,7 +3,7 @@ type: lessons_learned
 title: Bug Report — luazig (Zig port of Lua 5.5.1)
 description: Working document tracking known defects in the luazig codebase, ordered by priority.
 tags: [bugs, defects, tracking]
-timestamp: 2026-07-12T00:00:00Z
+timestamp: 2026-07-14T07:30:00Z
 ---
 
 # Bug Report — luazig (Zig port of Lua 5.5.1)
@@ -368,9 +368,16 @@ Legend:
 - **Impact:** Any code path that dereferences `L.l_G.?.io` after `luaL_newstate` returns hits freed stack memory. The juicy-main binary was unaffected (it passes a real `io` via `luaL_newstate_io` and leaves `io_backend = null`). The first port code to use `l_G.io` was `os_execute` (H.2), which SEGV'd at address 0x0 inside `std.process.spawn` in tests.
 - **Fix (rev 64, 2026-07-14):** After `L.l_G.?.io_backend = threaded;`, re-derived the io from the heap copy: `L.l_G.?.io = L.l_G.?.io_backend.?.io();`. `luaL_newstate_io` (used by the main binary) is unchanged.
 
-## BUG-038 — VM `TAILCALL` with a C function drops the argument  [HIGH] ❌ OPEN
+## BUG-038 — VM `TAILCALL` with a C function drops the argument / misplaces results  [HIGH] ✅ FIXED
 - **Location:** `src/lvm.zig` (`.TAILCALL` handler / tail-call argument setup).
-- **Defect:** When a C function is called in tail position — `return f(args)` — the argument(s) are not correctly relocated into the new call frame, so `f` receives the wrong (or no) arguments. Non-tail positions are unaffected: `print(f(args))` works, but `return f(args)` does not.
-- **Impact:** `return os.execute("true")` raises `"command must be a string"` (the string arg is lost), while `local r = os.execute("true"); return r` works. Any top-level `return <cfunc>(...)` exhibits the bug. Ordinary Lua programs using tail calls to C functions get wrong results or runtime errors.
+- **Defect:** When a C function is called in tail position — `return f(args)` — the argument(s) are not correctly relocated into the new call frame, so `f` receives the wrong (or no) arguments. Non-tail positions are unaffected: `print(f(args))` works, but `return f(args)` does not. A second, related defect: the `.c` branch set `ci.func = ra_idx` (a slot *above* the discarded frame's base), so even when args were correct, the C function's results were placed above the tail-calling frame and leftover values below leaked into `lua_gettop`, corrupting multi-result tail calls such as `return os.execute('false')` (which returns three values).
+- **Impact:** `return os.execute("true")` raised `"command must be a string"` (the string arg was lost); `return os.execute('false')` returned five stack slots (two stale function refs plus the real `(nil, "exit", code)` triple). Ordinary Lua programs using tail calls to C functions get wrong results or runtime errors.
 - **Recommended fix:** Audit the `.TAILCALL` handler (and the `.RETURN`/frame-relocation logic added in BUG-036) for how arguments are moved when the callee is a C function; ensure the argument window is set up at the new base before the call.
-- **Status:** OPEN — discovered during H.2; not fixed in rev 64 (H.2 tests avoid the tail-call form).
+- **Fix (rev 65, 2026-07-14):** The `.c` branch now mirrors the `.lua` branch: it moves the called function and its arguments *down* to the frame base (`L.stack[ci.func + k] = L.stack[ra_idx + k]`), sets `ci.base = ci.func + 1` and `L.top = ci.func + b`, so the C function reads its args via `ci.base` and its results land exactly at `func_idx` (where the caller — e.g. `lua_pcall` — expects them). The PF_VAHID undo (`ci.func -= nextraargs + nparams1`) is preserved. Verified by the H.2 and BUG-038 tests against the Lua 5.5.1 reference: `return os.execute('true')` → `true`, `return os.execute('false')` → `nil`. **88/88 tests pass, stable across repeated runs (seed-independent).**
+
+## BUG-039 — String GC sweep corrupts the intern pool via stale key slices  [HIGH] ✅ FIXED
+- **Location:** `src/lua.zig` (`lua_gc` string-sweep phase, ~lines 2890–2925).
+- **Defect:** The sweep collected `[]const u8` slices into `dead_strings` (the slices point *into* `g.strt`'s internal key array), then called `g.strt.swapRemove(key)` for each. `swapRemove` reorders `g.strt`'s key array on every removal, invalidating the still-buffered slices, so subsequent `swapRemove` calls remove the wrong entries (live strings orphaned, dead strings survive). This corrupts the global string-interning table, so looking up a string's bytes can resolve to a *different* `TString` (wrong pointer); with `getStr`'s pointer-identity comparison, `'execute'` then resolves to `setlocale`'s closure, and `os.execute` dispatches to the wrong C function.
+- **Impact:** Seed-dependent, GC-timing-dependent corruption of the global intern pool. With the default `@intFromPtr(L)` seed and enough prior tests triggering GC, `os.execute` (and potentially any interned-string global lookup) resolves to the wrong value — the original H.2 failure (`os.execute` → `setlocale`). Highly intermittent because it depends on which strings are live/dead at sweep time.
+- **Note:** The table node layer (`ltable.zig` `getStr`/`setHash`/`growNode`) was exhaustively tested for hash-collision integrity across 2000 seeds and is correct; the corruption is entirely in the GC sweep's misuse of the map iterator.
+- **Fix (rev 65, 2026-07-14):** The sweep now collects the `*lua_TString` values (whose `.s` bytes are stable and independent of `g.strt`'s key-array ordering) instead of slices into the map. Each dead entry is removed with `g.strt.swapRemove(ts.s)` (safe across the array reordering) and freed via `L.allocator.free(ts.s)` / `L.allocator.destroy(ts)`. No stale slices are retained across mutation. **88/88 tests pass, stable across repeated runs (seed-independent).**

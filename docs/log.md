@@ -3,7 +3,7 @@ type: lessons_learned
 title: Modification Log
 description: Running chronological log of bundle modifications and significant changes.
 tags: [log, changelog]
-timestamp: 2026-07-10T00:00:00Z
+timestamp: 2026-07-14T07:30:00Z
 ---
 
 ## 2026-07-13 — Math via glibc libm (DynLib resolver → shared `src/libm.zig`) + ThinLTO
@@ -1689,3 +1689,29 @@ table form of `os_time`. Also fixed a latent `io` lifetime bug that the new
 os.time round-trip, os.execute success/failure, os.setlocale). `os.date`/`os.execute`
 output verified byte-for-byte against the Lua 5.5.1 reference binary. `zig build test`
 → **86/86 pass** (was 81/81), clean Debug build.
+
+## Rev 65 — Fix two seed-independent GC / VM correctness bugs (2026-07-14)
+- **BUG-039 (string GC sweep):** `lua_gc`'s string-sweep collected `[]const u8`
+  slices into `g.strt` then `swapRemove`d them. `swapRemove` reorders the map's
+  key array, invalidating the buffered slices, so later removals hit the wrong
+  entries — corrupting the global intern pool. Now the sweep collects
+  `*lua_TString` (stable `.s` bytes) and removes via `swapRemove(ts.s)`, which is
+  safe across reordering. This was the true root cause of the H.2 `os.execute`
+  resolving to `setlocale` (wrong `TString` pointer via `getStr` pointer-identity).
+- **BUG-038 (TAILCALL to C at top level):** the `.c` branch set `ci.func = ra_idx`
+  (above the discarded frame base), so results landed above the frame and leftover
+  values leaked into `lua_gettop`. Now it moves the function+args down to the frame
+  base (mirroring the `.lua` branch), so results land at `func_idx` where the caller
+  (`lua_pcall`) expects them. `return os.execute('false')` now returns the correct
+  three values `(nil, "exit", code)`.
+- **Verification:** H.2 / BUG-038 tests updated to assert the correct 3-value return
+  (`os.execute` returns `(status, "exit", code)`, first result at index `-3`).
+  `zig build test` → **88/88 pass**, stable across 6+ repeated runs (seed-independent).
+  Real `luazig` binary: `os.execute('true')`→`true`, `os.execute('false')`→`nil`.
+- **Cleanup:** removed all DBG debug prints (ltable.getStr, oslib.openoslib &
+  os_execute, lvm TAILCALL); removed temp `tests/t_min.zig`; removed `src/lvm.zig.orig`.
+
+### §0.1 Self-Audit
+- Allocator threaded; errors propagated with `!T`/`try`; no `@bitCast` for values;
+  `TValue` union retained; no `longjmp`; no varargs; `swapRemove` misuse eliminated
+  by collecting stable `*TString` values before mutating `g.strt`.

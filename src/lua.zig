@@ -2895,26 +2895,28 @@ pub fn luaC_collectgarbage(L: *lua_State) !void {
     }
 
     // Sweep strings:
-    // First, find all unmarked strings
-    var dead_strings = std.ArrayList([]const u8).empty;
+    // First, find all unmarked strings. Collect the `*lua_TString` values
+    // (whose `.s` bytes are stable and independent of the map's key array);
+    // do NOT retain slices into the map itself, because `swapRemove` below
+    // reorders that array and would invalidate them.
+    var dead_strings = std.ArrayList(*lua_TString).empty;
     defer dead_strings.deinit(L.allocator);
-    
+
     var str_it = g.strt.iterator();
     while (str_it.next()) |entry| {
         const ts = entry.value_ptr.*;
         if (!ts.marked) {
-            try dead_strings.append(L.allocator, entry.key_ptr.*);
+            try dead_strings.append(L.allocator, ts);
         } else {
             ts.marked = false; // Reset for next GC cycle
         }
     }
 
     // Now remove and free them
-    for (dead_strings.items) |key| {
-        const ts = g.strt.get(key).?;
-        _ = g.strt.swapRemove(key);
-        g.allocator.free(key);
-        g.allocator.destroy(ts);
+    for (dead_strings.items) |ts| {
+        _ = g.strt.swapRemove(ts.s);
+        L.allocator.free(ts.s);
+        L.allocator.destroy(ts);
     }
 }
 
