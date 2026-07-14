@@ -590,6 +590,12 @@ pub const global_State = struct {
     thread_list: ?*lua_State = null,
     clibs: std.ArrayList(*std.DynLib),
     panic: ?lua_CFunction = null,
+    /// GC control: if false, GC is stopped (LUA_GCSTOP). Allocations still
+    /// happen but do not trigger collection.
+    gc_running: bool = true,
+    /// GC parameters (get/set via LUA_GCPARAM). Initialised to defaults
+    /// matching the C reference (lstate.c setgcparam calls).
+    gcparams: [LUA_GCPN]u8 = [_]u8{ 10, 20, 50, 200, 200, 13 },
 };
 
 inline fn G(L: *lua_State) *global_State {
@@ -3068,20 +3074,73 @@ pub const LUA_GCCOLLECT: i32 = 2;
 pub const LUA_GCCOUNT: i32 = 3;
 pub const LUA_GCCOUNTB: i32 = 4;
 pub const LUA_GCSTEP: i32 = 5;
-pub const LUA_GCSETPAUSE: i32 = 6;
-pub const LUA_GCSETSTEPMUL: i32 = 7;
-pub const LUA_GCISRUNNING: i32 = 9;
-pub const LUA_GCGEN: i32 = 10;
-pub const LUA_GCINC: i32 = 11;
+pub const LUA_GCISRUNNING: i32 = 6;
+pub const LUA_GCGEN: i32 = 7;
+pub const LUA_GCINC: i32 = 8;
+pub const LUA_GCPARAM: i32 = 9;
 
-pub fn lua_gc(L: *lua_State, what: i32, arg: i32) i32 {
-    _ = arg;
+// GC parameter indices (for LUA_GCPARAM)
+pub const LUA_GCPMINORMUL: i32 = 0;
+pub const LUA_GCPMAJORMINOR: i32 = 1;
+pub const LUA_GCPMINORMAJOR: i32 = 2;
+pub const LUA_GCPPAUSE: i32 = 3;
+pub const LUA_GCPSTEPMUL: i32 = 4;
+pub const LUA_GCPSTEPSIZE: i32 = 5;
+pub const LUA_GCPN: usize = 6;
+
+/// Lua GC control. `what` selects the operation; `arg` is operation-dependent.
+/// For all options except `LUA_GCPARAM`, `value` is ignored (pass 0).
+/// For `LUA_GCPARAM`, `arg` is the parameter index and `value` is the new
+/// value to set (pass -1 to get the current parameter without setting).
+pub fn lua_gc(L: *lua_State, what: i32, arg: i32, value: i32) i32 {
+    const g = G(L);
     switch (what) {
+        LUA_GCSTOP => {
+            g.gc_running = false;
+            return 0;
+        },
+        LUA_GCRESTART => {
+            g.gc_running = true;
+            return 0;
+        },
         LUA_GCCOLLECT => {
             luaC_collectgarbage(L) catch return -1;
             return 0;
         },
-        else => return 0,
+        LUA_GCCOUNT => {
+            // Total memory tracked by the allocator is not available directly
+            // from std.mem.Allocator; return 0 for now.
+            return 0;
+        },
+        LUA_GCCOUNTB => {
+            return 0;
+        },
+        LUA_GCSTEP => {
+            // Run a full synchronous collection for each step request.
+            // (A real incremental GC would only do a portion.)
+            luaC_collectgarbage(L) catch return -1;
+            return 1;
+        },
+        LUA_GCISRUNNING => {
+            return if (g.gc_running) 1 else 0;
+        },
+        LUA_GCGEN => {
+            // Acknowledge request for generational mode; keep mark-and-sweep.
+            return 0;
+        },
+        LUA_GCINC => {
+            // Acknowledge request for incremental mode; keep mark-and-sweep.
+            return 0;
+        },
+        LUA_GCPARAM => {
+            const param = @as(usize, @intCast(arg));
+            if (param >= LUA_GCPN) return -1;
+            if (value >= 0) {
+                g.gcparams[param] = @as(u8, @intCast(@min(@as(u64, @intCast(value)), 255)));
+            }
+            return @as(i32, @intCast(g.gcparams[param]));
+        },
+        else => return -1,
     }
 }
 

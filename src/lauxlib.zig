@@ -149,10 +149,10 @@ pub fn luaL_getmetafield(L: *lua.lua_State, idx: i32, field: []const u8) i32 {
     return tt;
 }
 
-pub fn luaL_checkoption(L: *lua.lua_State, idx: i32, def: []const u8, opts: [][]const u8) !i32 {
+pub fn luaL_checkoption(L: *lua.lua_State, idx: i32, def: ?[]const u8, opts: [][]const u8) !i32 {
     const s = blk: {
         if (lua.lua_isnoneornil(L, idx)) {
-            break :blk def;
+            if (def) |d| break :blk d else return luaL_argerror(L, idx, "value expected");
         }
         break :blk try luaL_checklstring(L, idx, null);
     };

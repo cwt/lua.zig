@@ -935,7 +935,7 @@ test "garbage collector mark and sweep" {
     try std.testing.expect(g.strt.contains("unreferenced_string"));
 
     // Run Garbage Collection
-    const status = lua.lua_gc(&L, lua.LUA_GCCOLLECT, 0);
+    const status = lua.lua_gc(&L, lua.LUA_GCCOLLECT, 0, 0);
     try std.testing.expectEqual(@as(i32, 0), status);
 
     // Verify that:
@@ -962,7 +962,7 @@ test "garbage collector mark and sweep" {
     lua.lua_pop(&L, 2);
 
     // Run GC again — now everything we created should be collected!
-    _ = lua.lua_gc(&L, lua.LUA_GCCOLLECT, 0);
+    _ = lua.lua_gc(&L, lua.LUA_GCCOLLECT, 0, 0);
 
     // Verify both are gone
     try std.testing.expect(!g.strt.contains("referenced_string"));
@@ -4066,7 +4066,7 @@ test "H.5 lua_pushexternalstring (LSTRMEM) frees external bytes on GC" {
 
     // Remove the only reference and collect: the external buffer must be freed.
     lua.lua_pop(&L, 1);
-    _ = lua.lua_gc(&L, lua.LUA_GCCOLLECT, 0);
+    _ = lua.lua_gc(&L, lua.LUA_GCCOLLECT, 0, 0);
     try std.testing.expectEqual(@as(usize, 1), ctx.free_count);
 }
 
@@ -4093,7 +4093,7 @@ test "H.5 lua_pushexternalstring (LSTRFIX) keeps static bytes, distinct from int
 
     // GC must not free the static bytes (falloc == null): no use-after-free.
     lua.lua_pop(&L, 2);
-    _ = lua.lua_gc(&L, lua.LUA_GCCOLLECT, 0);
+    _ = lua.lua_gc(&L, lua.LUA_GCCOLLECT, 0, 0);
     try std.testing.expectEqualStrings("fixed-external", static_str);
 }
 
@@ -4118,6 +4118,116 @@ test "H.5 lua_pushexternalstring as table key (equal-content externals match)" {
     try std.testing.expectEqual(@as(i32, lua.LUA_TSTRING), lua.lua_type(&L, -1));
     try std.testing.expectEqualStrings("ext", lua.lua_tostring(&L, -1).?);
     lua.lua_pop(&L, 2);
+}
+
+test "H.10 GC completeness (stop, restart, isrunning, collect, step, GCPARAM get/set, gen/inc)" {
+    const gpa = std.testing.allocator;
+    var L: lua.lua_State = undefined;
+    try lua.luaL_newstate(&L, gpa);
+    defer lua.lua_close(&L);
+    try lua.luaL_openlibs(&L);
+
+    // Default: GC is running
+    try std.testing.expectEqual(@as(i32, 1), lua.lua_gc(&L, lua.LUA_GCISRUNNING, 0, 0));
+
+    // Stop and verify
+    try std.testing.expectEqual(@as(i32, 0), lua.lua_gc(&L, lua.LUA_GCSTOP, 0, 0));
+    try std.testing.expectEqual(@as(i32, 0), lua.lua_gc(&L, lua.LUA_GCISRUNNING, 0, 0));
+
+    // Restart and verify
+    try std.testing.expectEqual(@as(i32, 0), lua.lua_gc(&L, lua.LUA_GCRESTART, 0, 0));
+    try std.testing.expectEqual(@as(i32, 1), lua.lua_gc(&L, lua.LUA_GCISRUNNING, 0, 0));
+
+    // Collect (full GC)
+    try std.testing.expectEqual(@as(i32, 0), lua.lua_gc(&L, lua.LUA_GCCOLLECT, 0, 0));
+
+    // Step (runs full collection synchronously in our port)
+    try std.testing.expectEqual(@as(i32, 1), lua.lua_gc(&L, lua.LUA_GCSTEP, 0, 0));
+
+    // GCCOUNT / GCCOUNTB (return 0 for now)
+    try std.testing.expectEqual(@as(i32, 0), lua.lua_gc(&L, lua.LUA_GCCOUNT, 0, 0));
+    try std.testing.expectEqual(@as(i32, 0), lua.lua_gc(&L, lua.LUA_GCCOUNTB, 0, 0));
+
+    // GCGEN / GCINC (acknowledge, return 0)
+    try std.testing.expectEqual(@as(i32, 0), lua.lua_gc(&L, lua.LUA_GCGEN, 0, 0));
+    try std.testing.expectEqual(@as(i32, 0), lua.lua_gc(&L, lua.LUA_GCINC, 0, 0));
+
+    // Invalid option -> -1
+    try std.testing.expectEqual(@as(i32, -1), lua.lua_gc(&L, 999, 0, 0));
+
+    // GCPARAM: get default values
+    try std.testing.expectEqual(@as(i32, 10), lua.lua_gc(&L, lua.LUA_GCPARAM, lua.LUA_GCPMINORMUL, -1));
+    try std.testing.expectEqual(@as(i32, 20), lua.lua_gc(&L, lua.LUA_GCPARAM, lua.LUA_GCPMAJORMINOR, -1));
+    try std.testing.expectEqual(@as(i32, 50), lua.lua_gc(&L, lua.LUA_GCPARAM, lua.LUA_GCPMINORMAJOR, -1));
+    try std.testing.expectEqual(@as(i32, 200), lua.lua_gc(&L, lua.LUA_GCPARAM, lua.LUA_GCPPAUSE, -1));
+    try std.testing.expectEqual(@as(i32, 200), lua.lua_gc(&L, lua.LUA_GCPARAM, lua.LUA_GCPSTEPMUL, -1));
+    try std.testing.expectEqual(@as(i32, 13), lua.lua_gc(&L, lua.LUA_GCPARAM, lua.LUA_GCPSTEPSIZE, -1));
+    // Invalid param index -> -1
+    try std.testing.expectEqual(@as(i32, -1), lua.lua_gc(&L, lua.LUA_GCPARAM, 99, -1));
+
+    // GCPARAM: set a new value and verify
+    try std.testing.expectEqual(@as(i32, 150), lua.lua_gc(&L, lua.LUA_GCPARAM, lua.LUA_GCPPAUSE, 150));
+    try std.testing.expectEqual(@as(i32, 150), lua.lua_gc(&L, lua.LUA_GCPARAM, lua.LUA_GCPPAUSE, -1));
+
+    // Test collectgarbage through the Lua API (string-based)
+    // "collect" option
+    _ = lua.lua_getglobal(&L, "collectgarbage");
+    _ = lua.lua_pushstring(&L, "collect");
+    try lua.lua_call(&L, 1, 0);
+
+    // "count" option through Lua
+    _ = lua.lua_getglobal(&L, "collectgarbage");
+    _ = lua.lua_pushstring(&L, "count");
+    try lua.lua_call(&L, 1, 1);
+    try std.testing.expectEqual(@as(i32, lua.LUA_TNUMBER), lua.lua_type(&L, -1));
+    lua.lua_pop(&L, 1);
+
+    // "isrunning" option through Lua: should be true (restarted above)
+    _ = lua.lua_getglobal(&L, "collectgarbage");
+    _ = lua.lua_pushstring(&L, "isrunning");
+    try lua.lua_call(&L, 1, 1);
+    try std.testing.expect(lua.lua_toboolean(&L, -1) != 0);
+    lua.lua_pop(&L, 1);
+
+    // "param" option through Lua: get pause parameter
+    _ = lua.lua_getglobal(&L, "collectgarbage");
+    _ = lua.lua_pushstring(&L, "param");
+    _ = lua.lua_pushstring(&L, "pause");
+    try lua.lua_call(&L, 2, 1);
+    try std.testing.expectEqual(@as(i32, lua.LUA_TNUMBER), lua.lua_type(&L, -1));
+    try std.testing.expectEqual(@as(f64, 150.0), lua.lua_tonumber(&L, -1));
+    lua.lua_pop(&L, 1);
+
+    // "param" option through Lua: set and verify
+    _ = lua.lua_getglobal(&L, "collectgarbage");
+    _ = lua.lua_pushstring(&L, "param");
+    _ = lua.lua_pushstring(&L, "stepmul");
+    _ = lua.lua_pushinteger(&L, 175);
+    try lua.lua_call(&L, 3, 1);
+    try std.testing.expectEqual(@as(f64, 175.0), lua.lua_tonumber(&L, -1));
+    lua.lua_pop(&L, 1);
+    // Verify via direct API
+    try std.testing.expectEqual(@as(i32, 175), lua.lua_gc(&L, lua.LUA_GCPARAM, lua.LUA_GCPSTEPMUL, -1));
+
+    // "generational" and "incremental" options (acknowledged, return 0)
+    _ = lua.lua_getglobal(&L, "collectgarbage");
+    _ = lua.lua_pushstring(&L, "generational");
+    try lua.lua_call(&L, 1, 1);
+    try std.testing.expectEqual(@as(i32, lua.LUA_TNUMBER), lua.lua_type(&L, -1));
+    try std.testing.expectEqual(@as(f64, 0.0), lua.lua_tonumber(&L, -1));
+    lua.lua_pop(&L, 1);
+
+    _ = lua.lua_getglobal(&L, "collectgarbage");
+    _ = lua.lua_pushstring(&L, "incremental");
+    try lua.lua_call(&L, 1, 1);
+    try std.testing.expectEqual(@as(i32, lua.LUA_TNUMBER), lua.lua_type(&L, -1));
+    try std.testing.expectEqual(@as(f64, 0.0), lua.lua_tonumber(&L, -1));
+    lua.lua_pop(&L, 1);
+
+    // Verify state still usable after GC operations
+    _ = lua.lua_pushstring(&L, "gc_complete");
+    try std.testing.expectEqualStrings("gc_complete", lua.lua_tostring(&L, -1).?);
+    lua.lua_pop(&L, 1);
 }
 
 test "H.7 convenience macros (insert, remove, newtable, register, pushglobaltable, pushliteral, type predicates)" {

@@ -145,22 +145,34 @@ fn assert(L: *lua.lua_State) anyerror!i32 {
 }
 
 fn collectgarbage(L: *lua.lua_State) anyerror!i32 {
-    var opts_arr = [_][]const u8{ "stop", "restart", "collect", "count", "step", "setpause", "setstepmul", "isrunning", "generational", "incremental" };
-    const optsnum = [_]i32{ lua.LUA_GCSTOP, lua.LUA_GCRESTART, lua.LUA_GCCOLLECT, lua.LUA_GCCOUNT, lua.LUA_GCSTEP, lua.LUA_GCSETPAUSE, lua.LUA_GCSETSTEPMUL, lua.LUA_GCISRUNNING, lua.LUA_GCGEN, lua.LUA_GCINC };
+    var opts_arr = [_][]const u8{ "stop", "restart", "collect", "count", "step", "isrunning", "generational", "incremental", "param" };
+    const optsnum = [_]i32{ lua.LUA_GCSTOP, lua.LUA_GCRESTART, lua.LUA_GCCOLLECT, lua.LUA_GCCOUNT, lua.LUA_GCSTEP, lua.LUA_GCISRUNNING, lua.LUA_GCGEN, lua.LUA_GCINC, lua.LUA_GCPARAM };
     const o = try lauxlib.luaL_checkoption(L, 1, "collect", &opts_arr);
-    const ex = @as(i32, @intCast(lauxlib.luaL_optinteger(L, 2, 0)));
-    const res = lua.lua_gc(L, optsnum[@as(usize, @intCast(o))], ex);
-    switch (optsnum[@as(usize, @intCast(o))]) {
+    const which = optsnum[@as(usize, @intCast(o))];
+    switch (which) {
+        lua.LUA_GCPARAM => {
+            var param_arr = [_][]const u8{ "minormul", "majorminor", "minormajor", "pause", "stepmul", "stepsize" };
+            const param_num = [_]i32{ lua.LUA_GCPMINORMUL, lua.LUA_GCPMAJORMINOR, lua.LUA_GCPMINORMAJOR, lua.LUA_GCPPAUSE, lua.LUA_GCPSTEPMUL, lua.LUA_GCPSTEPSIZE };
+            const p = try lauxlib.luaL_checkoption(L, 2, null, &param_arr);
+            const value = lauxlib.luaL_optinteger(L, 3, -1);
+            const res = lua.lua_gc(L, lua.LUA_GCPARAM, param_num[@as(usize, @intCast(p))], @as(i32, @intCast(value)));
+            lua.lua_pushinteger(L, res);
+            return 1;
+        },
         lua.LUA_GCCOUNT => {
-            const byte = lua.lua_gc(L, lua.LUA_GCCOUNTB, 0);
-            lua.lua_pushnumber(L, @as(f64, @floatFromInt(res)) + (@as(f64, @floatFromInt(byte)) / 1024.0));
+            const k = lua.lua_gc(L, which, 0, 0);
+            const b = lua.lua_gc(L, lua.LUA_GCCOUNTB, 0, 0);
+            lua.lua_pushnumber(L, @as(f64, @floatFromInt(k)) + (@as(f64, @floatFromInt(b)) / 1024.0));
             return 1;
         },
         lua.LUA_GCSTEP, lua.LUA_GCISRUNNING => {
-            lua.lua_pushboolean(L, if (res != 0) @as(i32, 1) else @as(i32, 0));
+            const res = lua.lua_gc(L, which, @as(i32, @intCast(lauxlib.luaL_optinteger(L, 2, 0))), 0);
+            lua.lua_pushboolean(L, if (res != 0) 1 else 0);
             return 1;
         },
         else => {
+            const ex = @as(i32, @intCast(lauxlib.luaL_optinteger(L, 2, 0)));
+            const res = lua.lua_gc(L, which, ex, 0);
             lua.lua_pushinteger(L, res);
             return 1;
         },

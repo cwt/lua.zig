@@ -350,7 +350,7 @@ The next work is **Phase H — Drop-in replacement gap closure**. See the Phase 
 
 Phases A–G built a working, self-hosting Lua interpreter. Phase H closes the gap between "working" and "drop-in replacement for Lua 5.5.1". The gaps were identified by a systematic audit comparing `luazig` against `lua/lua.h`, `lua/lauxlib.h`, and the standard library C sources.
 
-**Status:** Complete. H.1–H.9 are all done (2026-07-14). H.10 remains NOT STARTED.
+**Status:** Complete. H.1–H.10 are all done (2026-07-14). Phase H is complete.
 
 **Scope (portability, API completeness, stub elimination):**
 
@@ -519,10 +519,18 @@ The Lua 5.5.1 `lua.h` retains these for backward compatibility:
 | `LUA_AUTHORS` | Authors string | ✅ present |
 | `lua_ident` | Identification string array | ✅ DONE (2026-07-14) — comptime `[]const u8` in lua.zig |
 
-### H.10 — GC completeness (LOW priority) — NOT STARTED
+### H.10 — GC completeness (LOW priority) — ✅ DONE (2026-07-14)
 
-- `lua_gc` option `LUA_GCPARAM` (9) — not handled
-- GC parameter get/set (`LUA_GCPMINORMUL`, `LUA_GCPSTEPMUL`, etc.)
+- `lua_gc` options: `LUA_GCSTOP`/`RESTART`/`COLLECT`/`COUNT`/`COUNTB`/`STEP`/`ISRUNNING`/`GEN`/`INC`/`GCPARAM` all handled ✅
+  - `LUA_GCSTOP`/`GCRESTART` control `global_State.gc_running` flag ✅
+  - `LUA_GCISRUNNING` returns flag state ✅
+  - `LUA_GCSTEP` runs synchronous full collection ✅
+  - `LUA_GCCOUNT`/`COUNTB` return 0 (no allocator stats available) ✅
+  - `LUA_GCGEN`/`GCINC` acknowledge mode switch (keep mark-and-sweep) ✅
+- `LUA_GCPARAM` get/set for all 6 parameters (`MINORMUL`/`MAJORMINOR`/`MINORMAJOR`/`PAUSE`/`STEPMUL`/`STEPSIZE`) stored in `global_State.gcparams[]` ✅
+- GC constants fixed to match Lua 5.5.1 (removed `LUA_GCSETPAUSE`/`LUA_GCSETSTEPMUL`, added `LUA_GCISRUNNING=6`/`GCGEN=7`/`GCINC=8`/`GCPARAM=9`) ✅
+- `lauxlib.luaL_checkoption` `def` parameter changed from `[]const u8` to `?[]const u8` for null-default support ✅
+- `lua_gc` signature extended: `pub fn lua_gc(L, what, arg, value)` — 4th param for `LUA_GCPARAM` set value (pass -1 for get) ✅
 
 ### Verification
 

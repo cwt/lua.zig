@@ -6,6 +6,52 @@ tags: [log, changelog]
 timestamp: 2026-07-14T16:10:00Z
 ---
 
+## 2026-07-14 — H.10: GC completeness (all lua_gc options, GCPARAM)
+
+Implemented all remaining GC options and the GC parameter system, completing
+Phase H.
+
+### Changes
+
+**GC constants fixed to Lua 5.5.1** (`src/lua.zig`):
+- Removed `LUA_GCSETPAUSE` (6) and `LUA_GCSETSTEPMUL` (7) (Lua 5.4 compat)
+- `LUA_GCISRUNNING` = 6, `LUA_GCGEN` = 7, `LUA_GCINC` = 8, `LUA_GCPARAM` = 9
+- Added parameter sub-constants `LUA_GCPMINORMUL` through `LUA_GCPSTEPSIZE`
+
+**`lua_gc` overhaul** (`src/lua.zig`):
+- Signature extended: `pub fn lua_gc(L, what, arg, value) i32` — the 4th
+  `value` parameter carries the set-value for `LUA_GCPARAM` (pass -1 for get)
+- All 10 GC options handled (STOP/RESTART/COLLECT/COUNT/COUNTB/STEP/
+  ISRUNNING/GEN/INC/GCPARAM)
+- `global_State` gains `gc_running: bool` and `gcparams: [6]u8` array
+  initialised to C-reference defaults (PAUSE=200, STEPMUL=200, STEPSIZE=13,
+  MINORMUL=10, MAJORMINOR=20, MINORMAJOR=50)
+
+**`collectgarbage` updated** (`src/lib/baselib.zig`):
+- Option list matches Lua 5.5: no "setpause"/"setstepmul", added "param"
+  with sub-options "minormul"/"majorminor"/"minormajor"/"pause"/
+  "stepmul"/"stepsize" (matching `lua/lbaselib.c`)
+
+**`luaL_checkoption` made nullable** (`src/lauxlib.zig`):
+- `def` parameter changed from `[]const u8` to `?[]const u8` so callers can
+  pass `null` to require the argument (matching C behaviour)
+
+**Tests**: single comprehensive H.10 test (124/124 pass, zero leaks) verifying
+all direct `lua_gc` API options, GCPARAM get/set round-trip, and the
+`collectgarbage` Lua-level interface.
+
+§0.1 self-audit:
+- Allocators: no new allocations (gcparams is inline array, gc_running is a
+  bool flag). ✅
+- Errors: `luaGC_collectgarbage` error propagated via `catch return -1`. ✅
+- No setjmp/longjmp. ✅
+- No numeric conversions beyond `@as(u8, @intCast(@min(...)))` for clamping. ✅
+- `luaL_checkoption` nullable `def` is a straightforward widening — all
+  existing callers pass string literals which coerce to `?[]const u8`. ✅
+- `lua_gc` 4-param signature is a minor API change; all 5 callers updated. ✅
+
+---
+
 ## 2026-07-14 — H.9: Missing constants and exports (lua_ident)
 
 Added the one remaining missing H.9 item: `lua_ident`, the C API

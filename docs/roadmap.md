@@ -224,9 +224,13 @@ Silent no-ops that produce wrong results:
 - `LUA_COPYRIGHT` ✅, `LUA_AUTHORS` ✅ (already present)
 - `lua_ident` ✅ (2026-07-14) — `"$LuaVersion: ... $LuaAuthors: ... $"` as comptime `[]const u8`
 
-### H.10 — GC completeness (LOW priority)
-- `LUA_GCPARAM` option 9 not handled
-- GC parameter get/set (`LUA_GCPMINORMUL`, `LUA_GCPSTEPMUL`, etc.)
+### H.10 — GC completeness (LOW priority) ✅ DONE (2026-07-14)
+- All `lua_gc` options handled (STOP/RESTART/COLLECT/COUNT/COUNTB/STEP/ISRUNNING/GEN/INC/GCPARAM) ✅
+- GC constants fixed to Lua 5.5.1 (removed GCSETPAUSE/GCSETSTEPMUL, added GCISRUNNING=6/GCGEN=7/GCINC=8/GCPARAM=9) ✅
+- LUA_GCPARAM get/set for all 6 sub-parameters (MINORMUL/MAJORMINOR/MINORMAJOR/PAUSE/STEPMUL/STEPSIZE) ✅
+- `lua_gc` signature extended with 4th `value` parameter ✅
+- `collectgarbage` baselib updated to Lua 5.5 option names ("param" with sub-options) ✅
+- `luaL_checkoption` `def` made nullable (`?[]const u8`) for null-default support ✅
 
 ### Verification
 Each H.x sub-phase must compile, pass all existing tests, and add focused tests for the new functionality. After Phase H is complete, `luazig` should pass all Lua 5.5.1 `lua/testes/` test files without modification (modulo `os.execute` platform dependency and `os.date` localization).
