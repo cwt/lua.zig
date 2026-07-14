@@ -400,3 +400,26 @@ Legend:
 - **Impact:** [MED] Any program reading numbers from a file via `read("*n")` (the canonical idiom in `lua/testes/iotest.lua`) failed or produced wrong results — blocking full drop-in-replacement compatibility with the Lua 5.5.1 test suite.
 - **Fix (rev 67, 2026-07-14):** Ported PUC-Rio `liolib.c` `read_number` (≈lines 428–510). Added a one-byte pushback slot `LStream.unget: ?u8` so the look-ahead char is returned to the stream (required for `read("*n", "*l")` / repeated reads). `read_number` builds a valid numeral prefix (`[+-]? 0x? [0-9a-f]* [.] [0-9a-f]* [eEpP [+-]? [0-9]*]`) into a buffer, then converts via the existing `lua.lua_stringtonumber` (which pushes the parsed number and returns the consumed length). `read_all` / `read_line` / `read_chars` / `f_lines` all take `*LStream` and consume the pending `unget` byte. `g_read` now dispatches `'n' => read_number`. Matches C semantics exactly: standalone `inf`/`nan` (and a pointer left on the offending letter) return `nil`, as in PUC-Rio; `12.` → `12`, `-3.5` → `-3.5`, `0xA`/`0xFF` → `10`/`255`, `1e3` → `1000`.
 - **Verification:** New test `file:read("*n") parses integers, floats, hex and invalids` in `tests/test_basic.zig` asserts `f:write("10 3.5 -7 0xFF 1e3\nhello\n")` then `read("*n",…,"*n","*l")` yields `10;3.5;-7;255;1000;nil;hello`. Suite is **92/92 pass** (was 91).
+
+## BUG-043 — `os.exit` ignores second argument: always calls `lua_close` unconditionally  [MED]
+- **Location:** `src/lib/oslib.zig:306-314` (`os_exit`).
+- **Defect:** The C reference (`lua/loslib.c:396-403`) makes `lua_close` conditional on a second truthy argument:
+  ```c
+  if (lua_toboolean(L, 2))
+    lua_close(L);
+  ```
+  The Zig port always calls `lua_close` regardless of the second argument:
+  ```zig
+  // Run __close / __gc finalizers before terminating.
+  lua.lua_close(L_);  // ← unconditional, ignores arg 2
+  std.process.exit(...);
+  ```
+  `os.exit(0)` (no second arg) or `os.exit(0, false)` should exit directly without calling `lua_close`. The reference uses the second argument to allow callers to opt into graceful cleanup vs fast exit.
+- **Impact:** [MED] `os.exit(code)` always runs `lua_close`, which is unnecessary for a fast exit and violates the Lua 5.5.1 API contract. `os.exit(code, false)` is silently ignored — cleanup still happens, contradicting the caller's explicit request.
+- **Recommend fix:** Accept the optional second argument and only call `lua_close` when `lua_toboolean(L, 2) != 0`.
+
+## BUG-044 — `lua_close` does not run `__gc`/`__close` finalizers (comment is misleading)  [MED]
+- **Location:** `src/lua.zig:3324-3390` (`lua_close`); comment at `src/lib/oslib.zig:311`.
+- **Defect:** The C reference's `close_state` → `luaC_freeallobjects` → `callallpendingfinalizers` runs all pending `__gc` finalizers on userdata before deallocating. The Zig port's `lua_close` just frees memory via `freeGCObject` — it never runs `__gc` or `__close` metamethods. The comment `// Run __close / __gc finalizers before terminating.` in `os_exit` is therefore wrong: no such finalization occurs.
+- **Impact:** [MED] Even when `os.exit(code, true)` is called (which *should* do graceful cleanup with finalizers), the finalizers are never called. Userdata with `__gc` metamethods are simply freed without notification. This also affects any other call to `lua_close` in non-exit contexts.
+- **Recommend fix:** Implement finalizer dispatch in the GC sweep phase of `lua_close` (port `callallpendingfinalizers` from `lua/lgc.c`), or at minimum run a full GC cycle that respects `__gc` before freeing.
