@@ -161,19 +161,29 @@ fn str_char(L: *lua.lua_State) anyerror!i32 {
     return 1;
 }
 
-fn dump_writer(_: *lua.lua_State, _: ?*anyopaque, _: usize, _: ?*anyopaque) i32 {
+fn dump_writer(L: *lua.lua_State, p: ?*anyopaque, size: usize, ud: ?*anyopaque) i32 {
+    const b = @as(*lauxlib.luaL_Buffer, @ptrCast(@alignCast(ud)));
+    const buf = @as([*]const u8, @ptrCast(p))[0..size];
+    lauxlib.luaL_addlstring(L, b, buf) catch return 1;
     return 0;
 }
 
 fn str_dump(L: *lua.lua_State) anyerror!i32 {
     const strip = lua.lua_toboolean(L, 2);
-    const t = lua.lua_type(L, 1);
-    if (t != lua.LUA_TFUNCTION or lua.lua_iscfunction(L, 1) != 0) {
+    if (lua.lua_type(L, 1) != lua.LUA_TFUNCTION or lua.lua_iscfunction(L, 1) != 0) {
         return lauxlib.luaL_argerror(L, 1, "Lua function expected");
     }
+    var b: lauxlib.luaL_Buffer = undefined;
+    lauxlib.luaL_buffinit(L, &b);
+    // Ensure the function is on top of the stack (lua_dump reads top-1).
     lua.lua_pushvalue(L, 1);
-    _ = lua.lua_dump(L, dump_writer, null, strip);
+    const status = lua.lua_dump(L, dump_writer, &b, strip);
+    if (status != lua.LUA_OK) {
+        // A writer error (or a non-dumpable value) occurred. Propagate.
+        return lauxlib.luaL_error(L, "cannot dump given function");
+    }
     lua.lua_settop(L, 1);
+    lauxlib.luaL_pushresult(L, &b);
     return 1;
 }
 

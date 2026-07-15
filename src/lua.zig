@@ -5,6 +5,7 @@ pub const lvm = @import("lvm.zig");
 const ltable = @import("ltable.zig");
 pub const lstring = @import("lstring.zig");
 const lundump = @import("lundump.zig");
+const ldump = @import("ldump.zig");
 const ltm = @import("ltm.zig");
 const libm = @import("libm.zig");
 pub const llex = @import("llex.zig");
@@ -901,7 +902,7 @@ pub fn lua_xmove(from: *lua_State, to: *lua_State, n: i32) void {
     to.top += to_copy;
 }
 
-fn stackAt(L: *lua_State, idx: i32) TValue {
+pub fn stackAt(L: *lua_State, idx: i32) TValue {
     const ptr = idxPtr(L, idx) orelse return TValue{ .nil = {} };
     return ptr.*;
 }
@@ -984,9 +985,11 @@ pub fn lua_isstring(L: *lua_State, idx: i32) i32 {
 
 pub fn lua_iscfunction(L: *lua_State, idx: i32) i32 {
     const v = stackAt(L, idx);
-    return switch (v) {
-        .function => 1,
-        else => 0,
+    if (v != .function) return 0;
+    const cl = v.function orelse return 0;
+    return switch (cl.*) {
+        .c => 1,
+        .lua => 0,
     };
 }
 
@@ -2863,11 +2866,7 @@ pub fn finishLoad(L: *lua_State, proto: *lua_Proto) i32 {
 }
 
 pub fn lua_dump(L: *lua_State, writer: lua_Writer, data: ?*anyopaque, strip: i32) i32 {
-    _ = L;
-    _ = writer;
-    _ = data;
-    _ = strip;
-    return LUA_OK;
+    return ldump.lua_dump(L, writer, data, strip);
 }
 
 pub fn lua_yieldk(L: *lua_State, nresults: i32, ctx: lua_KContext, k: ?lua_KFunction) anyerror!i32 {

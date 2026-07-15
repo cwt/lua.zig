@@ -2400,3 +2400,47 @@ real AddressSanitizer, which Zig 0.16.0 does not provide for Zig heaps.
 - `zig build -Dasan` (UBSan) + `luazig ../pi/pi-5.5.lua` → runs clean.
 - `zig build test -Dasan` → 124/124 pass (UBSan on the test binary; heap safety
   still provided by `std.testing.allocator`).
+
+## 2026-07-16 — Phase I.1: `lua_dump` bytecode dumper + binary round-trip compat
+
+Implemented `lua_dump` (the C-API function that serialises a Lua function to
+bytecode) and fixed two loader bugs that prevented `string.dump`/`load`
+round-tripping and broke loading of reference-generated chunks.
+
+### Changes
+- **`src/ldump.zig` (new)** — full bytecode dumper mirroring `lua/ldump.c`:
+  `DumpState` writer wrapper, `dumpHeader`, `dumpFunction`/`dumpCode`/
+  `dumpConstants`/`dumpUpvalues`/`dumpProtos`/`dumpString`/`dumpDebug`,
+  `dumpInt`/`dumpVarint`/`dumpSize`/`dumpAlign`. Honours `strip`.
+- **`src/lua.zig`** — `lua_dump` now forwards to `ldump.lua_dump`; `lua_iscfunction`
+  fixed to return 1 only for C closures (`cl.* == .c`), 0 for Lua closures
+  (previously it returned 1 for *any* function, which made `string.dump`
+  reject valid Lua functions); `stackAt` made `pub` for the dumper.
+- **`src/lib/stringlib.zig`** — `str_dump` rewritten to use a real `luaL_Buffer`
+  writer (was an inline accumulator) and to `lua_pushvalue(L, 1)` so the target
+  function sits at the top when `lua_dump` reads `top-1`; now returns the dump
+  string and an error message on failure.
+- **`src/lundump.zig`** — two loader fixes required for the round-trip and for
+  binary compatibility with chunks produced by reference Lua 5.5.1:
+  - `loadConstants`: integer constants (`LUA_VNUMINT`, tag 3) stored as
+    `.integer` (were wrongly stored as `.number`/float).
+  - `loadString`: reads `size` data bytes (the `len+1` count **including the
+    trailing `\0`**), matching `lua/ldump.c`'s `dumpString` which writes
+    `size + 1` bytes. The dumper likewise now writes the `\0` terminator, so
+    the on-disk string layout matches the reference exactly.
+
+### Verification
+- `zig build test` → 124/124 pass (regression: the original `loadString` over-
+  /under-read the string by one byte, corrupting every string-constant chunk).
+- `string.dump(f)` → `load(b)` round-trips for integer and string constants,
+  with and without `strip`.
+- **Cross-compat proven both directions**: luazig-dumped bytecode `loadfile`s and
+  runs under reference `lua/lua`, and reference-dumped bytecode `loadfile`s and
+  runs under `luazig` (same numeric result), confirming exact 5.5.1 binary format
+  compatibility.
+
+### §0.1 self-audit
+No §0.1 rule violations introduced. Allocator is threaded (no `page_allocator`);
+errors propagate via `!void`/`try`; numeric conversions use `@intCast`/`@bitCast`
+only for byte reinterpretation; no C strings/`@ptrCast`; unmanaged containers;
+`@intCast` used for signed/unsigned conversion (1-arg, Zig 0.16.0-correct).

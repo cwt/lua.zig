@@ -185,7 +185,7 @@ const LoadState = struct {
                     k[i] = .{ .number = try self.loadNumber() };
                 },
                 3 => { // LUA_VNUMINT
-                    k[i] = .{ .number = @floatFromInt(try self.loadInteger()) };
+                    k[i] = .{ .integer = try self.loadInteger() };
                 },
                 4, 20 => { // LUA_VSHRSTR, LUA_VLNGSTR
                     const ts = try self.loadString();
