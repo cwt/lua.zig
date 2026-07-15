@@ -60,10 +60,10 @@ pub const ExpKind = enum {
     VUPVAL,
     VCONST,
     VINDEXED,
+    VVARGIND,
     VINDEXUP,
     VINDEXI,
     VINDEXSTR,
-    VVARGIND,
     VJMP,
     VRELOC,
     VCALL,
@@ -346,7 +346,8 @@ pub fn needvatab(f: *lua.lua_Proto) void {
 // ---------------------------------------------------------------------------
 
 fn getlocalvardesc(fs: *FuncState, vidx: i32) *llex.Vardesc {
-    return &fs.ls.dyd.actvar.items[@intCast(fs.firstlocal + vidx)];
+    const idx = fs.firstlocal + vidx;
+    return &fs.ls.dyd.actvar.items.ptr[@intCast(idx)];
 }
 
 fn reglevel(fs: *FuncState, nvar: i32) i32 {
@@ -412,13 +413,13 @@ fn adjustlocalvars(ls: *llex.LexState, nvars: i32) !void {
 }
 
 fn removevars(fs: *FuncState, tolevel: i32) void {
-    const dyd = &fs.ls.dyd;
+    const num_to_remove = fs.nactvar - tolevel;
     while (fs.nactvar > tolevel) {
         fs.nactvar -= 1;
         const v: ?*lua.LocVar = localdebuginfo(fs, fs.nactvar);
         if (v) |vv| vv.endpc = @intCast(fs.code.items.len);
     }
-    dyd.actvar.items.len = @intCast(fs.firstlocal + tolevel);
+    fs.ls.dyd.actvar.items.len -= @intCast(num_to_remove);
 }
 
 fn searchupvalue(fs: *FuncState, n: *lua.lua_TString) i32 {
@@ -582,8 +583,10 @@ fn check_readonly(ls: *llex.LexState, e: *expdesc) !void {
             return;
         },
     }
-    if (varname) |_| {
-        try lcode.luaK_semerror(ls, "attempt to assign to const variable");
+    if (varname) |vn| {
+        const msg = try std.fmt.allocPrint(ls.L.allocator, "attempt to assign to const variable '{s}'", .{vn.s});
+        defer ls.L.allocator.free(msg);
+        try lcode.luaK_semerror(ls, msg);
     }
 }
 
@@ -723,7 +726,7 @@ fn solvegotos(fs: *FuncState, bl: *BlockCnt) !void {
     const gl = &ls.dyd.gt;
     const outlevel = reglevel(fs, bl.nactvar);
     var igt = bl.firstgoto;
-    while (igt < gl.items.len) : (igt += 1) {
+    while (igt < gl.items.len) {
         const gt = &gl.items[@intCast(igt)];
         const lb = findlabel(ls, gt.name.?, bl.firstlabel);
         if (lb != null) {
@@ -731,6 +734,7 @@ fn solvegotos(fs: *FuncState, bl: *BlockCnt) !void {
         } else {
             if (bl.upval != 0 and reglevel(fs, gt.nactvar) > outlevel) gt.close = 1;
             gt.nactvar = bl.nactvar;
+            igt += 1;
         }
     }
     ls.dyd.label.items.len = @intCast(bl.firstlabel);
@@ -787,6 +791,7 @@ fn breakstat(ls: *llex.LexState, line: i32) !void {
 fn addprototype(ls: *llex.LexState) !*lua.lua_Proto {
     const fs = ls.fs.?;
     const f = try lua.createProto(ls.L.allocator);
+    try lua.registerGC(ls.L, f);
     try fs.p.append(ls.L.allocator, f);
     return f;
 }
@@ -1625,7 +1630,9 @@ fn getvarattribute(ls: *llex.LexState, df: u8) !u8 {
         try checknext(ls, '>');
         if (eqstr_str(ts, "const")) return RDKCONST;
         if (eqstr_str(ts, "close")) return RDKTOCLOSE;
-        try lcode.luaK_semerror(ls, "unknown attribute");
+        const msg = try std.fmt.allocPrint(ls.L.allocator, "unknown attribute '{s}'", .{ts.s});
+        defer ls.L.allocator.free(msg);
+        try lcode.luaK_semerror(ls, msg);
     }
     return df;
 }
@@ -1775,9 +1782,6 @@ fn mainfunc(ls: *llex.LexState, fs: *FuncState) !void {
 }
 
 fn cleanupFuncState(fs: *FuncState, allocator: std.mem.Allocator) void {
-    for (fs.p.items) |proto| {
-        lua.destroyProto(allocator, proto);
-    }
     fs.code.deinit(allocator);
     fs.k.deinit(allocator);
     fs.lineinfo.deinit(allocator);
@@ -1806,7 +1810,7 @@ pub fn luaD_protectedparser(
     first_slice: []const u8,
 ) !*lua.lua_Proto {
     var ls: llex.LexState = undefined;
-    const source = try lstring.luaS_new(L.allocator, &L.l_G.?.strt, L.l_G.?.seed, chunkname);
+    const source = try lstring.luaS_new(L.l_G.?, chunkname);
     try llex.luaX_setinput(L, &ls, reader, dt, source, first_slice);
     errdefer {
         ls.buff.deinit(L.allocator);

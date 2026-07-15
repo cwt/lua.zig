@@ -185,14 +185,18 @@ pub fn luaL_register(L: *lua.lua_State, libname: []const u8, l: ?[]const luaL_Re
 // ===================================================================
 
 pub fn luaL_error(L: *lua.lua_State, msg: []const u8) anyerror {
+    luaL_where(L, 1);
     _ = lua.lua_pushstring(L, msg);
+    lua.lua_concat(L, 2);
     return lua.lua_error(L);
 }
 
 pub fn luaL_argerror(L: *lua.lua_State, arg: i32, msg: []const u8) anyerror {
+    luaL_where(L, 1);
     var buf: [256]u8 = undefined;
     const s = std.fmt.bufPrint(&buf, "bad argument #{d} ({s})", .{ arg, msg }) catch msg;
     _ = lua.lua_pushstring(L, s);
+    lua.lua_concat(L, 2);
     return lua.lua_error(L);
 }
 
@@ -509,7 +513,28 @@ pub fn luaL_loadfilex(L: *lua.lua_State, filename: ?[]const u8, mode: []const u8
         };
         defer L.allocator.free(content);
 
-        var ls = LoadS{ .s = content, .done = false };
+        // Skip an optional UTF-8 BOM at the start, then skip an optional
+        // shebang line (Unix exec. file starting with '#'). This matches the
+        // `skipcomment` function in Lua's `lauxlib.c`.
+        const start = blk: {
+            var start_idx: usize = 0;
+            // Skip UTF-8 BOM (0xEF 0xBB 0xBF)
+            if (content.len >= 3 and content[0] == 0xEF and content[1] == 0xBB and content[2] == 0xBF) {
+                start_idx = 3;
+            }
+            // Skip shebang line if present
+            if (start_idx < content.len and content[start_idx] == '#') {
+                if (std.mem.indexOfScalar(u8, content[start_idx..], '\n')) |nl| {
+                    start_idx = start_idx + nl + 1;
+                } else {
+                    start_idx = content.len; // no newline: rest of file is the shebang
+                }
+            }
+            break :blk start_idx;
+        };
+        const adjusted = content[start..];
+
+        var ls = LoadS{ .s = adjusted, .done = false };
         return lua.lua_load(L, getS, @as(?*anyopaque, @ptrCast(&ls)), chunkname, mode);
     }
 

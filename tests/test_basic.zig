@@ -605,9 +605,10 @@ test "bitwise shift operations with negative and large shift" {
     try std.testing.expectEqual(@as(i64, 4), lua.luaV_shift(16, -2));
     // -8 << 1 = -16
     try std.testing.expectEqual(@as(i64, -16), lua.luaV_shift(-8, 1));
-    // Large shift: 1 << 70 = 1 << (70 & 0x3F) = 1 << 6 = 64
-    try std.testing.expectEqual(@as(i64, 64), lua.luaV_shift(1, 70));
-    // Negative large: 1 << -70 = 1 >> (70 & 0x3F) = 1 >> 6 = 0
+    // Large shift: per Lua 5.5 luaV_shiftl, a shift count >= NBITS (64)
+    // yields 0 (not a masked wrap). 1 << 70 == 0.
+    try std.testing.expectEqual(@as(i64, 0), lua.luaV_shift(1, 70));
+    // Negative large: -70 <= -64 also yields 0.
     try std.testing.expectEqual(@as(i64, 0), lua.luaV_shift(1, -70));
 
     // Test via C API lua_arith
@@ -2920,7 +2921,7 @@ fn lexerStringReader(
 }
 
 fn newSource(L: *lua.lua_State, name: []const u8) !*lua.lua_TString {
-    return try lua.lstring.luaS_new(L.allocator, &L.l_G.?.strt, L.l_G.?.seed, name);
+    return try lua.lstring.luaS_new(L.l_G.?, name);
 }
 
 test "lex basic tokens and numbers" {

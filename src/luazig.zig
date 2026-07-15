@@ -78,10 +78,63 @@ fn stdoutWrite(io: std.Io, msg: []const u8) !void {
     try std.Io.File.stdout().writeStreamingAll(io, msg);
 }
 
+/// Error handler used for all protected top-level calls (mirrors lua.c's
+/// `msghandler`). Builds a traceback while the call frames are still intact
+/// and returns the combined "message\nstack traceback:..." string.
+fn msghandler(L: *lua.lua_State) anyerror!i32 {
+    const msg = lua.lua_tostring(L, 1);
+    if (msg == null) {
+        // Non-string error object: try its __tostring metamethod first.
+        const has_meta = (lauxlib.luaL_callmeta(L, 1, "__tostring") catch 0) != 0;
+        if (has_meta and lua.lua_type(L, -1) == lua.LUA_TSTRING) {
+            return 1; // __tostring produced a string; return it as-is.
+        }
+        if (lua.lua_tostring(L, -1)) |_| {
+            lua.lua_pop(L, 1); // discard a non-string __tostring result
+        }
+        const tname = lauxlib.luaL_typename(L, 1) catch "?";
+        const buf = std.fmt.allocPrint(L.allocator, "(error object is a {s} value)", .{tname}) catch "(error)";
+        defer L.allocator.free(buf);
+        try lauxlib.luaL_traceback(L, L, buf, 1);
+    } else {
+        try lauxlib.luaL_traceback(L, L, msg.?, 1);
+    }
+    return 1;
+}
+
+/// Protected call wrapper (mirrors lua.c's `docall`): push `msghandler` under
+/// the function+args and run it as the error function so uncaught errors get
+/// a full stack traceback. Returns the pcall status.
+fn pcallWithHandler(L: *lua.lua_State, nargs: i32) i32 {
+    lua.lua_pushcfunction(L, msghandler);
+    // Move the handler just below the [args..., func] block on top.
+    lua.lua_insert(L, -(nargs + 2));
+    const hidx: i32 = lua.lua_gettop(L) - (nargs + 1);
+    const status = lua.lua_pcallk(L, nargs, lua.LUA_MULTRET, hidx, 0, null);
+    lua.lua_remove(L, hidx);
+    return status;
+}
+
+/// Run a chunk already loaded at the top of the stack (with `nargs` extra
+/// arguments just below it). Returns true if an error occurred.
+fn runLoadedChunk(L: *lua.lua_State, io: std.Io, nargs: i32) !bool {
+    const status = pcallWithHandler(L, nargs);
+    if (status != lua.LUA_OK) {
+        printError(L, io);
+        return true;
+    }
+    try printResults(L, io);
+    return false;
+}
+
+/// Print a top-level error message (already carrying a traceback, courtesy of
+/// `msghandler`) to stderr.
 fn printError(L: *lua.lua_State, io: std.Io) void {
     if (lua.lua_tostring(L, -1)) |msg| {
         stderrWrite(io, msg) catch {};
         stderrWrite(io, "\n") catch {};
+    } else {
+        stderrWrite(io, "(error object is not a string)\n") catch {};
     }
     lua.lua_pop(L, 1);
 }
@@ -129,19 +182,19 @@ fn printResults(L: *lua.lua_State, io: std.Io) !void {
     lua.lua_settop(L, 0);
 }
 
-fn runString(L: *lua.lua_State, io: std.Io, s: []const u8, name: []const u8) !void {
-    const status = try lua.luaL_dostring(L, s, name);
-    if (status != lua.LUA_OK) {
+fn runString(L: *lua.lua_State, io: std.Io, s: []const u8, name: []const u8) !bool {
+    const load_status = lauxlib.luaL_loadbufferx(L, s, name, "t");
+    if (load_status != lua.LUA_OK) {
         printError(L, io);
-    } else {
-        try printResults(L, io);
+        return true;
     }
+    return try runLoadedChunk(L, io, 0);
 }
 
 /// Require a library by name. Built-in libraries are already globals after
 /// luaL_openlibs, so we register them in package.loaded; otherwise we defer to
 /// require().
-fn doLibrary(L: *lua.lua_State, io: std.Io, name: []const u8) !void {
+fn doLibrary(L: *lua.lua_State, io: std.Io, name: []const u8) !bool {
     _ = lua.lua_getglobal(L, name);
     if (lua.lua_isnil(L, -1) == 0) {
         // Already a global: register it in package.loaded[name].
@@ -149,7 +202,7 @@ fn doLibrary(L: *lua.lua_State, io: std.Io, name: []const u8) !void {
         lua.lua_pushvalue(L, -2);
         try lua.lua_setfield(L, -2, name);
         lua.lua_pop(L, 2);
-        return;
+        return false;
     }
     lua.lua_pop(L, 1);
 
@@ -157,15 +210,16 @@ fn doLibrary(L: *lua.lua_State, io: std.Io, name: []const u8) !void {
     _ = lua.lua_getglobal(L, "require");
     if (lua.lua_type(L, -1) != lua.LUA_TFUNCTION) {
         lua.lua_pop(L, 1);
-        return;
+        return false;
     }
     _ = lua.lua_pushstring(L, name);
-    const status = lua.lua_pcallk(L, 1, 1, 0, 0, null);
+    const status = pcallWithHandler(L, 1);
     if (status == lua.LUA_OK) {
         lua.lua_setglobal(L, name);
-    } else {
-        printError(L, io);
+        return false;
     }
+    printError(L, io);
+    return true;
 }
 
 fn readAllStdin(io: std.Io, gpa: std.mem.Allocator) ![]u8 {
@@ -220,7 +274,7 @@ fn runRepl(L: *lua.lua_State, io: std.Io, gpa: std.mem.Allocator, print_banner: 
         // need to keep reading (multi-line input).
         const status = lauxlib.luaL_loadstring(L, accum.items);
         if (status == lua.LUA_OK) {
-            const call_status = lua.lua_pcallk(L, 0, lua.LUA_MULTRET, 0, 0, null);
+            const call_status = pcallWithHandler(L, 0);
             if (call_status != lua.LUA_OK) {
                 printError(L, io);
             } else {
@@ -287,30 +341,40 @@ pub fn main(init: std.process.Init) !void {
         try stdoutWrite(io, "\n");
     }
 
+    var had_error = false;
+
     for (parsed.e_chunks) |chunk| {
-        try runString(L, io, chunk, "=(command line)");
+        had_error = (try runString(L, io, chunk, "=(command line)")) or had_error;
     }
 
     for (parsed.l_libs) |lib| {
-        try doLibrary(L, io, lib);
+        had_error = (try doLibrary(L, io, lib)) or had_error;
     }
 
     if (parsed.script) |s| {
         if (std.mem.eql(u8, s, "-")) {
             const content = try readAllStdin(io, gpa);
             defer gpa.free(content);
-            try runString(L, io, content, "=stdin");
+            had_error = (try runString(L, io, content, "=stdin")) or had_error;
         } else {
-            const status = lauxlib.luaL_dofile(L, s);
-            if (status != lua.LUA_OK) {
+            const load_status = lauxlib.luaL_loadfilex(L, s, "bt");
+            if (load_status != lua.LUA_OK) {
                 printError(L, io);
+                had_error = true;
+            } else {
+                had_error = (try runLoadedChunk(L, io, 0)) or had_error;
             }
         }
     }
 
     // Enter the REPL when -i is given, or when there is no script and no -e.
+    // REPL errors do not affect the process exit code (mirrors lua.c).
     if (parsed.interactive or (parsed.script == null and parsed.e_chunks.len == 0)) {
         try runRepl(L, io, gpa, !parsed.show_version);
+    }
+
+    if (had_error) {
+        std.process.exit(1);
     }
 }
 

@@ -26,8 +26,8 @@ const LStream = struct {
 /// Default buffer size for `setvbuf` when no size is given (cf. stdio `BUFSIZ`).
 const IO_BUFSIZE: usize = 8192;
 
-fn tostream(L_: *L, idx: i32) *LStream {
-    const p = lua.lua_touserdata(L_, idx) orelse unreachable;
+fn tostream(L_: *L, idx: i32) !*LStream {
+    const p = try lauxlib.luaL_checkudata(L_, idx, LUA_FILEHANDLE);
     return @as(*LStream, @ptrCast(@alignCast(p)));
 }
 
@@ -73,16 +73,16 @@ fn f_close(L_: *L, p: *LStream) !i32 {
 
 fn io_close(L_: *L) !i32 {
     const p = if (lua.lua_isnone(L_, 1) == 0)
-        tostream(L_, 1)
+        try tostream(L_, 1)
     else blk: {
         _ = lua.lua_rawgetp(L_, lua.LUA_REGISTRYINDEX, @ptrCast(IO_OUTPUT.ptr));
-        break :blk tostream(L_, -1);
+        break :blk try tostream(L_, -1);
     };
     return f_close(L_, p);
 }
 
 fn f_gc(L_: *L) !i32 {
-    const p = tostream(L_, 1);
+    const p = try tostream(L_, 1);
     if (p.closef != null) {
         _ = f_close(L_, p) catch {};
     }
@@ -90,7 +90,7 @@ fn f_gc(L_: *L) !i32 {
 }
 
 fn io_fclose(L_: *L) !i32 {
-    const p = tostream(L_, 1);
+    const p = try tostream(L_, 1);
     return f_close(L_, p);
 }
 
@@ -107,7 +107,7 @@ fn getiofile(L_: *L, findex: []const u8) !*LStream {
     if (lua.lua_type(L_, -1) == lua.LUA_TNIL) {
         return lauxlib.luaL_error(L_, "default file is closed");
     }
-    return tostream(L_, -1);
+    return try tostream(L_, -1);
 }
 
 fn g_iofile(L_: *L, findex: []const u8, mode: []const u8) !i32 {
@@ -395,7 +395,7 @@ fn io_read(L_: *L) !i32 {
 }
 
 fn f_read(L_: *L) !i32 {
-    const p = tostream(L_, 1);
+    const p = try tostream(L_, 1);
     return g_read(L_, p, 2);
 }
 
@@ -498,12 +498,12 @@ fn io_write(L_: *L) !i32 {
 }
 
 fn f_write(L_: *L) !i32 {
-    const p = tostream(L_, 1);
+    const p = try tostream(L_, 1);
     return g_write(L_, p, 2);
 }
 
 fn f_seek(L_: *L) !i32 {
-    const p = tostream(L_, 1);
+    const p = try tostream(L_, 1);
     const whence_s = lua.lua_tostring(L_, 2) orelse "cur";
     const offset = lua.lua_tointeger(L_, 3) orelse 0;
     const whence: usize = if (std.mem.eql(u8, whence_s, "set")) 0 else if (std.mem.eql(u8, whence_s, "end")) 2 else 1;
@@ -517,7 +517,7 @@ fn f_seek(L_: *L) !i32 {
 }
 
 fn f_setvbuf(L_: *L) !i32 {
-    const p = tostream(L_, 1);
+    const p = try tostream(L_, 1);
     const mode = lua.lua_tostring(L_, 2) orelse "full";
     const size = lua.lua_tointeger(L_, 3);
     if (p.buf) |b| {
@@ -549,7 +549,7 @@ fn io_flush(L_: *L) !i32 {
 }
 
 fn f_flush(L_: *L) !i32 {
-    const p = tostream(L_, 1);
+    const p = try tostream(L_, 1);
     const ok = flushBuffer(p);
     return lauxlib.luaL_fileresult(L_, ok, null);
 }
@@ -570,7 +570,7 @@ fn io_lines(L_: *L) !i32 {
 }
 
 fn f_lines(L_: *L) !i32 {
-    const p = tostream(L_, 1);
+    const p = try tostream(L_, 1);
     var buf: std.ArrayList(u8) = .empty;
     defer buf.deinit(L_.allocator);
     while (true) {

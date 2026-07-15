@@ -142,7 +142,7 @@ const LoadState = struct {
         try self.loadBlock(buf);
 
         const g = self.L.l_G orelse return error.NoGlobalState;
-        const ts = try lstring.luaS_new(g.allocator, &g.strt, g.seed, buf[0..len]);
+        const ts = try lstring.luaS_new(g, buf[0..len]);
 
         try self.strings.append(self.allocator, ts);
         return ts;
@@ -204,18 +204,13 @@ const LoadState = struct {
         const sub_protos = try self.allocator.alloc(*lua.lua_Proto, @intCast(n));
         var loaded: usize = 0;
         errdefer {
-            var j: usize = 0;
-            while (j < loaded) : (j += 1) {
-                lua.destroyProto(self.allocator, sub_protos[j]);
-            }
             self.allocator.free(sub_protos);
         }
 
         while (loaded < @as(usize, @intCast(n))) : (loaded += 1) {
             const sub = try lua.createProto(self.allocator);
             sub.is_sub = true;
-            // Sub-protos are freed via the parent's GC entry (freeGCObject recursively traverses f.p).
-            // try lua.registerGC(self.L, sub);
+            try lua.registerGC(self.L, sub);
             sub_protos[loaded] = sub;
             try self.loadFunction(sub);
         }

@@ -15,7 +15,9 @@ const lauxlib = @import("../lauxlib.zig");
 // ===================================================================
 
 pub fn openbaselib(L: *lua.lua_State) !void {
-    // Register base library functions in _G table
+    // Set the global `_G` to the globals table (as in the reference luaopen_base).
+    lua.lua_pushglobaltable(L);
+    lua.lua_setglobal(L, "_G");
 
     // assert(cond [, message])
     lua.lua_pushcfunction(L, assert);
@@ -108,6 +110,10 @@ pub fn openbaselib(L: *lua.lua_State) !void {
     // xpcall(function, errfunc, vararg)
     lua.lua_pushcfunction(L, xpcall);
     lua.lua_setglobal(L, "xpcall");
+
+    // Set _VERSION global (matching C luaL_openlibs behaviour)
+    _ = lua.lua_pushstring(L, lua.LUA_VERSION);
+    lua.lua_setglobal(L, "_VERSION");
 }
 
 // ===================================================================
@@ -141,7 +147,9 @@ fn assert(L: *lua.lua_State) anyerror!i32 {
         _ = lua.lua_pushstring(L, "assertion failed!");
     }
     lua.lua_settop(L, 1);
-    return error_fn(L);
+    // Raise via luaL_error so the caller's location is prepended.
+    const msg = lua.lua_tostring(L, -1) orelse "(error object is not a string)";
+    return lauxlib.luaL_error(L, msg);
 }
 
 fn collectgarbage(L: *lua.lua_State) anyerror!i32 {
@@ -191,7 +199,7 @@ fn dofile(L: *lua.lua_State) anyerror!i32 {
     };
     defer L.allocator.free(contents);
 
-    var slice_data = contents;
+    var slice_data = skipFilePreamble(contents);
     const status = lua.lua_load(L, sliceReader, @as(?*anyopaque, @ptrCast(&slice_data)), filename, "bt");
     if (status != lua.LUA_OK) {
         return lua.lua_error(L);
@@ -203,6 +211,13 @@ fn dofile(L: *lua.lua_State) anyerror!i32 {
 
 fn error_fn(L: *lua.lua_State) anyerror!i32 {
     lua.lua_settop(L, 1);
+    const level: i32 = @intCast(lauxlib.luaL_optinteger(L, 2, 1));
+    // Mirror the reference luaB_error: prepend the caller's location when the
+    // first argument is a string and level > 0.
+    if (lua.lua_isstring(L, 1) != 0 and level > 0) {
+        lauxlib.luaL_where(L, level);
+        lua.lua_concat(L, 2);
+    }
     return lua.lua_error(L);
 }
 
@@ -230,6 +245,30 @@ fn ipairs(L: *lua.lua_State) anyerror!i32 {
     return 3;
 }
 
+// ===================================================================
+// Helper: skip UTF-8 BOM and shebang line from file content
+// ===================================================================
+
+/// Skip an optional UTF-8 BOM at the start, then skip an optional shebang
+/// line (Unix exec. file starting with '#'). Matches the `skipcomment`
+/// function in Lua's `lauxlib.c`.
+fn skipFilePreamble(content: []const u8) []const u8 {
+    var start_idx: usize = 0;
+    // Skip UTF-8 BOM (0xEF 0xBB 0xBF)
+    if (content.len >= 3 and content[0] == 0xEF and content[1] == 0xBB and content[2] == 0xBF) {
+        start_idx = 3;
+    }
+    // Skip shebang line if present
+    if (start_idx < content.len and content[start_idx] == '#') {
+        if (std.mem.indexOfScalar(u8, content[start_idx..], '\n')) |nl| {
+            start_idx = start_idx + nl + 1;
+        } else {
+            start_idx = content.len;
+        }
+    }
+    return content[start_idx..];
+}
+
 fn loadfile(L: *lua.lua_State) anyerror!i32 {
     const filename = try lauxlib.luaL_checklstring(L, 1, null);
     const mode = try lauxlib.luaL_optlstring(L, 2, "bt", null) orelse "bt";
@@ -243,7 +282,7 @@ fn loadfile(L: *lua.lua_State) anyerror!i32 {
     };
     defer L.allocator.free(contents);
 
-    var slice_data = contents;
+    var slice_data = skipFilePreamble(contents);
     const status = lua.lua_load(L, sliceReader, @as(?*anyopaque, @ptrCast(&slice_data)), filename, mode);
     if (status == lua.LUA_OK) {
         return 1;

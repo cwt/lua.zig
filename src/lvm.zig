@@ -324,6 +324,13 @@ pub fn run(L: *lua.lua_State, active_ci: *lua.CallInfo) anyerror!void {
     var code = proto.code;
 
     while (ci.savedpc < code.len) {
+        const vm_g = L.l_G.?;
+        if (vm_g.gc_running and vm_g.gc_count > vm_g.gc_threshold) {
+            vm_g.gc_running = false;
+            try lua.luaC_collectgarbage(L);
+            vm_g.gc_running = true;
+        }
+
         const instruction: Instruction = code[ci.savedpc];
         const op = GET_OPCODE(instruction);
         ci.savedpc += 1;
@@ -596,10 +603,9 @@ pub fn run(L: *lua.lua_State, active_ci: *lua.CallInfo) anyerror!void {
                 const ra = ci.base + @as(usize, @intCast(GETARG_A(instruction)));
                 const rb = L.stack[ci.base + @as(usize, @intCast(GETARG_B(instruction)))];
                 const sc = GETARG_sC(instruction);
-                const shift: u6 = @intCast(sc);
                 if (rb == .number) {
                     const ib = @as(i64, @intFromFloat(rb.number));
-                    L.stack[ra] = .{ .number = @floatFromInt(ib << shift) };
+                    L.stack[ra] = .{ .number = @floatFromInt(lua.luaV_shift(sc, ib)) };
                     ci.savedpc += 1;
                 }
             },
@@ -607,10 +613,9 @@ pub fn run(L: *lua.lua_State, active_ci: *lua.CallInfo) anyerror!void {
                 const ra = ci.base + @as(usize, @intCast(GETARG_A(instruction)));
                 const rb = L.stack[ci.base + @as(usize, @intCast(GETARG_B(instruction)))];
                 const sc = GETARG_sC(instruction);
-                const shift: u6 = @intCast(sc);
                 if (rb == .number) {
                     const ib = @as(i64, @intFromFloat(rb.number));
-                    L.stack[ra] = .{ .number = @floatFromInt(ib >> shift) };
+                    L.stack[ra] = .{ .number = @floatFromInt(lua.luaV_shift(ib, -sc)) };
                     ci.savedpc += 1;
                 }
             },
@@ -689,9 +694,19 @@ pub fn run(L: *lua.lua_State, active_ci: *lua.CallInfo) anyerror!void {
                 }
             },
             .BOR => {
-                const ra = ci.base + @as(usize, @intCast(GETARG_A(instruction)));
-                const rb = L.stack[ci.base + @as(usize, @intCast(GETARG_B(instruction)))];
-                const rc = L.stack[ci.base + @as(usize, @intCast(GETARG_C(instruction)))];
+                const a = GETARG_A(instruction);
+                const b = GETARG_B(instruction);
+                const c = GETARG_C(instruction);
+                const b_u = @as(usize, @intCast(b));
+                const c_u = @as(usize, @intCast(c));
+                if (ci.base + b_u >= L.stack.len or ci.base + c_u >= L.stack.len) {
+                    std.debug.print("PANIC in BOR: base={}, A={}, B={}, C={}, stack_len={}, pc={}\n", .{
+                        ci.base, a, b, c, L.stack.len, ci.savedpc - 1
+                    });
+                }
+                const ra = ci.base + @as(usize, @intCast(a));
+                const rb = L.stack[ci.base + b_u];
+                const rc = L.stack[ci.base + c_u];
                 if (rb == .number and rc == .number) {
                     const ib = @as(i64, @intFromFloat(rb.number));
                     const ic = @as(i64, @intFromFloat(rc.number));
@@ -826,7 +841,7 @@ pub fn run(L: *lua.lua_State, active_ci: *lua.CallInfo) anyerror!void {
                     }
                 }
                 const g = L.l_G orelse return error.NoGlobalState;
-                const ts = try lstring.luaS_new(g.allocator, &g.strt, g.seed, list.items);
+                const ts = try lstring.luaS_new(g, list.items);
                 L.stack[ra_idx] = .{ .string = ts };
             },
             .CLOSE => {

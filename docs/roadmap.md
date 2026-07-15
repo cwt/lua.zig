@@ -233,6 +233,63 @@ Silent no-ops that produce wrong results:
 - `luaL_checkoption` `def` made nullable (`?[]const u8`) for null-default support ✅
 
 ### Verification
-Each H.x sub-phase must compile, pass all existing tests, and add focused tests for the new functionality. After Phase H is complete, `luazig` should pass all Lua 5.5.1 `lua/testes/` test files without modification (modulo `os.execute` platform dependency and `os.date` localization).
+Each H.x sub-phase must compile, pass all existing tests, and add focused tests for the new functionality.
 
-See `AGENTS.md` §Phase H for detailed per-item breakdown. §0.1 gate applies to all work.
+## Post-Phase H — Test-suite compatibility (IN PROGRESS, 2026-07-14/15)
+
+Phase H closed the C-API gap. The remaining work is making the Lua 5.5.1 test
+suite (`lua/testes/`) pass. Current status: 2 PASS, 23 FAIL, 1 TIMEOUT,
+7 SKIP, 1 CHECK (34 total).
+
+### Major blockers addressed in current session
+- **Exit-code propagation**: `had_error` + `std.process.exit(1)` on uncaught
+  errors (was exit 0).
+- **Traceback on uncaught errors**: `msghandler` + `pcallWithHandler` routes
+  all top-level calls through a message handler that builds tracebacks.
+- **`lua_type` fix**: Returns `LUA_TNONE` for out-of-range indices (was
+  `LUA_TNIL`), unblocking all argument validation.
+- **`_G` global**: Set to globals table in `openbaselib` (was nil).
+- **GC rewrite**: Back-pointers, thread-stack traversal, weak tables,
+  auto-tuning.
+- **Stack safety**: All push functions check capacity before writing.
+- **`luaV_shift`**: Correct semantics for `|s| >= 64` → `0`.
+- **Vararg fixes**: Table assignment syntax, `n` field validation.
+- **Library registration**: All libraries registered in `package.loaded`.
+
+### Remaining work
+
+#### A. Architectural — Exact 64-bit integer type (dominant blocker)
+`TValue` stores all numbers as `f64` (`lua_pushinteger` does
+`@floatFromInt`). `math.maxinteger` / `math.mininteger` round-trip
+inexactly, breaking every test relying on exact integer semantics:
+`math`, `sort`, `verybig` (partially), `utf8`, `tpack`, `nextvar`, `big`,
+`gengc`, `cstack`, `attrib`. Requires adding `.integer: i64` variant to
+`TValue` + updating every operator/table-key/comparison/C-API path.
+
+#### B. Real bugs (individually fixable)
+- **Lexer**: `\x` escape with no hex digits doesn't error (`literals.lua`).
+- **Parser**: `goto` label scoping (label inside block seen as visible,
+  `goto.lua`).
+- **Tablelib**: `table.unpack({}, 1, n=2^30)` mishandles extra named arg
+  (`errors.lua`).
+- **Os/iolib**: `os.getenv"PATH"` / `io.stdin` / `io.input` (`files.lua`).
+- **Stringlib pattern matcher**: `string.find` with embedded NULs off-by-one
+  (`pm.lua`).
+- **VM/GC**: `constructs.lua` TIMEOUT — nondeterministic infinite loop when
+  generating thousands of nested `and`/`or`/`not` expressions.
+- **IO write**: `verybig.lua` native SIGABRT in `std.Io.Writer.fixedDrain`
+  `@memcpy` while writing >64k programs (io-write buffer overflow).
+- **CLI interpreter**: `main.lua` tests the standalone CLI itself.
+- **Misc**: `calls/closure/big/gengc/db/events/locals` — assertion/error-object
+  mismatches needing per-test diagnosis.
+
+#### C. Unit tests (2 pre-existing failures, unrelated)
+- `garbage collector mark and sweep`
+- `H.5 lua_pushexternalstring … frees external bytes on GC`
+
+### Strategy
+1. Fix group B library/lexer bugs (low risk, clear wins).
+2. Debug `constructs.lua` VM/GC hang (needs instrumentation).
+3. Fix `pm.lua` string matcher NUL handling.
+4. Plan integer-type `TValue` rework (group A) — the single highest-impact
+   change, but requires a dedicated focused phase.

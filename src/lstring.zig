@@ -25,24 +25,23 @@ pub fn luaS_hash(str: []const u8, seed: usize) u32 {
 /// allocated and linked into `strt`. The bytes are owned by the map's key
 /// storage, so `ts.s` points at stable memory.
 pub fn luaS_new(
-    allocator: std.mem.Allocator,
-    strt: *std.array_hash_map.String(*lua.lua_TString),
-    seed: usize,
+    g: *lua.global_State,
     s: []const u8,
 ) !*lua.lua_TString {
-    const gop = try strt.getOrPut(allocator, s);
+    const gop = try g.strt.getOrPut(g.allocator, s);
     if (gop.found_existing) {
         return gop.value_ptr.*;
     }
-    const key = try allocator.dupe(u8, s);
+    const key = try g.allocator.dupe(u8, s);
     gop.key_ptr.* = key;
-    const ts = try allocator.create(lua.lua_TString);
+    const ts = try g.allocator.create(lua.lua_TString);
     ts.* = .{
         .s = key,
         .len = key.len,
-        .hash = luaS_hash(key, seed),
+        .hash = luaS_hash(key, g.seed),
     };
     gop.value_ptr.* = ts;
+    g.gc_count += 1;
     return ts;
 }
 

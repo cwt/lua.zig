@@ -48,7 +48,7 @@ pub fn luaT_init(L: *lua.lua_State) !void {
     const g = L.l_G orelse return;
     var i: usize = 0;
     while (i < @intFromEnum(TMS.CLOSE) + 1) : (i += 1) {
-        g.tmname[i] = try lstring.luaS_new(g.allocator, &g.strt, g.seed, luaT_eventname[i]);
+        g.tmname[i] = try lstring.luaS_new(g, luaT_eventname[i]);
     }
 }
 
@@ -398,7 +398,7 @@ fn createVarargTable(L: *lua.lua_State, first_extra: usize, n: usize) !*lua.lua_
         try ltable.setInt(t, @intCast(i + 1), L.stack[first_extra + i]);
     }
     const g = L.l_G orelse return error.NoGlobalState;
-    const nkey = lua.TValue{ .string = try lstring.luaS_new(g.allocator, &g.strt, g.seed, "n") };
+    const nkey = lua.TValue{ .string = try lstring.luaS_new(g, "n") };
     try ltable.set(t, nkey, lua.TValue{ .number = @as(f64, @floatFromInt(@as(i64, @intCast(n)))) });
     return t;
 }
@@ -406,15 +406,21 @@ fn createVarargTable(L: *lua.lua_State, first_extra: usize, n: usize) !*lua.lua_
 fn getnumargs(L: *lua.lua_State, ci: *lua.CallInfo, h: ?*lua.lua_Table) !i32 {
     if (h == null) return ci.nextraargs;
     const g = L.l_G orelse return 0;
-    const nkey = lua.TValue{ .string = try lstring.luaS_new(g.allocator, &g.strt, g.seed, "n") };
+    const nkey = lua.TValue{ .string = try lstring.luaS_new(g, "n") };
     const res = ltable.get(h.?, nkey);
-    if (res.typ() == lua.LUA_TNUMBER) {
-        const nval = res.number;
-        if (nval >= 0 and nval <= @as(f64, @floatFromInt(std.math.maxInt(i32) / 2))) {
-            return @intFromFloat(nval);
-        }
+    // Mirror lua/ltm.c getnumargs: the vararg table's 'n' field must be a
+    // proper non-negative integer not larger than INT_MAX/2. (luazig unifies
+    // integers and floats into a single number type, so "proper integer"
+    // here means an integral value, matching lua.lua_isinteger.)
+    if (res != .number or
+        @trunc(res.number) != res.number or
+        res.number < 0 or
+        res.number > @as(f64, @floatFromInt(std.math.maxInt(i32) / 2)))
+    {
+        _ = lua.lua_pushstring(L, "vararg table has no proper 'n'");
+        return lua.lua_error(L);
     }
-    return 0;
+    return @intFromFloat(res.number);
 }
 
 // lua/ltm.c luaT_adjustvarargs

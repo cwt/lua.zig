@@ -467,27 +467,26 @@ fn str2num(alloc: Allocator, buf: []const u8, seminfo: *SemInfo) !i32 {
 // ---------------------------------------------------------------------------
 // UTF-8 helpers
 // ---------------------------------------------------------------------------
-// Encode codepoint `x` into `buff` (<= 4 bytes); return the length.
-fn utf8esc(buff: *[4]u8, x: u32) u8 {
+// Encode codepoint `x` into `buff` (up to 8 bytes); return the length.
+// The bytes are placed at the end of the buffer, from index `8 - length` to `7`.
+fn utf8esc(buff: *[8]u8, x_val: u32) u8 {
+    var x = x_val;
+    var n: u8 = 1;
+    std.debug.assert(x <= 0x7FFFFFFF);
     if (x < 0x80) {
-        buff[0] = @intCast(x);
-        return 1;
-    } else if (x < 0x800) {
-        buff[0] = @intCast(0xC0 | (x >> 6));
-        buff[1] = @intCast(0x80 | (x & 0x3F));
-        return 2;
-    } else if (x < 0x10000) {
-        buff[0] = @intCast(0xE0 | (x >> 12));
-        buff[1] = @intCast(0x80 | ((x >> 6) & 0x3F));
-        buff[2] = @intCast(0x80 | (x & 0x3F));
-        return 3;
+        buff[8 - 1] = @intCast(x);
     } else {
-        buff[0] = @intCast(0xF0 | (x >> 18));
-        buff[1] = @intCast(0x80 | ((x >> 12) & 0x3F));
-        buff[2] = @intCast(0x80 | ((x >> 6) & 0x3F));
-        buff[3] = @intCast(0x80 | (x & 0x3F));
-        return 4;
+        var mfb: u32 = 0x3F;
+        while (true) {
+            buff[8 - n] = @intCast(0x80 | (x & 0x3F));
+            n += 1;
+            x >>= 6;
+            mfb >>= 1;
+            if (x <= mfb) break;
+        }
+        buff[8 - n] = @as(u8, @truncate((~mfb << 1) | x));
     }
+    return n;
 }
 
 // ---------------------------------------------------------------------------
@@ -519,7 +518,7 @@ pub fn luaX_syntaxerror(ls: *LexState, msg: []const u8) LexError {
 // ---------------------------------------------------------------------------
 pub fn luaX_newstring(ls: *LexState, str: []const u8) !*lua.lua_TString {
     const L = ls.L;
-    return try lstring.luaS_new(L.allocator, &L.l_G.?.strt, L.l_G.?.seed, str);
+    return try lstring.luaS_new(L.l_G.?, str);
 }
 
 // ---------------------------------------------------------------------------
@@ -548,8 +547,8 @@ pub fn luaX_setinput(
     ls.source = source;
     ls.dyd = .{ .actvar = .empty, .gt = .empty, .label = .empty };
     ls.level = 0;
-    ls.brkn = try lstring.luaS_new(L.allocator, &L.l_G.?.strt, L.l_G.?.seed, "_break");
-    ls.envn = try lstring.luaS_new(L.allocator, &L.l_G.?.strt, L.l_G.?.seed, "_ENV");
+    ls.brkn = try lstring.luaS_new(L.l_G.?, "_break");
+    ls.envn = try lstring.luaS_new(L.l_G.?, "_ENV");
     ls.t = .{};
     ls.lookahead = .{ .token = TK_EOS };
     ls.linenumber = 1;
@@ -733,10 +732,10 @@ fn read_string(ls: *LexState, del: i32, seminfo: *SemInfo) !void {
                         next(ls); // skip '}'
                         var k: usize = 0;
                         while (k < 2 + nd) : (k += 1) _ = ls.buff.pop();
-                        var ubuf: [4]u8 = undefined;
+                        var ubuf: [8]u8 = undefined;
                         const n = utf8esc(&ubuf, r);
-                        var j: u8 = 0;
-                        while (j < n) : (j += 1) try save(ls, ubuf[j]);
+                        var j = n;
+                        while (j > 0) : (j -= 1) try save(ls, ubuf[8 - j]);
                     },
                     '\n', '\r' => {
                         try inclinenumber(ls);

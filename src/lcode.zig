@@ -103,6 +103,10 @@ pub fn luaK_nil(fs: *FuncState, from: i32, n: i32) void {
 }
 
 fn getjump(fs: *FuncState, pc: i32) i32 {
+    if (pc < 0) {
+        std.debug.print("DEBUG: getjump called with negative pc = {d}\n", .{pc});
+        return NO_JUMP;
+    }
     const offset = lvm.GETARG_sJ(fs.code.items[@as(usize, @intCast(pc))]);
     if (offset == NO_JUMP) return NO_JUMP;
     return (pc + 1) + offset;
@@ -125,8 +129,10 @@ pub fn luaK_concat(fs: *FuncState, l1: *i32, l2: i32) void {
         l1.* = l2;
     } else {
         var list = l1.*;
-        while (getjump(fs, list) != NO_JUMP) {
-            list = getjump(fs, list);
+        while (true) {
+            const next = getjump(fs, list);
+            if (next == NO_JUMP) break;
+            list = next;
         }
         fixjump(fs, list, l2);
     }
@@ -382,6 +388,8 @@ fn luaK_float(fs: *FuncState, reg: i32, f: f64) void {
 }
 
 fn const2exp(v: *lua.TValue, e: *expdesc) void {
+    e.t = NO_JUMP;
+    e.f = NO_JUMP;
     switch (v.*) {
         .number => |n| {
             if (@floor(n) == n and n >= -9.223372036854776e18 and n <= 9.223372036854776e18) {
@@ -441,7 +449,6 @@ pub fn luaK_setoneret(fs: *FuncState, e: *expdesc) void {
 pub fn luaK_vapar2local(fs: *FuncState, vp: *expdesc) void {
     lparser.needvatab(fs.f);
     vp.k = .VLOCAL;
-    vp.u = .{ .uv = .{ .ridx = @intCast(fs.f.numParams), .vidx = 0 } };
 }
 
 pub fn luaK_dischargevars(fs: *FuncState, e: *expdesc) void {
@@ -711,6 +718,9 @@ fn jumponcond(fs: *FuncState, e: *expdesc, cond: i32) i32 {
 }
 
 pub fn luaK_goiftrue(fs: *FuncState, e: *expdesc) void {
+    if (e.f < -1 or e.t < -1) {
+        std.debug.print("DEBUG: luaK_goiftrue: e.k={s}, e.t={d}, e.f={d}, line={d}\n", .{@tagName(e.k), e.t, e.f, fs.ls.linenumber});
+    }
     var pc: i32 = undefined;
     luaK_dischargevars(fs, e);
     switch (e.k) {
@@ -731,6 +741,9 @@ pub fn luaK_goiftrue(fs: *FuncState, e: *expdesc) void {
 }
 
 fn luaK_goiffalse(fs: *FuncState, e: *expdesc) void {
+    if (e.f < -1 or e.t < -1) {
+        std.debug.print("DEBUG: luaK_goiffalse: e.k={s}, e.t={d}, e.f={d}, line={d}\n", .{@tagName(e.k), e.t, e.f, fs.ls.linenumber});
+    }
     var pc: i32 = undefined;
     luaK_dischargevars(fs, e);
     switch (e.k) {

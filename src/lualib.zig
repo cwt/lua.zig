@@ -24,8 +24,27 @@ const iolib = @import("lib/iolib.zig");
 const oslib = @import("lib/oslib.zig");
 const debug = @import("lib/debug.zig");
 
+/// Register a library module in `package.loaded[name]` so that
+/// `require "name"` works. The library must already be set as a global.
+fn registerLoaded(L: *lua.lua_State, name: []const u8) !void {
+    _ = try lua.lauxlib.luaL_getsubtable(L, lua.LUA_REGISTRYINDEX, lua.lauxlib.LUA_LOADED_TABLE);
+    defer lua.lua_pop(L, 1); // pop _LOADED
+    _ = try lua.lua_getfield(L, -1, name);
+    if (lua.lua_toboolean(L, -1) == 0) {
+        lua.lua_pop(L, 1);
+        defer lua.lua_pop(L, 1); // pop the remaining global copy
+        _ = lua.lua_getglobal(L, name);
+        lua.lua_pushvalue(L, -1);
+        try lua.lua_setfield(L, -3, name);
+    } else {
+        lua.lua_pop(L, 1);
+    }
+}
+
 pub fn openbaselib(L: *lua.lua_State) !void {
     try baselib.openbaselib(L);
+    // Register _G in package.loaded for `require "_G"`
+    try registerLoaded(L, "_G");
 }
 
 // ===================================================================
@@ -35,6 +54,7 @@ pub fn openbaselib(L: *lua.lua_State) !void {
 pub fn opencorolib(L: *lua.lua_State) !void {
     try corolib.opencorolib(L);
     lua.lua_setglobal(L, "coroutine");
+    try registerLoaded(L, "coroutine");
 }
 
 // ===================================================================
@@ -44,6 +64,7 @@ pub fn opencorolib(L: *lua.lua_State) !void {
 pub fn opentablib(L: *lua.lua_State) !void {
     _ = try tablib.opentablib(L);
     lua.lua_setglobal(L, "table");
+    try registerLoaded(L, "table");
 }
 
 // ===================================================================
@@ -53,6 +74,7 @@ pub fn opentablib(L: *lua.lua_State) !void {
 pub fn openstringlib(L: *lua.lua_State) !void {
     _ = try stringlib.openstringlib(L);
     lua.lua_setglobal(L, "string");
+    try registerLoaded(L, "string");
 }
 
 // ===================================================================
@@ -61,6 +83,7 @@ pub fn openstringlib(L: *lua.lua_State) !void {
 
 pub fn openmathlib(L: *lua.lua_State) !void {
     try mathlib.openmathlib(L);
+    try registerLoaded(L, "math");
 }
 
 // ===================================================================
@@ -70,6 +93,7 @@ pub fn openmathlib(L: *lua.lua_State) !void {
 pub fn openoslib(L: *lua.lua_State) !void {
     try oslib.openoslib(L);
     lua.lua_setglobal(L, "os");
+    try registerLoaded(L, "os");
 }
 
 // ===================================================================
@@ -79,6 +103,7 @@ pub fn openoslib(L: *lua.lua_State) !void {
 pub fn openio(L: *lua.lua_State) !void {
     try iolib.openio(L);
     lua.lua_setglobal(L, "io");
+    try registerLoaded(L, "io");
 }
 
 // ===================================================================
@@ -98,6 +123,7 @@ pub fn openloadlib(L: *lua.lua_State) !void {
 pub fn opendbalib(L: *lua.lua_State) !void {
     try debug.opendbalib(L);
     lua.lua_setglobal(L, "debug");
+    try registerLoaded(L, "debug");
 }
 
 // ===================================================================
@@ -106,6 +132,7 @@ pub fn opendbalib(L: *lua.lua_State) !void {
 
 pub fn openbit32(L: *lua.lua_State) !void {
     try bit32.openbit32(L);
+    try registerLoaded(L, "bit32");
 }
 
 // ===================================================================
@@ -114,4 +141,5 @@ pub fn openbit32(L: *lua.lua_State) !void {
 
 pub fn openutf8lib(L: *lua.lua_State) !void {
     try utf8lib.openutf8lib(L);
+    try registerLoaded(L, "utf8");
 }

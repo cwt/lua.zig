@@ -138,6 +138,11 @@ fn getnextfilename(path: *[]u8) ?[]const u8 {
 }
 
 fn pusherrornotfound(L: *lua.lua_State, path_str: []const u8) void {
+    // Ensure enough stack space for iterating path segments
+    if (lua.lua_checkstack(L, 30) == 0) {
+        _ = lua.lua_pushstring(L, "no file");
+        return;
+    }
     var parts = std.mem.splitScalar(u8, path_str, luaconf.LUA_PATH_SEP);
     var first = true;
     while (parts.next()) |part| {
@@ -155,6 +160,8 @@ fn pusherrornotfound(L: *lua.lua_State, path_str: []const u8) void {
 }
 
 fn searchpath(L: *lua.lua_State, name: []const u8, path_str: []const u8, sep: []const u8, dirsep: []const u8) ?[]const u8 {
+    // Ensure enough stack space for path search operations
+    if (lua.lua_checkstack(L, 10) == 0) return null;
     const mark = luaconf.LUA_PATH_MARK;
 
     var modname = name;
