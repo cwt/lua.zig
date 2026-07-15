@@ -2365,3 +2365,38 @@ the stack end (`index 21, len 21`) and panicked.
 - Self-audit against AGENTS.md §0.1: threads allocator (✓), propagates errors
   with `!T`/`try` (✓, no `catch unreachable`/swallowed OOM), no C-style hacks,
   single type model (✓).
+
+## rev 83 — Memory-safety build options (mirror talyn/build.zig)
+
+Added sanitizer build options to `build.zig` (ported from `../talyn/build.zig`)
+so that `zig build test` / the interpreter can surface memory-safety regressions.
+
+- `-Dasan` — sets `sanitize_c = .full` (the C sanitizer) on the exe, lib and test
+  modules. In Zig 0.16 this is **UBSan** (undefined-behaviour sanitizer), *not*
+  heap AddressSanitizer — it instruments the binary for UB (e.g. out-of-bounds
+  shifts, bad casts) but does **not** intercept `malloc`/`free` for double-free /
+  use-after-free. Empirical check: a `std.heap.c_allocator` double-free compiled
+  with `-fsanitize-c=full` is *not* caught.
+- `-Ddebug-alloc` — the `luazig` executable uses `std.heap.DebugAllocator(.{
+  .safety = true })` instead of `init.gpa`, catching heap double-free /
+  invalid-free / leaks at runtime (Zig-native equivalent of ASAN for Zig heaps).
+
+Key finding: `zig build test` **already** reports heap double-free / use-after-free
+**by default** — the tests use `std.testing.allocator`, which *is* a safety
+`DebugAllocator` (proven: a deliberate double-free test crashes the runner with
+ABRT at `Allocator.free`). So the talyn-style options are an additive layer:
+`-Ddebug-alloc` gives the *executable* the same safety checking, and `-Dasan`
+adds UBSan's UB coverage.
+
+Caveat: pure **use-after-free reads** (not double-free) are NOT caught by any of
+these in Zig 0.16.0 — `DebugAllocator.safety` only validates frees/reallocs, and
+`-fsanitize-c` is UBSan, not heap ASAN. True UAF read detection would require a
+real AddressSanitizer, which Zig 0.16.0 does not provide for Zig heaps.
+
+### Verification
+- Default `zig build test` → 124/124 pass (and catches a planted double-free).
+- `zig build -Ddebug-alloc` + `luazig ../pi/pi-5.5.lua` → runs clean (no spurious
+  safety errors).
+- `zig build -Dasan` (UBSan) + `luazig ../pi/pi-5.5.lua` → runs clean.
+- `zig build test -Dasan` → 124/124 pass (UBSan on the test binary; heap safety
+  still provided by `std.testing.allocator`).

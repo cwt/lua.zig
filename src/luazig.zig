@@ -1,6 +1,7 @@
 const std = @import("std");
 const lua = @import("lua.zig");
 const lauxlib = lua.lauxlib;
+const build_options = @import("build_options");
 
 /// Result of parsing the command-line arguments (everything after the
 /// program name). Mirrors the reference standalone interpreter:
@@ -306,7 +307,22 @@ fn runRepl(L: *lua.lua_State, io: std.Io, gpa: std.mem.Allocator, print_banner: 
 }
 
 pub fn main(init: std.process.Init) !void {
-    const gpa = init.gpa;
+    // Memory-safety allocator selection (mirror talyn's asan/debug-alloc):
+    //  - asan: build with sanitize_c = .full (the C sanitizer / UBSan), which
+    //    instruments the binary for undefined-behaviour checks, and use a
+    //    safety-checked DebugAllocator so heap double-free / use-after-free are
+    //    also caught at runtime.
+    //  - debug-alloc: use a safety-checked DebugAllocator so heap double-free /
+    //    use-after-free / leaks are caught at runtime. Zig 0.16 has no
+    //    first-class AddressSanitizer for Zig heaps (only -fsanitize-c / UBSan
+    //    and -fsanitize-thread / TSan), so this is the Zig-native equivalent.
+    //  - default: the process-provided general-purpose allocator.
+    var dbg_alloc = std.heap.DebugAllocator(.{ .safety = true }).init;
+    var gpa: std.mem.Allocator = if (build_options.asan or build_options.debug_alloc)
+        dbg_alloc.allocator()
+    else
+        init.gpa;
+    defer _ = dbg_alloc.deinit();
     const io = init.io;
     const arena = init.arena.allocator();
     const args = try init.minimal.args.toSlice(arena);
