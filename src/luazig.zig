@@ -123,7 +123,7 @@ fn runLoadedChunk(L: *lua.lua_State, io: std.Io, nargs: i32) !bool {
         printError(L, io);
         return true;
     }
-    try printResults(L, io);
+    lua.lua_settop(L, 0);
     return false;
 }
 
@@ -377,4 +377,3 @@ pub fn main(init: std.process.Init) !void {
         std.process.exit(1);
     }
 }
-

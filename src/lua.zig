@@ -90,7 +90,6 @@ fn l_alloc(ud: ?*anyopaque, ptr: ?*anyopaque, osize: usize, nsize: usize) ?*anyo
     }
 }
 
-
 // Forward declarations
 pub const lua_CFunction = *const fn (*lua_State) anyerror!i32;
 pub const lua_KFunction = *const fn (*lua_State, i32, lua_KContext) anyerror!i32;
@@ -184,6 +183,7 @@ pub const TValue = union(enum) {
     nil: void,
     boolean: bool,
     lightud: ?*anyopaque,
+    integer: i64,
     number: f64,
     string: ?*lua_TString,
     table: ?*lua_Table,
@@ -198,6 +198,7 @@ pub const TValue = union(enum) {
             .nil => LUA_TNIL,
             .boolean => LUA_TBOOLEAN,
             .lightud => LUA_TLIGHTUSERDATA,
+            .integer => LUA_TNUMBER,
             .number => LUA_TNUMBER,
             .string => LUA_TSTRING,
             .table => LUA_TTABLE,
@@ -214,6 +215,33 @@ pub const TValue = union(enum) {
             .nil => false,
             .boolean => |b| b,
             else => true,
+        };
+    }
+
+    /// Returns true if this is a numeric value (integer or float).
+    pub fn isNumberValue(self: TValue) bool {
+        return switch (self) {
+            .number, .integer => true,
+            else => false,
+        };
+    }
+
+    /// Extract the f64 value from a numeric TValue. Call only when isNumberValue is true.
+    pub fn toFloat(self: TValue) f64 {
+        return switch (self) {
+            .number => |n| n,
+            .integer => |n| @as(f64, @floatFromInt(n)),
+            else => unreachable,
+        };
+    }
+
+    /// Extract the i64 value from a numeric TValue by truncating floats.
+    /// Call only when isNumberValue is true.
+    pub fn toIntegerExact(self: TValue) i64 {
+        return switch (self) {
+            .integer => |n| n,
+            .number => |n| @as(i64, @intFromFloat(n)),
+            else => unreachable,
         };
     }
 };
@@ -514,6 +542,11 @@ pub fn precall(L: *lua_State, func_idx: usize, nresults: i32) !?*CallInfo {
             if (L.ci) |prev| {
                 prev.next = new_ci;
             }
+            // Keep L.top at the top of the new frame so that auxiliary calls
+            // (e.g. metamethod invocations via luaT_callTMres) are placed
+            // above all live registers, matching the reference behaviour
+            // (L->top = ci->top, where ci->top = base + maxstacksize).
+            L.top = frame_top;
             L.ci = new_ci;
             return new_ci;
         },
@@ -780,13 +813,36 @@ pub fn lua_rotate(L: *lua_State, idx: i32, n: i32) void {
     // Reverse full range
     var i: usize = abs_idx;
     var j: usize = top_idx;
-    while (i < j) : ({ i += 1; j -= 1; }) { const t = L.stack[i]; L.stack[i] = L.stack[j]; L.stack[j] = t; }
+    while (i < j) : ({
+        i += 1;
+        j -= 1;
+    }) {
+        const t = L.stack[i];
+        L.stack[i] = L.stack[j];
+        L.stack[j] = t;
+    }
     // Reverse first rot elements
-    i = abs_idx; j = abs_idx + rot - 1;
-    while (i < j) : ({ i += 1; j -= 1; }) { const t = L.stack[i]; L.stack[i] = L.stack[j]; L.stack[j] = t; }
+    i = abs_idx;
+    j = abs_idx + rot - 1;
+    while (i < j) : ({
+        i += 1;
+        j -= 1;
+    }) {
+        const t = L.stack[i];
+        L.stack[i] = L.stack[j];
+        L.stack[j] = t;
+    }
     // Reverse remaining elements
-    i = abs_idx + rot; j = top_idx;
-    while (i < j) : ({ i += 1; j -= 1; }) { const t = L.stack[i]; L.stack[i] = L.stack[j]; L.stack[j] = t; }
+    i = abs_idx + rot;
+    j = top_idx;
+    while (i < j) : ({
+        i += 1;
+        j -= 1;
+    }) {
+        const t = L.stack[i];
+        L.stack[i] = L.stack[j];
+        L.stack[j] = t;
+    }
 }
 
 pub inline fn lua_insert(L: *lua_State, idx: i32) void {
@@ -897,6 +953,7 @@ pub fn lua_isnumber(L: *lua_State, idx: i32) i32 {
     const v = stackAt(L, idx);
     return switch (v) {
         .number => 1,
+        .integer => 1,
         else => 0,
     };
 }
@@ -906,6 +963,7 @@ pub fn lua_isstring(L: *lua_State, idx: i32) i32 {
     return switch (v) {
         .string => 1,
         .number => 1,
+        .integer => 1,
         else => 0,
     };
 }
@@ -921,7 +979,7 @@ pub fn lua_iscfunction(L: *lua_State, idx: i32) i32 {
 pub fn lua_isinteger(L: *lua_State, idx: i32) i32 {
     const v = stackAt(L, idx);
     return switch (v) {
-        .number => |n| if (@trunc(n) == n) 1 else 0,
+        .integer => 1,
         else => 0,
     };
 }
@@ -961,9 +1019,14 @@ pub fn lua_typename(tp: i32) []const u8 {
 
 pub fn lua_tonumberx(L: *lua_State, idx: i32, isnum: ?*i32) ?f64 {
     const v = stackAt(L, idx);
-    if (isnum) |p| p.* = switch (v) { .number => 1, else => 0 };
+    if (isnum) |p| p.* = switch (v) {
+        .number => 1,
+        .integer => 1,
+        else => 0,
+    };
     return switch (v) {
         .number => |n| n,
+        .integer => |n| @as(f64, @floatFromInt(n)),
         else => null,
     };
 }
@@ -973,10 +1036,12 @@ pub fn lua_tointegerx(L: *lua_State, idx: i32, isnum: ?*i32) ?i64 {
     const min_f64 = @as(f64, -9223372036854775808.0);
     const max_exclusive_f64 = @as(f64, 9223372036854775808.0);
     if (isnum) |p| p.* = switch (v) {
+        .integer => 1,
         .number => |n| if (@trunc(n) == n and n >= min_f64 and n < max_exclusive_f64) 1 else 0,
         else => 0,
     };
     return switch (v) {
+        .integer => |n| n,
         .number => |n| {
             if (@trunc(n) == n and n >= min_f64 and n < max_exclusive_f64) {
                 return @as(i64, @intFromFloat(n));
@@ -1077,19 +1142,47 @@ pub fn luaV_shift(x: i64, s: i64) i64 {
     return @as(i64, @bitCast(ux << @as(u6, @intCast(s))));
 }
 
+/// Try to convert a TValue to a numeric TValue (integer or float).
+/// For strings, attempts number parsing. Returns null if not numeric.
+pub fn toNumeric(v: TValue) ?TValue {
+    return switch (v) {
+        .integer => v,
+        .number => v,
+        .string => |s| {
+            const str = s orelse return null;
+            const src = std.mem.trim(u8, str.s, &std.ascii.whitespace);
+            if (std.fmt.parseInt(i64, src, 0)) |i| {
+                return TValue{ .integer = i };
+            } else |_| {}
+            if (std.fmt.parseFloat(f64, src)) |n| {
+                return TValue{ .number = n };
+            } else |_| {}
+            return null;
+        },
+        else => null,
+    };
+}
+
 pub fn lua_arith(L: *lua_State, op: i32) void {
     if (op < 0 or op > 13) return;
     const is_unary = (op == LUA_OPUNM or op == LUA_OPBNOT);
     if (is_unary) {
         if (L.top < 1) return;
         const p1 = L.stack[L.top - 1];
-        if (p1 == .number) {
+        if (p1 == .integer) {
             const result = switch (op) {
-                LUA_OPUNM => -p1.number,
-                LUA_OPBNOT => @as(f64, @floatFromInt(~@as(i64, @intFromFloat(p1.number)))),
+                LUA_OPUNM => @as(TValue, .{ .integer = -p1.integer }),
+                LUA_OPBNOT => @as(TValue, .{ .integer = ~p1.integer }),
                 else => unreachable,
             };
-            L.stack[L.top - 1] = TValue{ .number = result };
+            L.stack[L.top - 1] = result;
+        } else if (p1 == .number) {
+            const result = switch (op) {
+                LUA_OPUNM => @as(TValue, .{ .number = -p1.number }),
+                LUA_OPBNOT => @as(TValue, .{ .number = @floatFromInt(~@as(i64, @intFromFloat(p1.number))) }),
+                else => unreachable,
+            };
+            L.stack[L.top - 1] = result;
         } else {
             const event: ltm.TMS = switch (op) {
                 LUA_OPUNM => .UNM,
@@ -1102,24 +1195,57 @@ pub fn lua_arith(L: *lua_State, op: i32) void {
         if (L.top < 2) return;
         const p1 = L.stack[L.top - 2];
         const p2 = L.stack[L.top - 1];
-        if (p1 == .number and p2 == .number) {
-            const result = switch (op) {
-                LUA_OPADD => p1.number + p2.number,
-                LUA_OPSUB => p1.number - p2.number,
-                LUA_OPMUL => p1.number * p2.number,
-                LUA_OPMOD => p1.number - @floor(p1.number / p2.number) * p2.number,
-                LUA_OPPOW => libm.getLibm().pow(p1.number, p2.number),
-                LUA_OPDIV => p1.number / p2.number,
-                LUA_OPIDIV => @floor(p1.number / p2.number),
-                LUA_OPBAND => @as(f64, @floatFromInt(@as(i64, @intFromFloat(p1.number)) & @as(i64, @intFromFloat(p2.number)))),
-                LUA_OPBOR => @as(f64, @floatFromInt(@as(i64, @intFromFloat(p1.number)) | @as(i64, @intFromFloat(p2.number)))),
-                LUA_OPBXOR => @as(f64, @floatFromInt(@as(i64, @intFromFloat(p1.number)) ^ @as(i64, @intFromFloat(p2.number)))),
-                LUA_OPSHL => @as(f64, @floatFromInt(luaV_shift(@as(i64, @intFromFloat(p1.number)), @as(i64, @intFromFloat(p2.number))))),
-                LUA_OPSHR => @as(f64, @floatFromInt(luaV_shift(@as(i64, @intFromFloat(p1.number)), -@as(i64, @intFromFloat(p2.number))))),
-                else => unreachable,
-            };
-            L.top -= 1;
-            L.stack[L.top - 1] = TValue{ .number = result };
+        const num1 = toNumeric(p1);
+        const num2 = toNumeric(p2);
+        if (num1) |n1| {
+            if (num2) |n2| {
+                if (n1 == .integer and n2 == .integer) {
+                    const result = switch (op) {
+                        LUA_OPADD => @as(TValue, .{ .integer = n1.integer + n2.integer }),
+                        LUA_OPSUB => @as(TValue, .{ .integer = n1.integer - n2.integer }),
+                        LUA_OPMUL => @as(TValue, .{ .integer = n1.integer * n2.integer }),
+                        LUA_OPMOD => @as(TValue, .{ .integer = @rem(n1.integer, n2.integer) }),
+                        LUA_OPPOW => @as(TValue, .{ .number = libm.getLibm().pow(@as(f64, @floatFromInt(n1.integer)), @as(f64, @floatFromInt(n2.integer))) }),
+                        LUA_OPDIV => @as(TValue, .{ .number = @as(f64, @floatFromInt(n1.integer)) / @as(f64, @floatFromInt(n2.integer)) }),
+                        LUA_OPIDIV => blk: {
+                            const ib = n1.integer;
+                            const ic = n2.integer;
+                            // Handle minint / -1 (overflows as wrapping)
+                            const q = if (ic == -1) ib else @divTrunc(ib, ic);
+                            const r = @rem(ib, ic);
+                            break :blk TValue{ .integer = if (r == 0 or (ib >= 0) == (ic >= 0)) q else q - 1 };
+                        },
+                        LUA_OPBAND => @as(TValue, .{ .integer = n1.integer & n2.integer }),
+                        LUA_OPBOR => @as(TValue, .{ .integer = n1.integer | n2.integer }),
+                        LUA_OPBXOR => @as(TValue, .{ .integer = n1.integer ^ n2.integer }),
+                        LUA_OPSHL => @as(TValue, .{ .integer = luaV_shift(n1.integer, n2.integer) }),
+                        LUA_OPSHR => @as(TValue, .{ .integer = luaV_shift(n1.integer, -n2.integer) }),
+                        else => unreachable,
+                    };
+                    L.top -= 1;
+                    L.stack[L.top - 1] = result;
+                } else if (n1.isNumberValue() and n2.isNumberValue()) {
+                    const f1 = n1.toFloat();
+                    const f2 = n2.toFloat();
+                    const result: f64 = switch (op) {
+                        LUA_OPADD => f1 + f2,
+                        LUA_OPSUB => f1 - f2,
+                        LUA_OPMUL => f1 * f2,
+                        LUA_OPMOD => f1 - @floor(f1 / f2) * f2,
+                        LUA_OPPOW => libm.getLibm().pow(f1, f2),
+                        LUA_OPDIV => f1 / f2,
+                        LUA_OPIDIV => @floor(f1 / f2),
+                        LUA_OPBAND => @floatFromInt(n1.toIntegerExact() & n2.toIntegerExact()),
+                        LUA_OPBOR => @floatFromInt(n1.toIntegerExact() | n2.toIntegerExact()),
+                        LUA_OPBXOR => @floatFromInt(n1.toIntegerExact() ^ n2.toIntegerExact()),
+                        LUA_OPSHL => @floatFromInt(luaV_shift(n1.toIntegerExact(), n2.toIntegerExact())),
+                        LUA_OPSHR => @floatFromInt(luaV_shift(n1.toIntegerExact(), -n2.toIntegerExact())),
+                        else => unreachable,
+                    };
+                    L.top -= 1;
+                    L.stack[L.top - 1] = TValue{ .number = result };
+                }
+            }
         } else {
             const event: ltm.TMS = switch (op) {
                 LUA_OPADD => .ADD,
@@ -1149,6 +1275,7 @@ pub fn lua_rawequal(L: *lua_State, idx1: i32, idx2: i32) i32 {
     return switch (a) {
         .nil => 1,
         .boolean => |v| if (v == b.boolean) 1 else 0,
+        .integer => |v| if (v == b.integer) 1 else 0,
         .number => |v| if (v == b.number) 1 else 0,
         .string => |v| if (v == b.string) 1 else 0,
         .table => |v| if (v == b.table) 1 else 0,
@@ -1173,7 +1300,6 @@ pub fn lua_compare(L: *lua_State, idx1: i32, idx2: i32, op: i32) i32 {
     return if (res) 1 else 0;
 }
 
-
 pub fn lua_pushnil(L: *lua_State) void {
     if (L.top >= L.stack.len) _ = lua_checkstack(L, 1);
     L.stack[L.top] = TValue{ .nil = {} };
@@ -1188,7 +1314,7 @@ pub fn lua_pushnumber(L: *lua_State, n: lua_Number) void {
 
 pub fn lua_pushinteger(L: *lua_State, n: lua_Integer) void {
     if (L.top >= L.stack.len) _ = lua_checkstack(L, 1);
-    L.stack[L.top] = TValue{ .number = @as(f64, @floatFromInt(n)) };
+    L.stack[L.top] = TValue{ .integer = n };
     L.top += 1;
 }
 
@@ -1541,13 +1667,7 @@ pub fn lua_gethookcount(L: *lua_State) i32 {
 
 fn testAMode(op: lvm.OpCode) bool {
     return switch (op) {
-        .MOVE, .LOADI, .LOADF, .LOADK, .LOADKX, .LOADFALSE, .LFALSESKIP,
-        .LOADTRUE, .LOADNIL, .GETUPVAL, .GETTABUP, .GETTABLE, .GETI, .GETFIELD,
-        .NEWTABLE, .SELF, .ADDI, .ADDK, .SUBK, .MULK, .MODK, .POWK, .DIVK, .IDIVK,
-        .BANDK, .BORK, .BXORK, .SHLI, .SHRI, .ADD, .SUB, .MUL, .MOD, .POW, .DIV,
-        .IDIV, .BAND, .BOR, .BXOR, .SHL, .SHR, .UNM, .BNOT, .NOT, .LEN, .CONCAT,
-        .TESTSET, .CALL, .TAILCALL, .FORLOOP, .FORPREP, .TFORLOOP, .CLOSURE,
-        .VARARG, .GETVARG => true,
+        .MOVE, .LOADI, .LOADF, .LOADK, .LOADKX, .LOADFALSE, .LFALSESKIP, .LOADTRUE, .LOADNIL, .GETUPVAL, .GETTABUP, .GETTABLE, .GETI, .GETFIELD, .NEWTABLE, .SELF, .ADDI, .ADDK, .SUBK, .MULK, .MODK, .POWK, .DIVK, .IDIVK, .BANDK, .BORK, .BXORK, .SHLI, .SHRI, .ADD, .SUB, .MUL, .MOD, .POW, .DIV, .IDIV, .BAND, .BOR, .BXOR, .SHL, .SHR, .UNM, .BNOT, .NOT, .LEN, .CONCAT, .TESTSET, .CALL, .TAILCALL, .FORLOOP, .FORPREP, .TFORLOOP, .CLOSURE, .VARARG, .GETVARG => true,
         else => false,
     };
 }
@@ -2594,20 +2714,20 @@ pub fn lua_pcallk(L: *lua_State, nargs: i32, nresults: i32, errfunc: i32, ctx: l
         if (errfunc_abs) |efi| {
             const err_fn_ptr = &L.stack[efi];
             if (err_fn_ptr.* == .function) {
-                    const err_obj = L.stack[L.top - 1];
-                    // Push error handler function
-                    L.stack[L.top] = err_fn_ptr.*;
-                    L.top += 1;
-                    // Push error object
-                    L.stack[L.top] = err_obj;
-                    L.top += 1;
-                    // Call it (1 arg, 1 result)
-                    const err_ci = precall(L, L.top - 2, 1) catch null;
-                    if (err_ci) |eci| {
-                        lvm.run(L, eci) catch {};
-                    }
+                const err_obj = L.stack[L.top - 1];
+                // Push error handler function
+                L.stack[L.top] = err_fn_ptr.*;
+                L.top += 1;
+                // Push error object
+                L.stack[L.top] = err_obj;
+                L.top += 1;
+                // Call it (1 arg, 1 result)
+                const err_ci = precall(L, L.top - 2, 1) catch null;
+                if (err_ci) |eci| {
+                    lvm.run(L, eci) catch {};
                 }
             }
+        }
 
         // Get the final error object
         const final_err_obj = if (L.top > func_idx + @as(usize, @intCast(nargs)) + 1)
@@ -2640,7 +2760,6 @@ pub fn lua_pcallk(L: *lua_State, nargs: i32, nresults: i32, errfunc: i32, ctx: l
 pub inline fn lua_pcall(L: *lua_State, nargs: i32, nresults: i32, errfunc: i32) i32 {
     return lua_pcallk(L, nargs, nresults, errfunc, 0, null);
 }
-
 
 pub fn lua_load(L: *lua_State, reader: lua_Reader, dt: ?*anyopaque, chunkname: []const u8, mode: []const u8) i32 {
     _ = mode;
@@ -2785,10 +2904,10 @@ fn do_resume(L: *lua_State, narg: i32) !void {
                     try lvm.run(L, ci);
                 } else {
                     const prev = ci.previous;
-                const func_idx = ci.func;
-                L.ci = prev;
-                freeCallInfo(L, ci);
-                if (try precall(L, func_idx, LUA_MULTRET)) |new_ci| {
+                    const func_idx = ci.func;
+                    L.ci = prev;
+                    freeCallInfo(L, ci);
+                    if (try precall(L, func_idx, LUA_MULTRET)) |new_ci| {
                         try lvm.run(L, new_ci);
                     }
                 }
@@ -2986,7 +3105,7 @@ fn isWhiteGCObject(g: *global_State, val: TValue) bool {
 
 pub fn luaC_collectgarbage(L: *lua_State) !void {
     const g = G(L);
-    
+
     // 1. Reset/Clear gray list
     var gray_list = std.ArrayList(*VMGCObject).empty;
     defer gray_list.deinit(L.allocator);
@@ -3311,7 +3430,6 @@ pub fn lua_error(L: *lua_State) anyerror {
     return error.RuntimeError;
 }
 
-
 pub fn lua_next(L: *lua_State, idx: i32) i32 {
     const t = getTable(L, idx) orelse return 0;
     const key = stackAt(L, -1);
@@ -3344,6 +3462,11 @@ pub fn lua_concat(L: *lua_State, n: i32) void {
             .string => |s| list.appendSlice(L.allocator, s.?.s) catch {},
             .number => |num| {
                 var buf: [64]u8 = undefined;
+                const slice = std.fmt.bufPrint(&buf, "{d}", .{num}) catch "";
+                list.appendSlice(L.allocator, slice) catch {};
+            },
+            .integer => |num| {
+                var buf: [32]u8 = undefined;
                 const slice = std.fmt.bufPrint(&buf, "{d}", .{num}) catch "";
                 list.appendSlice(L.allocator, slice) catch {};
             },
@@ -3765,7 +3888,7 @@ pub fn lua_close(L: *lua_State) void {
             curr_thread = next_thread;
         }
         g.thread_list = null;
-        
+
         // Free dynamically loaded libraries
         for (g.clibs.items) |lib| {
             lib.close();

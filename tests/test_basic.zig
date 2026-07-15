@@ -399,7 +399,7 @@ test "VM execution" {
     // The top of the stack should contain the returned number 52
     try std.testing.expectEqual(@as(i32, 1), lua.lua_gettop(&L));
     try std.testing.expectEqual(@as(i32, lua.LUA_TNUMBER), lua.lua_type(&L, -1));
-    const result = L.stack[L.top - 1].number;
+    const result = lua.lua_tonumber(&L, -1) orelse return error.TestFailed;
     try std.testing.expectEqual(@as(f64, 52.0), result);
 }
 
@@ -428,7 +428,7 @@ test "BUG-036: VM vararg execution (VARARGPREP/VARARG)" {
     try std.testing.expectEqual(@as(i32, lua.LUA_OK), pcall_status);
     try std.testing.expectEqual(@as(i32, 1), lua.lua_gettop(&L));
     try std.testing.expectEqual(@as(i32, lua.LUA_TNUMBER), lua.lua_type(&L, -1));
-    try std.testing.expectEqual(@as(f64, 3.0), L.stack[L.top - 1].number);
+    try std.testing.expectEqual(@as(f64, 3.0), lua.lua_tonumber(&L, -1) orelse return error.TestFailed);
 }
 
 test "luaL_dostring loads and runs a chunk (properly implemented)" {
@@ -447,7 +447,7 @@ test "luaL_dostring loads and runs a chunk (properly implemented)" {
     const status = try lua.luaL_dostring(&L, bytecode, "=test_dostring");
     try std.testing.expectEqual(@as(i32, lua.LUA_OK), status);
     try std.testing.expectEqual(@as(i32, 1), lua.lua_gettop(&L));
-    try std.testing.expectEqual(@as(f64, 42.0), L.stack[L.top - 1].number);
+    try std.testing.expectEqual(@as(f64, 42.0), lua.lua_tonumber(&L, -1) orelse return error.TestFailed);
 }
 
 test "luaL_dostring executes source-text string and handles syntax errors" {
@@ -460,7 +460,7 @@ test "luaL_dostring executes source-text string and handles syntax errors" {
     const status_ok = try lua.luaL_dostring(&L, "return 42", "=(test)");
     try std.testing.expectEqual(@as(i32, lua.LUA_OK), status_ok);
     try std.testing.expectEqual(@as(i32, 1), lua.lua_gettop(&L));
-    try std.testing.expectEqual(@as(f64, 42.0), L.stack[L.top - 1].number);
+    try std.testing.expectEqual(@as(f64, 42.0), lua.lua_tonumber(&L, -1) orelse return error.TestFailed);
     lua.lua_pop(&L, 1);
 
     // Invalid source-text should fail load with LUA_ERRSYNTAX
@@ -746,7 +746,7 @@ test "VM execution of arithmetic metamethod" {
     // The top of the stack should contain the returned number 999.0
     try std.testing.expectEqual(@as(i32, 1), lua.lua_gettop(&L));
     try std.testing.expectEqual(@as(i32, lua.LUA_TNUMBER), lua.lua_type(&L, -1));
-    const result = L.stack[L.top - 1].number;
+    const result = lua.lua_tonumber(&L, -1) orelse return error.TestFailed;
     try std.testing.expectEqual(@as(f64, 999.0), result);
 }
 
@@ -890,7 +890,6 @@ test "pcall with errfunc error handler" {
     };
     lua.lua_pushcfunction(&L, ErrorFn.run);
 
-
     // Call it protected with the error handler at handler_idx
     const status = lua.lua_pcallk(&L, 0, 0, handler_idx, 0, null);
     try std.testing.expectEqual(@as(i32, lua.LUA_ERRRUN), status);
@@ -976,7 +975,6 @@ test "garbage collector mark and sweep" {
     }
     try std.testing.expectEqual(init_count, final_count);
 }
-
 
 // ===================================================================
 // Phase F — Base Library Tests
@@ -1663,43 +1661,147 @@ test "string library: comprehensive verification" {
             try std.testing.expectEqualStrings(expected, got);
             lua.lua_pop(Ls, 2); // pop result and string table
         }
-        
+
         fn f(Ls: *lua.lua_State) anyerror!i32 {
             // Integer formatting
-            try check_format(Ls, "%d", struct { fn g(l: *lua.lua_State) void { lua.lua_pushinteger(l, 42); } }.g, "42");
-            try check_format(Ls, "%5d", struct { fn g(l: *lua.lua_State) void { lua.lua_pushinteger(l, 42); } }.g, "   42");
-            try check_format(Ls, "%-5d", struct { fn g(l: *lua.lua_State) void { lua.lua_pushinteger(l, 42); } }.g, "42   ");
-            try check_format(Ls, "%05d", struct { fn g(l: *lua.lua_State) void { lua.lua_pushinteger(l, 42); } }.g, "00042");
-            try check_format(Ls, "%+d", struct { fn g(l: *lua.lua_State) void { lua.lua_pushinteger(l, 42); } }.g, "+42");
-            try check_format(Ls, "% d", struct { fn g(l: *lua.lua_State) void { lua.lua_pushinteger(l, 42); } }.g, " 42");
-            try check_format(Ls, "%+05d", struct { fn g(l: *lua.lua_State) void { lua.lua_pushinteger(l, 42); } }.g, "+0042");
-            try check_format(Ls, "%.5d", struct { fn g(l: *lua.lua_State) void { lua.lua_pushinteger(l, 42); } }.g, "00042");
-            
+            try check_format(Ls, "%d", struct {
+                fn g(l: *lua.lua_State) void {
+                    lua.lua_pushinteger(l, 42);
+                }
+            }.g, "42");
+            try check_format(Ls, "%5d", struct {
+                fn g(l: *lua.lua_State) void {
+                    lua.lua_pushinteger(l, 42);
+                }
+            }.g, "   42");
+            try check_format(Ls, "%-5d", struct {
+                fn g(l: *lua.lua_State) void {
+                    lua.lua_pushinteger(l, 42);
+                }
+            }.g, "42   ");
+            try check_format(Ls, "%05d", struct {
+                fn g(l: *lua.lua_State) void {
+                    lua.lua_pushinteger(l, 42);
+                }
+            }.g, "00042");
+            try check_format(Ls, "%+d", struct {
+                fn g(l: *lua.lua_State) void {
+                    lua.lua_pushinteger(l, 42);
+                }
+            }.g, "+42");
+            try check_format(Ls, "% d", struct {
+                fn g(l: *lua.lua_State) void {
+                    lua.lua_pushinteger(l, 42);
+                }
+            }.g, " 42");
+            try check_format(Ls, "%+05d", struct {
+                fn g(l: *lua.lua_State) void {
+                    lua.lua_pushinteger(l, 42);
+                }
+            }.g, "+0042");
+            try check_format(Ls, "%.5d", struct {
+                fn g(l: *lua.lua_State) void {
+                    lua.lua_pushinteger(l, 42);
+                }
+            }.g, "00042");
+
             // Hex/Octal/Unsigned
-            try check_format(Ls, "%x", struct { fn g(l: *lua.lua_State) void { lua.lua_pushinteger(l, 255); } }.g, "ff");
-            try check_format(Ls, "%X", struct { fn g(l: *lua.lua_State) void { lua.lua_pushinteger(l, 255); } }.g, "FF");
-            try check_format(Ls, "%o", struct { fn g(l: *lua.lua_State) void { lua.lua_pushinteger(l, 8); } }.g, "10");
-            try check_format(Ls, "%u", struct { fn g(l: *lua.lua_State) void { lua.lua_pushinteger(l, -1); } }.g, "18446744073709551615");
-            try check_format(Ls, "%#x", struct { fn g(l: *lua.lua_State) void { lua.lua_pushinteger(l, 255); } }.g, "0xff");
-            try check_format(Ls, "%#o", struct { fn g(l: *lua.lua_State) void { lua.lua_pushinteger(l, 8); } }.g, "010");
+            try check_format(Ls, "%x", struct {
+                fn g(l: *lua.lua_State) void {
+                    lua.lua_pushinteger(l, 255);
+                }
+            }.g, "ff");
+            try check_format(Ls, "%X", struct {
+                fn g(l: *lua.lua_State) void {
+                    lua.lua_pushinteger(l, 255);
+                }
+            }.g, "FF");
+            try check_format(Ls, "%o", struct {
+                fn g(l: *lua.lua_State) void {
+                    lua.lua_pushinteger(l, 8);
+                }
+            }.g, "10");
+            try check_format(Ls, "%u", struct {
+                fn g(l: *lua.lua_State) void {
+                    lua.lua_pushinteger(l, -1);
+                }
+            }.g, "18446744073709551615");
+            try check_format(Ls, "%#x", struct {
+                fn g(l: *lua.lua_State) void {
+                    lua.lua_pushinteger(l, 255);
+                }
+            }.g, "0xff");
+            try check_format(Ls, "%#o", struct {
+                fn g(l: *lua.lua_State) void {
+                    lua.lua_pushinteger(l, 8);
+                }
+            }.g, "010");
 
             // Float formatting
-            try check_format(Ls, "%f", struct { fn g(l: *lua.lua_State) void { lua.lua_pushnumber(l, 3.14); } }.g, "3.140000");
-            try check_format(Ls, "%.2f", struct { fn g(l: *lua.lua_State) void { lua.lua_pushnumber(l, 3.14159); } }.g, "3.14");
-            try check_format(Ls, "%e", struct { fn g(l: *lua.lua_State) void { lua.lua_pushnumber(l, 1000); } }.g, "1.000000e+03");
-            try check_format(Ls, "%.1e", struct { fn g(l: *lua.lua_State) void { lua.lua_pushnumber(l, 1000); } }.g, "1.0e+03");
-            try check_format(Ls, "%g", struct { fn g(l: *lua.lua_State) void { lua.lua_pushnumber(l, 123.456); } }.g, "123.456");
-            try check_format(Ls, "%a", struct { fn g(l: *lua.lua_State) void { lua.lua_pushnumber(l, 1.5); } }.g, "0x1.8p+0");
+            try check_format(Ls, "%f", struct {
+                fn g(l: *lua.lua_State) void {
+                    lua.lua_pushnumber(l, 3.14);
+                }
+            }.g, "3.140000");
+            try check_format(Ls, "%.2f", struct {
+                fn g(l: *lua.lua_State) void {
+                    lua.lua_pushnumber(l, 3.14159);
+                }
+            }.g, "3.14");
+            try check_format(Ls, "%e", struct {
+                fn g(l: *lua.lua_State) void {
+                    lua.lua_pushnumber(l, 1000);
+                }
+            }.g, "1.000000e+03");
+            try check_format(Ls, "%.1e", struct {
+                fn g(l: *lua.lua_State) void {
+                    lua.lua_pushnumber(l, 1000);
+                }
+            }.g, "1.0e+03");
+            try check_format(Ls, "%g", struct {
+                fn g(l: *lua.lua_State) void {
+                    lua.lua_pushnumber(l, 123.456);
+                }
+            }.g, "123.456");
+            try check_format(Ls, "%a", struct {
+                fn g(l: *lua.lua_State) void {
+                    lua.lua_pushnumber(l, 1.5);
+                }
+            }.g, "0x1.8p+0");
 
             // String formatting
-            try check_format(Ls, "%s", struct { fn g(l: *lua.lua_State) void { _ = lua.lua_pushstring(l, "hello"); } }.g, "hello");
-            try check_format(Ls, "%10s", struct { fn g(l: *lua.lua_State) void { _ = lua.lua_pushstring(l, "hello"); } }.g, "     hello");
-            try check_format(Ls, "%-10s", struct { fn g(l: *lua.lua_State) void { _ = lua.lua_pushstring(l, "hello"); } }.g, "hello     ");
-            try check_format(Ls, "%.3s", struct { fn g(l: *lua.lua_State) void { _ = lua.lua_pushstring(l, "hello"); } }.g, "hel");
+            try check_format(Ls, "%s", struct {
+                fn g(l: *lua.lua_State) void {
+                    _ = lua.lua_pushstring(l, "hello");
+                }
+            }.g, "hello");
+            try check_format(Ls, "%10s", struct {
+                fn g(l: *lua.lua_State) void {
+                    _ = lua.lua_pushstring(l, "hello");
+                }
+            }.g, "     hello");
+            try check_format(Ls, "%-10s", struct {
+                fn g(l: *lua.lua_State) void {
+                    _ = lua.lua_pushstring(l, "hello");
+                }
+            }.g, "hello     ");
+            try check_format(Ls, "%.3s", struct {
+                fn g(l: *lua.lua_State) void {
+                    _ = lua.lua_pushstring(l, "hello");
+                }
+            }.g, "hel");
 
             // Quoted and pointers
-            try check_format(Ls, "%q", struct { fn g(l: *lua.lua_State) void { _ = lua.lua_pushstring(l, "a\nb\"c"); } }.g, "\"a\\\nb\\\"c\"");
-            try check_format(Ls, "%p", struct { fn g(l: *lua.lua_State) void { lua.lua_pushnil(l); } }.g, "(null)");
+            try check_format(Ls, "%q", struct {
+                fn g(l: *lua.lua_State) void {
+                    _ = lua.lua_pushstring(l, "a\nb\"c");
+                }
+            }.g, "\"a\\\nb\\\"c\"");
+            try check_format(Ls, "%p", struct {
+                fn g(l: *lua.lua_State) void {
+                    lua.lua_pushnil(l);
+                }
+            }.g, "(null)");
 
             // Pattern Matching and Gsub
             {
@@ -1729,7 +1831,7 @@ test "string library: comprehensive verification" {
                 try std.testing.expectEqual(@as(i64, 3), count);
                 lua.lua_pop(Ls, 3); // results, count, string table
             }
-            
+
             return 0;
         }
     }.f;
@@ -2894,8 +2996,6 @@ test "debug.traceback produces non-empty string" {
     lua.lua_pop(&L, 2); // pop result and debug table
 }
 
-
-
 // ---------------------------------------------------------------------------
 // Lexer tests (Phase G.1) — see src/llex.zig for the implementation.
 // ---------------------------------------------------------------------------
@@ -3404,28 +3504,28 @@ test "H.2 os.time returns epoch and round-trips with '*t'" {
     try std.testing.expectEqual(@as(i32, 1), lua.lua_toboolean(&L, -1));
 }
 
- test "H.2 os.execute reports success/failure with status code" {
-     const gpa = std.testing.allocator;
-     var L: lua.lua_State = undefined;
-     try lua.luaL_newstate(&L, gpa);
-     defer lua.lua_close(&L);
-     try lua.luaL_openlibs(&L);
+test "H.2 os.execute reports success/failure with status code" {
+    const gpa = std.testing.allocator;
+    var L: lua.lua_State = undefined;
+    try lua.luaL_newstate(&L, gpa);
+    defer lua.lua_close(&L);
+    try lua.luaL_openlibs(&L);
 
-     // `os.execute` returns three values: (status, "exit", code). The first
-     // result (at index -3) is `true` on success and `nil` on failure.
-     // Failure: status non-zero -> first result is nil.
-     var status = try lua.luaL_dostring(&L, "return os.execute('false')", "=(test)");
-     try std.testing.expectEqual(@as(i32, lua.LUA_OK), status);
-     try std.testing.expectEqual(@as(i32, 3), lua.lua_gettop(&L));
-     try std.testing.expectEqual(@as(i32, lua.LUA_TNIL), lua.lua_type(&L, -3));
-     lua.lua_settop(&L, 0);
+    // `os.execute` returns three values: (status, "exit", code). The first
+    // result (at index -3) is `true` on success and `nil` on failure.
+    // Failure: status non-zero -> first result is nil.
+    var status = try lua.luaL_dostring(&L, "return os.execute('false')", "=(test)");
+    try std.testing.expectEqual(@as(i32, lua.LUA_OK), status);
+    try std.testing.expectEqual(@as(i32, 3), lua.lua_gettop(&L));
+    try std.testing.expectEqual(@as(i32, lua.LUA_TNIL), lua.lua_type(&L, -3));
+    lua.lua_settop(&L, 0);
 
-     // Success: status 0 -> first result is boolean true.
-     status = try lua.luaL_dostring(&L, "return os.execute('true')", "=(test)");
-     try std.testing.expectEqual(@as(i32, lua.LUA_OK), status);
-     try std.testing.expectEqual(@as(i32, 3), lua.lua_gettop(&L));
-     try std.testing.expectEqual(@as(i32, 1), lua.lua_toboolean(&L, -3));
- }
+    // Success: status 0 -> first result is boolean true.
+    status = try lua.luaL_dostring(&L, "return os.execute('true')", "=(test)");
+    try std.testing.expectEqual(@as(i32, lua.LUA_OK), status);
+    try std.testing.expectEqual(@as(i32, 3), lua.lua_gettop(&L));
+    try std.testing.expectEqual(@as(i32, 1), lua.lua_toboolean(&L, -3));
+}
 
 test "H.2 os.setlocale returns the active locale" {
     const gpa = std.testing.allocator;
@@ -3637,8 +3737,7 @@ test "H.4 luaL_ref works via Lua code (internal C API interaction)" {
     // From Lua, create a table and pass it to a C function that uses refs
     // We test indirectly: store in a table, mutate the original, verify ref
     // doesn't change.
-    const status = try lua.luaL_dostring(&L,
-        "local t = {a = 1, b = 2}\n" ++
+    const status = try lua.luaL_dostring(&L, "local t = {a = 1, b = 2}\n" ++
         "-- The C API reference system works on the table via rawgeti/rawseti\n" ++
         "-- so we can test via raw access from Lua too\n" ++
         "t[1] = 42\n" ++
@@ -4373,6 +4472,3 @@ test "H.8 deprecated compatibility aliases (newuserdata, getuservalue, setuserva
     try std.testing.expectEqual(@as(i32, lua.LUA_TNUMBER), lua.lua_type(&L, -1));
     lua.lua_pop(&L, 1);
 }
-
-
-

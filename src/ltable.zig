@@ -40,10 +40,18 @@ inline fn asInt(v: TValue) ?i64 {
 /// tag check so the function is safe to inline at call sites where the key's
 /// active tag is statically known.
 inline fn keyEquals(a: TValue, b: TValue) bool {
+    // Cross-type numeric: integers and floats with the same value are equal as keys.
+    if (a == .integer and b == .number) {
+        return @as(f64, @floatFromInt(a.integer)) == b.number;
+    }
+    if (a == .number and b == .integer) {
+        return a.number == @as(f64, @floatFromInt(b.integer));
+    }
     if (@as(std.meta.Tag(TValue), a) != @as(std.meta.Tag(TValue), b)) {
         return false;
     }
     if (a == .number and b == .number) return a.number == b.number;
+    if (a == .integer and b == .integer) return a.integer == b.integer;
     if (a == .string and b == .string) {
         if (a.string) |sa| {
             if (b.string) |sb| {
@@ -83,6 +91,7 @@ inline fn hashKey(key: TValue, len: usize) usize {
     const mask = len - 1;
     const h: usize = switch (key) {
         .number => |n| hashBits(@bitCast(n)),
+        .integer => |n| hashBits(@bitCast(@as(f64, @floatFromInt(n)))),
         .string => |ts| if (ts) |s| s.hash else 0,
         .boolean => |b| if (b) 1 else 0,
         .lightud => |p| if (p) |q| @intFromPtr(q) else 0,

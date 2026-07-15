@@ -181,27 +181,139 @@ const strlib = [_]struct {
     name: []const u8,
     func: lua.lua_CFunction,
 }{
-    .{ .name = "byte",     .func = str_byte },
-    .{ .name = "char",     .func = str_char },
-    .{ .name = "dump",     .func = str_dump },
-    .{ .name = "find",     .func = pattern.str_find },
-    .{ .name = "format",   .func = format.str_format },
-    .{ .name = "gmatch",   .func = pattern.gmatch },
-    .{ .name = "gsub",     .func = pattern.str_gsub },
-    .{ .name = "len",      .func = str_len },
-    .{ .name = "lower",    .func = str_lower },
-    .{ .name = "match",    .func = pattern.str_match },
-    .{ .name = "rep",      .func = str_rep },
-    .{ .name = "reverse",  .func = str_reverse },
-    .{ .name = "sub",      .func = str_sub },
-    .{ .name = "upper",    .func = str_upper },
-    .{ .name = "pack",     .func = pack.str_pack },
+    .{ .name = "byte", .func = str_byte },
+    .{ .name = "char", .func = str_char },
+    .{ .name = "dump", .func = str_dump },
+    .{ .name = "find", .func = pattern.str_find },
+    .{ .name = "format", .func = format.str_format },
+    .{ .name = "gmatch", .func = pattern.gmatch },
+    .{ .name = "gsub", .func = pattern.str_gsub },
+    .{ .name = "len", .func = str_len },
+    .{ .name = "lower", .func = str_lower },
+    .{ .name = "match", .func = pattern.str_match },
+    .{ .name = "rep", .func = str_rep },
+    .{ .name = "reverse", .func = str_reverse },
+    .{ .name = "sub", .func = str_sub },
+    .{ .name = "upper", .func = str_upper },
+    .{ .name = "pack", .func = pack.str_pack },
     .{ .name = "packsize", .func = pack.str_packsize },
-    .{ .name = "unpack",   .func = pack.str_unpack },
+    .{ .name = "unpack", .func = pack.str_unpack },
+};
+
+fn arith(L: *lua.lua_State, op: i32) anyerror!i32 {
+    // Convert both operands to numbers if they are strings
+    const t1 = lua.lua_type(L, 1);
+    const t2 = lua.lua_type(L, 2);
+    if (t1 == lua.LUA_TSTRING) {
+        const s1 = lua.lua_tostring(L, 1) orelse "";
+        if (lua.lua_stringtonumber(L, s1) == 0) {
+            return lauxlib.luaL_error(L, "attempt to perform arithmetic on a string value");
+        }
+        lua.lua_replace(L, 1);
+    } else if (t1 != lua.LUA_TNUMBER) {
+        return lauxlib.luaL_error(L, "attempt to perform arithmetic on a string value");
+    }
+    if (t2 == lua.LUA_TSTRING) {
+        const s2 = lua.lua_tostring(L, 2) orelse "";
+        if (lua.lua_stringtonumber(L, s2) == 0) {
+            return lauxlib.luaL_error(L, "attempt to perform arithmetic on a string value");
+        }
+        lua.lua_replace(L, 2);
+    } else if (t2 != lua.LUA_TNUMBER) {
+        return lauxlib.luaL_error(L, "attempt to perform arithmetic on a string value");
+    }
+    // Now both are numbers — delegate to core arithmetic
+    const is_int1 = lua.lua_isinteger(L, 1);
+    const is_int2 = lua.lua_isinteger(L, 2);
+    if (is_int1 != 0 and is_int2 != 0) {
+        const iv1 = lua.lua_tointeger(L, 1) orelse 0;
+        const iv2 = lua.lua_tointeger(L, 2) orelse 0;
+        const result = switch (op) {
+            lua.LUA_OPADD => iv1 +% iv2,
+            lua.LUA_OPSUB => iv1 -% iv2,
+            lua.LUA_OPMUL => iv1 *% iv2,
+            lua.LUA_OPMOD => @rem(iv1, iv2),
+            lua.LUA_OPPOW => @as(i64, @intFromFloat(@floor(@as(f64, @floatFromInt(iv1)) / @as(f64, @floatFromInt(iv2))))),
+            lua.LUA_OPDIV => @as(i64, @intFromFloat(@as(f64, @floatFromInt(iv1)) / @as(f64, @floatFromInt(iv2)))),
+            lua.LUA_OPIDIV => blk: {
+                const ib = iv1;
+                const ic = iv2;
+                const q = if (ic == -1) ib else @divTrunc(ib, ic);
+                const r = @rem(ib, ic);
+                break :blk if (r == 0 or (ib >= 0) == (ic >= 0)) q else q - 1;
+            },
+            lua.LUA_OPBAND => iv1 & iv2,
+            lua.LUA_OPBOR => iv1 | iv2,
+            lua.LUA_OPBXOR => iv1 ^ iv2,
+            lua.LUA_OPSHL => lua.luaV_shift(iv1, iv2),
+            lua.LUA_OPSHR => lua.luaV_shift(iv1, -iv2),
+            else => return lauxlib.luaL_error(L, "unsupported arithmetic operation"),
+        };
+        lua.lua_pushinteger(L, result);
+    } else {
+        const fv1 = lua.lua_tonumber(L, 1) orelse 0.0;
+        const fv2 = lua.lua_tonumber(L, 2) orelse 0.0;
+        const result = switch (op) {
+            lua.LUA_OPADD => fv1 + fv2,
+            lua.LUA_OPSUB => fv1 - fv2,
+            lua.LUA_OPMUL => fv1 * fv2,
+            lua.LUA_OPMOD => fv1 - @floor(fv1 / fv2) * fv2,
+            lua.LUA_OPPOW => std.math.pow(f64, fv1, fv2),
+            lua.LUA_OPDIV => fv1 / fv2,
+            lua.LUA_OPIDIV => @floor(fv1 / fv2),
+            else => return lauxlib.luaL_error(L, "unsupported arithmetic operation"),
+        };
+        lua.lua_pushnumber(L, result);
+    }
+    // The arguments (slots 1, 2) remain below the freshly-pushed result and
+    // are discarded when the C frame is popped; only the result (on top) is
+    // returned. Do NOT pop here — lua_pop removes from the top, which would
+    // discard the result itself (matching the reference lstrlib.c arith).
+    return 1;
+}
+
+fn arith_add(L: *lua.lua_State) anyerror!i32 {
+    return arith(L, lua.LUA_OPADD);
+}
+fn arith_sub(L: *lua.lua_State) anyerror!i32 {
+    return arith(L, lua.LUA_OPSUB);
+}
+fn arith_mul(L: *lua.lua_State) anyerror!i32 {
+    return arith(L, lua.LUA_OPMUL);
+}
+fn arith_mod(L: *lua.lua_State) anyerror!i32 {
+    return arith(L, lua.LUA_OPMOD);
+}
+fn arith_pow(L: *lua.lua_State) anyerror!i32 {
+    return arith(L, lua.LUA_OPPOW);
+}
+fn arith_div(L: *lua.lua_State) anyerror!i32 {
+    return arith(L, lua.LUA_OPDIV);
+}
+fn arith_idiv(L: *lua.lua_State) anyerror!i32 {
+    return arith(L, lua.LUA_OPIDIV);
+}
+fn arith_unm(L: *lua.lua_State) anyerror!i32 {
+    return arith(L, lua.LUA_OPUNM);
+}
+
+const stringmetamethods = [_]lauxlib.luaL_Reg{
+    .{ .name = "__add", .func = arith_add },
+    .{ .name = "__sub", .func = arith_sub },
+    .{ .name = "__mul", .func = arith_mul },
+    .{ .name = "__mod", .func = arith_mod },
+    .{ .name = "__pow", .func = arith_pow },
+    .{ .name = "__div", .func = arith_div },
+    .{ .name = "__idiv", .func = arith_idiv },
+    .{ .name = "__unm", .func = arith_unm },
 };
 
 fn createmetatable(L: *lua.lua_State) !void {
-    lua.lua_createtable(L, 0, 1);
+    lua.lua_createtable(L, 0, @as(i32, @intCast(stringmetamethods.len + 1)));
+    for (&stringmetamethods) |reg| {
+        lua.lua_pushcfunction(L, reg.func);
+        try lua.lua_setfield(L, -2, reg.name);
+    }
     lua.lua_pushvalue(L, -2);
     try lua.lua_setfield(L, -2, "__index");
     _ = lua.lua_pushlstring(L, "", 0);

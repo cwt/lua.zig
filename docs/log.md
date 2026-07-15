@@ -2317,3 +2317,13 @@ stack safety, library registration, and a native io-write crash).
   big/gengc/cstack/etc.)
 - Dogfood-tested: `luazig -e "print(pcall(type))"` prints
   `false	bad argument #1 (value expected)` (was `true	nil`).
+
+## [2026-07-15] Fix non-interactive script result printing
+
+### Changes (`src/luazig.zig`)
+- **`runLoadedChunk`:** Removed the incorrect `printResults(L, io)` call for non-interactive execution (scripts and `-e` command expressions) and replaced it with `lua_settop(L, 0)` to properly balance the stack without outputting the evaluation results. This aligns with reference Lua's behavior where scripts and command expression evaluation results are not implicitly printed (unlike the interactive REPL).
+
+### Verification
+- `zig build` ✅
+- `zig build test` → **124/124 pass** (all unit tests, metamethod tests, and H.6 CLI interpreter behavior validation tests pass).
+

@@ -90,7 +90,8 @@ pub fn luaK_nil(fs: *FuncState, from: i32, n: i32) void {
             const pfrom = lvm.GETARG_A(pi.*);
             const pl = pfrom + lvm.GETARG_B(pi.*);
             if ((pfrom <= from and from <= pl + 1) or
-                (from <= pfrom and pfrom <= l + 1)) {
+                (from <= pfrom and pfrom <= l + 1))
+            {
                 const nf = if (pfrom < from) pfrom else from;
                 const nl = if (pl > l) pl else l;
                 lvm.SETARG_A(pi, nf);
@@ -341,7 +342,7 @@ fn stringK(fs: *FuncState, s: ?*lua.lua_TString) !i32 {
 }
 
 fn intK(fs: *FuncState, n: i64) !i32 {
-    return try addk(fs, .{ .number = @floatFromInt(n) });
+    return try addk(fs, .{ .integer = n });
 }
 
 fn numberK(fs: *FuncState, r: f64) !i32 {
@@ -719,7 +720,7 @@ fn jumponcond(fs: *FuncState, e: *expdesc, cond: i32) i32 {
 
 pub fn luaK_goiftrue(fs: *FuncState, e: *expdesc) void {
     if (e.f < -1 or e.t < -1) {
-        std.debug.print("DEBUG: luaK_goiftrue: e.k={s}, e.t={d}, e.f={d}, line={d}\n", .{@tagName(e.k), e.t, e.f, fs.ls.linenumber});
+        std.debug.print("DEBUG: luaK_goiftrue: e.k={s}, e.t={d}, e.f={d}, line={d}\n", .{ @tagName(e.k), e.t, e.f, fs.ls.linenumber });
     }
     var pc: i32 = undefined;
     luaK_dischargevars(fs, e);
@@ -742,7 +743,7 @@ pub fn luaK_goiftrue(fs: *FuncState, e: *expdesc) void {
 
 fn luaK_goiffalse(fs: *FuncState, e: *expdesc) void {
     if (e.f < -1 or e.t < -1) {
-        std.debug.print("DEBUG: luaK_goiffalse: e.k={s}, e.t={d}, e.f={d}, line={d}\n", .{@tagName(e.k), e.t, e.f, fs.ls.linenumber});
+        std.debug.print("DEBUG: luaK_goiffalse: e.k={s}, e.t={d}, e.f={d}, line={d}\n", .{ @tagName(e.k), e.t, e.f, fs.ls.linenumber });
     }
     var pc: i32 = undefined;
     luaK_dischargevars(fs, e);
@@ -918,10 +919,11 @@ fn codeunexpval(fs: *FuncState, op: lvm.OpCode, e: *expdesc, line: i32) void {
     luaK_fixline(fs, line);
 }
 
-fn finishbinexpval(fs: *FuncState, e1: *expdesc, e2: *expdesc,
-                   op: lvm.OpCode, v2: i32, flip: bool, line: i32,
-                   mmop: lvm.OpCode, event: ltm.TMS) void {
+fn finishbinexpval(fs: *FuncState, e1: *expdesc, e2: *expdesc, op: lvm.OpCode, v2: i32, flip: bool, line: i32, mmop: lvm.OpCode, event: ltm.TMS) void {
     const v1 = luaK_exp2anyreg(fs, e1);
+    // Emit the arithmetic opcode with A=0 as a placeholder. When 'e1' is later
+    // discharged to a register, the VRELOC fixup (discharge2reg) rewrites A to
+    // the final result register, matching the reference C behaviour.
     _ = luaK_codeABCk(fs, op, 0, v1, v2, 0);
     freeexps(fs, e1, e2);
     e1.u = .{ .info = @intCast(fs.code.items.len - 1) };
@@ -1090,9 +1092,7 @@ pub fn luaK_infix(fs: *FuncState, op: lparser.BinOpr, v: *expdesc) void {
         .OPR_AND => luaK_goiftrue(fs, v),
         .OPR_OR => luaK_goiffalse(fs, v),
         .OPR_CONCAT => luaK_exp2nextreg(fs, v),
-        .OPR_ADD, .OPR_SUB, .OPR_MUL, .OPR_DIV, .OPR_IDIV,
-        .OPR_MOD, .OPR_POW, .OPR_BAND, .OPR_BOR, .OPR_BXOR,
-        .OPR_SHL, .OPR_SHR => {
+        .OPR_ADD, .OPR_SUB, .OPR_MUL, .OPR_DIV, .OPR_IDIV, .OPR_MOD, .OPR_POW, .OPR_BAND, .OPR_BOR, .OPR_BXOR, .OPR_SHL, .OPR_SHR => {
             var dummy: lua.TValue = undefined;
             if (!tonumeral(v, &dummy)) _ = luaK_exp2anyreg(fs, v);
         },

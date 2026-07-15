@@ -34,15 +34,7 @@ pub const TMS = enum(u5) {
     pub const N = 25;
 };
 
-pub const luaT_eventname = [_][]const u8{
-    "__index", "__newindex",
-    "__gc", "__mode", "__len", "__eq",
-    "__add", "__sub", "__mul", "__mod", "__pow",
-    "__div", "__idiv",
-    "__band", "__bor", "__bxor", "__shl", "__shr",
-    "__unm", "__bnot", "__lt", "__le",
-    "__concat", "__call", "__close"
-};
+pub const luaT_eventname = [_][]const u8{ "__index", "__newindex", "__gc", "__mode", "__len", "__eq", "__add", "__sub", "__mul", "__mod", "__pow", "__div", "__idiv", "__band", "__bor", "__bxor", "__shl", "__shr", "__unm", "__bnot", "__lt", "__le", "__concat", "__call", "__close" };
 
 pub fn luaT_init(L: *lua.lua_State) !void {
     const g = L.l_G orelse return;
@@ -113,10 +105,10 @@ pub fn luaT_callTM(L: *lua.lua_State, f: lua.TValue, p1: lua.TValue, p2: lua.TVa
 pub fn luaT_callTMres(L: *lua.lua_State, f: lua.TValue, p1: lua.TValue, p2: lua.TValue, res: usize) !lua.TValue {
     const old_top = L.top;
     if (lua.lua_checkstack(L, 3) == 0) return error.OutOfMemory;
-    L.stack[L.top] = f;
-    L.stack[L.top + 1] = p1;
-    L.stack[L.top + 2] = p2;
-    L.top += 3;
+    L.stack[old_top] = f;
+    L.stack[old_top + 1] = p1;
+    L.stack[old_top + 2] = p2;
+    L.top = old_top + 3;
     try luaD_call(L, old_top, 1);
     const result = L.stack[old_top];
     L.stack[res] = result;
@@ -157,9 +149,19 @@ inline fn G(L: *lua.lua_State) *lua.global_State {
 
 pub inline fn luaT_equalobj(L: *lua.lua_State, t1: lua.TValue, t2: lua.TValue) !bool {
     // Fast path: both values are numbers (f64-only model) — direct compare,
-    // skipping the tag-compare and the full switch dispatch.
+    // Fast path: both are the same numeric variant.
     if (t1 == .number and t2 == .number) {
         return t1.number == t2.number;
+    }
+    if (t1 == .integer and t2 == .integer) {
+        return t1.integer == t2.integer;
+    }
+    // Cross-type numeric: integer vs number — compare by converting to f64.
+    if (t1 == .integer and t2 == .number) {
+        return @as(f64, @floatFromInt(t1.integer)) == t2.number;
+    }
+    if (t1 == .number and t2 == .integer) {
+        return t1.number == @as(f64, @floatFromInt(t2.integer));
     }
     if (@as(std.meta.Tag(lua.TValue), t1) != @as(std.meta.Tag(lua.TValue), t2)) {
         return false;
@@ -168,6 +170,7 @@ pub inline fn luaT_equalobj(L: *lua.lua_State, t1: lua.TValue, t2: lua.TValue) !
         .nil => true,
         .boolean => |b| b == t2.boolean,
         .number => |n| n == t2.number,
+        .integer => |n| n == t2.integer,
         .lightud => |p| p == t2.lightud,
         .string => |s| s == t2.string,
         .function => |f| f == t2.function,
@@ -214,8 +217,19 @@ pub inline fn luaT_equalobj(L: *lua.lua_State, t1: lua.TValue, t2: lua.TValue) !
 }
 
 pub fn luaT_lt(L: *lua.lua_State, t1: lua.TValue, t2: lua.TValue) !bool {
+    // Same-type numeric
     if (t1 == .number and t2 == .number) {
         return t1.number < t2.number;
+    }
+    if (t1 == .integer and t2 == .integer) {
+        return t1.integer < t2.integer;
+    }
+    // Cross-type numeric: convert integer to f64 for comparison
+    if (t1 == .number and t2 == .integer) {
+        return t1.number < @as(f64, @floatFromInt(t2.integer));
+    }
+    if (t1 == .integer and t2 == .number) {
+        return @as(f64, @floatFromInt(t1.integer)) < t2.number;
     }
     if (t1 == .string and t2 == .string) {
         return std.mem.order(u8, t1.string.?.s, t2.string.?.s) == .lt;
@@ -224,8 +238,19 @@ pub fn luaT_lt(L: *lua.lua_State, t1: lua.TValue, t2: lua.TValue) !bool {
 }
 
 pub fn luaT_le(L: *lua.lua_State, t1: lua.TValue, t2: lua.TValue) !bool {
+    // Same-type numeric
     if (t1 == .number and t2 == .number) {
         return t1.number <= t2.number;
+    }
+    if (t1 == .integer and t2 == .integer) {
+        return t1.integer <= t2.integer;
+    }
+    // Cross-type numeric: convert integer to f64 for comparison
+    if (t1 == .number and t2 == .integer) {
+        return t1.number <= @as(f64, @floatFromInt(t2.integer));
+    }
+    if (t1 == .integer and t2 == .number) {
+        return @as(f64, @floatFromInt(t1.integer)) <= t2.number;
     }
     if (t1 == .string and t2 == .string) {
         return std.mem.order(u8, t1.string.?.s, t2.string.?.s) != .gt;
@@ -412,10 +437,14 @@ fn getnumargs(L: *lua.lua_State, ci: *lua.CallInfo, h: ?*lua.lua_Table) !i32 {
     // proper non-negative integer not larger than INT_MAX/2. (luazig unifies
     // integers and floats into a single number type, so "proper integer"
     // here means an integral value, matching lua.lua_isinteger.)
-    if (res != .number or
-        @trunc(res.number) != res.number or
-        res.number < 0 or
-        res.number > @as(f64, @floatFromInt(std.math.maxInt(i32) / 2)))
+    if (res != .number and res != .integer) {
+        _ = lua.lua_pushstring(L, "vararg table has no proper 'n'");
+        return lua.lua_error(L);
+    }
+    const nval = if (res == .integer) @as(f64, @floatFromInt(res.integer)) else res.number;
+    if (@trunc(nval) != nval or
+        nval < 0 or
+        nval > @as(f64, @floatFromInt(std.math.maxInt(i32) / 2)))
     {
         _ = lua.lua_pushstring(L, "vararg table has no proper 'n'");
         return lua.lua_error(L);
@@ -461,6 +490,11 @@ fn buildhiddenargs(L: *lua.lua_State, ci: *lua.CallInfo, totalargs: i32, nfixpar
     ci.func += @as(usize, @intCast(totalargs)) + 1;
     ci.base = ci.func + 1;
     ci.top += @as(usize, @intCast(totalargs)) + 1;
+    // The reference (luaD_precall) re-establishes 'L->top = ci->top' after
+    // adjustvarargs relocates the frame. Mirror that here so the top covers
+    // all live registers of the relocated frame (otherwise auxiliary calls
+    // such as metamethod invocations clobber them).
+    L.top = ci.top;
 }
 
 // lua/ltm.c luaT_getvarargs
@@ -518,8 +552,8 @@ pub fn luaT_getvararg(L: *lua.lua_State, ci: *lua.CallInfo, ra_idx: usize, rc_id
     const is_vatab = hasVatabFlag(L, ci);
     const np = if (is_vatab) currentNumParams(L, ci) else 0;
     if (rc.typ() == lua.LUA_TNUMBER) {
-        const n = rc.number;
-        const n_int: i64 = @intFromFloat(n);
+        const n = if (rc == .integer) @as(f64, @floatFromInt(rc.integer)) else rc.number;
+        const n_int: i64 = if (rc == .integer) rc.integer else @as(i64, @intFromFloat(n));
         if (@as(f64, @floatFromInt(n_int)) == n and n_int >= 1) {
             const nextra = if (is_vatab) (try getnumargs(L, ci, varargTableAt(L, ci, np))) else ci.nextraargs;
             if (n_int - 1 < @as(i64, nextra)) {
