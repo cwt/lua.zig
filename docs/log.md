@@ -2327,3 +2327,41 @@ stack safety, library registration, and a native io-write crash).
 - `zig build` ✅
 - `zig build test` → **124/124 pass** (all unit tests, metamethod tests, and H.6 CLI interpreter behavior validation tests pass).
 
+
+## [2026-07-15] Fix vararg frame relocation crash (stack under-allocation)
+
+### Root cause
+`lua_pcallk`/`precall` (Lua branch) unconditionally set `L.top = frame_top`
+(`base + maxStackSize`) for *every* Lua function before `lvm.run` began. This
+mirrors the reference's `L->top = ci->top` for non-vararg functions, but it
+breaks vararg functions: the first opcode of a vararg function is `OP_VARARGPREP`,
+which calls `luaT_adjustvarargs`. The reference computes the real argument count
+as `totalargs = L.top - ci.func - 1` *while `L->top` is still the caller's top*.
+Because this port had already bumped `L.top` to `frame_top`, `adjustvarargs`
+computed `totalargs = maxStackSize` (e.g. 15) instead of the true count (e.g. 0
+for the main chunk). `buildhiddenargs` then relocated the frame by `maxStackSize+1`
+slots (e.g. main chunk `func=1, base=2` → `base=18`) without ever growing the
+stack to fit the relocated frame, so the very next `MOVE`/`LOADK` indexed past
+the stack end (`index 21, len 21`) and panicked.
+
+### Fix (`src/lua.zig`, `src/ltm.zig`)
+- `precall` (Lua branch): only set `L.top = frame_top` for **non-vararg**
+  functions (`proto.flag & (PF_VAHID | PF_VATAB) == 0`). For vararg functions,
+  leave `L.top` at the caller's top so `OP_VARARGPREP`/`luaT_adjustvarargs`
+  derives the correct argument count; `buildhiddenargs` re-establishes
+  `L.top = ci.top` after relocating the frame. Added `PF_VAHID`/`PF_VATAB` consts.
+- `buildhiddenargs`: reserve `maxStackSize + 1` slots above `L.top` (port of the
+  reference `luaD_checkstack(L, p->maxstacksize + 1)`) so the relocated frame —
+  which moves up by `totalargs + 1` — has room for all its registers. Changed the
+  hidden realloc from `catch return` (swallowed OOM) to `try` and threaded
+  `maxStackSize` through `luaT_adjustvarargs`.
+
+### Verification
+- `./zig-out/bin/luazig ../pi/pi-5.5.lua` → computes π correctly to 6 decimals
+  (was a `panic: index out of bounds: index 21, len 21`).
+- `zig build test` → **124/124 pass** (no regression to existing vararg tests).
+- `lua/testes/vararg.lua` still fails, but this is **pre-existing** (confirmed the
+  same failure on the parent revision rev 81) and unrelated to this fix.
+- Self-audit against AGENTS.md §0.1: threads allocator (✓), propagates errors
+  with `!T`/`try` (✓, no `catch unreachable`/swallowed OOM), no C-style hacks,
+  single type model (✓).

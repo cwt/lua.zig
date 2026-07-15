@@ -456,6 +456,13 @@ fn freeAllCallInfos(L: *lua_State) void {
     L.ci = &L.base_ci;
 }
 
+// Proto flag bits (mirror lua/ldo.h PF_*). A Lua function is vararg when its
+// 'flag' carries PF_VAHID (hidden vararg args) or PF_VATAB (vararg table);
+// such functions begin with OP_VARARGPREP, which relocates the frame and must
+// read the real argument count from 'L->top'.
+const PF_VAHID: u8 = 1; // function has hidden vararg arguments
+const PF_VATAB: u8 = 2; // function has a vararg table
+
 pub fn precall(L: *lua_State, func_idx: usize, nresults: i32) !?*CallInfo {
     const val = L.stack[func_idx];
     if (val != .function) {
@@ -514,6 +521,7 @@ pub fn precall(L: *lua_State, func_idx: usize, nresults: i32) !?*CallInfo {
             const num_params = proto.numParams;
             const base_idx = func_idx + 1;
             const frame_top = base_idx + proto.maxStackSize;
+            const is_vararg = (proto.flag & (PF_VAHID | PF_VATAB)) != 0;
             if (frame_top >= L.stack.len) {
                 const old_len = L.stack.len;
                 const new_len = @max(L.stack.len * 2, frame_top + 10);
@@ -542,11 +550,17 @@ pub fn precall(L: *lua_State, func_idx: usize, nresults: i32) !?*CallInfo {
             if (L.ci) |prev| {
                 prev.next = new_ci;
             }
-            // Keep L.top at the top of the new frame so that auxiliary calls
-            // (e.g. metamethod invocations via luaT_callTMres) are placed
-            // above all live registers, matching the reference behaviour
-            // (L->top = ci->top, where ci->top = base + maxstacksize).
-            L.top = frame_top;
+            // For non-vararg Lua functions, lift 'L->top' to the frame top so
+            // that auxiliary calls (e.g. metamethod invocations via
+            // luaT_callTMres) are placed above all live registers, matching the
+            // reference behaviour (L->top = ci->top). Vararg functions are left
+            // at the caller's top: their first instruction (OP_VARARGPREP)
+            // calls luaT_adjustvarargs, which relies on 'L->top' still being the
+            // caller's top (the real argument count) to compute the number of
+            // varargs; buildhiddenargs then re-establishes 'L->top = ci->top'.
+            if (!is_vararg) {
+                L.top = frame_top;
+            }
             L.ci = new_ci;
             return new_ci;
         },

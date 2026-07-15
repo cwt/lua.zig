@@ -462,20 +462,23 @@ pub fn luaT_adjustvarargs(L: *lua.lua_State, ci: *lua.CallInfo, cl: *lua.lua_LCl
         const t = try createVarargTable(L, ci.func + nfixparams + 1, @intCast(nextra));
         L.stack[ci.func + nfixparams + 1] = lua.TValue{ .table = t };
     } else {
-        buildhiddenargs(L, ci, totalargs, nfixparams, nextra);
+        try buildhiddenargs(L, ci, totalargs, nfixparams, nextra, p.maxStackSize);
     }
 }
 
 /// Port of lua/ltm.c buildhiddenargs (PF_VAHID path).
 /// Relocates the call frame above all arguments so that the function's
 /// register space does not overlap with the hidden vararg area.
-fn buildhiddenargs(L: *lua.lua_State, ci: *lua.CallInfo, totalargs: i32, nfixparams: usize, nextra: i32) void {
+fn buildhiddenargs(L: *lua.lua_State, ci: *lua.CallInfo, totalargs: i32, nfixparams: usize, nextra: i32, maxstacksize: u8) !void {
     ci.nextraargs = nextra;
-    const need = L.top + @as(usize, @intCast(nfixparams)) + 1;
-    if (need >= L.stack.len) {
+    // Mirrors the reference luaD_checkstack(L, p->maxstacksize + 1): the frame
+    // is about to be relocated up by 'totalargs + 1', so reserve room for all
+    // of the (relocated) function's registers above the current top.
+    const need = L.top + @as(usize, @intCast(maxstacksize)) + 1;
+    if (need > L.stack.len) {
         const old_len = L.stack.len;
-        const new_len = @max(L.stack.len * 2, need + 10);
-        L.stack = L.allocator.realloc(L.stack, new_len) catch return;
+        const new_len = @max(L.stack.len * 2, need);
+        L.stack = try L.allocator.realloc(L.stack, new_len);
         @memset(L.stack[old_len..], .{ .nil = {} });
         L.stack_last = L.stack.len - 1;
     }
