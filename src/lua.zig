@@ -3018,29 +3018,21 @@ pub fn luaC_collectgarbage(L: *lua_State) !void {
         }
     }
 
-    // Root 4: The stack of all active states
-    var lim = L.top;
-    var curr_ci = L.ci;
-    while (curr_ci) |frame| {
-        if (frame.top > lim) lim = frame.top;
-        curr_ci = frame.previous;
-    }
+    // Root 4: The stack of all active states.
+    // Mark only up to L.top; ci.top is a frame's allocated ceiling, but
+    // values above L.top are uninitialized (nil) and do not need marking.
+    // Using ci.top would expand the scan to LUA_MINSTACK for the base
+    // frame, causing popped stack slots to survive GC.
     var i: usize = 0;
-    while (i < lim) : (i += 1) {
+    while (i < L.top) : (i += 1) {
         try markValue(L, &gray_list, L.stack[i]);
     }
 
     // Root 4b: The stacks of all created threads
     var curr_th = g.thread_list;
     while (curr_th) |th| {
-        var th_lim = th.top;
-        var th_ci = th.ci;
-        while (th_ci) |frame| {
-            if (frame.top > th_lim) th_lim = frame.top;
-            th_ci = frame.previous;
-        }
         var j: usize = 0;
-        while (j < th_lim) : (j += 1) {
+        while (j < th.top) : (j += 1) {
             try markValue(L, &gray_list, th.stack[j]);
         }
         curr_th = th.twups;
