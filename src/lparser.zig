@@ -1346,8 +1346,12 @@ fn exprstat(ls: *llex.LexState) !void {
         v.prev = null;
         try restassign(ls, &v, 1);
     } else {
-        const inst = getinstruction(fs, &v.v);
+        // Bare function-call statement. The reference checks the expdesc
+        // kind *before* reading the instruction (see `luaK_setoneret`), so
+        // guard the `getinstruction` (`u.info`) access with the kind check to
+        // avoid touching `u.ind` for non-call expressions.
         try check_condition(ls, v.v.k == .VCALL, "syntax error");
+        const inst = getinstruction(fs, &v.v);
         lvm.SETARG_C(inst, 1);
     }
 }
@@ -1667,6 +1671,9 @@ fn localstat(ls: *llex.LexState) !void {
     while (true) {
         const vname = try str_checkname(ls);
         const kind = try getvarattribute(ls, defkind);
+        if (kind == RDKCONST) {
+            // compile-time constant attribute; no extra action here
+        }
         vidx = try new_varkind(ls, vname, kind);
         if (kind == RDKTOCLOSE) {
             if (toclose != -1) try lcode.luaK_semerror(ls, "multiple to-be-closed variables");
@@ -1810,7 +1817,7 @@ pub fn luaD_protectedparser(
     first_slice: []const u8,
 ) !*lua.lua_Proto {
     var ls: llex.LexState = undefined;
-    const source = try lstring.luaS_new(L.l_G.?, chunkname);
+    const source = try lstring.luaS_new(L, chunkname);
     try llex.luaX_setinput(L, &ls, reader, dt, source, first_slice);
     errdefer {
         ls.buff.deinit(L.allocator);
@@ -1824,7 +1831,6 @@ pub fn luaD_protectedparser(
         } else {
             _ = lua.lua_pushstring(L, "syntax error");
         }
-        if (ls.errmsg_allocated) L.allocator.free(ls.errmsg.?);
         return err;
     };
     try lua.registerGC(L, f);

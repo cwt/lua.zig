@@ -40,7 +40,7 @@ pub fn luaT_init(L: *lua.lua_State) !void {
     const g = L.l_G orelse return;
     var i: usize = 0;
     while (i < @intFromEnum(TMS.CLOSE) + 1) : (i += 1) {
-        g.tmname[i] = try lstring.luaS_new(g, luaT_eventname[i]);
+        g.tmname[i] = try lstring.luaS_new(L, luaT_eventname[i]);
     }
 }
 
@@ -172,7 +172,12 @@ pub inline fn luaT_equalobj(L: *lua.lua_State, t1: lua.TValue, t2: lua.TValue) !
         .number => |n| n == t2.number,
         .integer => |n| n == t2.integer,
         .lightud => |p| p == t2.lightud,
-        .string => |s| s == t2.string,
+        .string => |s| blk: {
+            const t2s = t2.string;
+            if (s == null and t2s == null) break :blk true;
+            if (s == null or t2s == null) break :blk false;
+            break :blk lstring.luaS_eqstr(s.?, t2s.?);
+        },
         .function => |f| f == t2.function,
         .thread => |t| t == t2.thread,
         .upval => |u| u == t2.upval,
@@ -422,16 +427,14 @@ fn createVarargTable(L: *lua.lua_State, first_extra: usize, n: usize) !*lua.lua_
     while (i < n) : (i += 1) {
         try ltable.setInt(t, @intCast(i + 1), L.stack[first_extra + i]);
     }
-    const g = L.l_G orelse return error.NoGlobalState;
-    const nkey = lua.TValue{ .string = try lstring.luaS_new(g, "n") };
+    const nkey = lua.TValue{ .string = try lstring.luaS_new(L, "n") };
     try ltable.set(t, nkey, lua.TValue{ .number = @as(f64, @floatFromInt(@as(i64, @intCast(n)))) });
     return t;
 }
 
 fn getnumargs(L: *lua.lua_State, ci: *lua.CallInfo, h: ?*lua.lua_Table) !i32 {
     if (h == null) return ci.nextraargs;
-    const g = L.l_G orelse return 0;
-    const nkey = lua.TValue{ .string = try lstring.luaS_new(g, "n") };
+    const nkey = lua.TValue{ .string = try lstring.luaS_new(L, "n") };
     const res = ltable.get(h.?, nkey);
     // Mirror lua/ltm.c getnumargs: the vararg table's 'n' field must be a
     // proper non-negative integer not larger than INT_MAX/2. (luazig unifies

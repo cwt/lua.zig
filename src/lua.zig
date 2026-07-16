@@ -627,6 +627,10 @@ pub const global_State = struct {
     alloc_ud: ?*anyopaque,
     alloc_wrapper: AllocWrapper,
     strt: std.array_hash_map.String(*lua_TString),
+    // API string cache (mirrors the C reference `strcache`): reuses recently
+    // created strings by content so consecutive identical literals share one
+    // object. Entries may be null before first use.
+    strcache: [llimits.STRCACHE_N][llimits.STRCACHE_M]?*lua_TString = undefined,
     seed: usize,
     registry: TValue,
     allgc: ?*VMGCObject = null,
@@ -1167,14 +1171,8 @@ pub fn toNumeric(v: TValue) ?TValue {
         .number => v,
         .string => |s| {
             const str = s orelse return null;
-            const src = std.mem.trim(u8, str.s, &std.ascii.whitespace);
-            if (std.fmt.parseInt(i64, src, 0)) |i| {
-                return TValue{ .integer = i };
-            } else |_| {}
-            if (std.fmt.parseFloat(f64, src)) |n| {
-                return TValue{ .number = n };
-            } else |_| {}
-            return null;
+            // Locale-aware parse (mirrors lua_stringtonumber via tonumberValue).
+            return tonumberValue(str.s);
         },
         else => null,
     };
@@ -1339,8 +1337,7 @@ pub fn lua_pushlstring(L: *lua_State, s: []const u8, len: usize) ?[]const u8 {
     if (L.top >= L.stack.len) {
         if (lua_checkstack(L, 1) == 0) return null;
     }
-    const g = G(L);
-    const ts = lstring.luaS_new(g, s[0..len]) catch return null;
+    const ts = lstring.luaS_new(L, s[0..len]) catch return null;
     L.stack[L.top] = TValue{ .string = ts };
     L.top += 1;
     return ts.s;
@@ -2348,7 +2345,7 @@ pub fn lua_getglobal(L: *lua_State, name: []const u8) i32 {
             return LUA_TNIL;
         },
     };
-    const key = TValue{ .string = lstring.luaS_new(g, name) catch null };
+    const key = TValue{ .string = lstring.luaS_new(L, name) catch null };
     const val = ltable.get(globals, key);
     L.stack[L.top] = val;
     L.top += 1;
@@ -2379,8 +2376,7 @@ pub fn lua_getfield(L: *lua_State, idx: i32, k: []const u8) !i32 {
         lua_pushnil(L);
         return LUA_TNIL;
     }
-    const g = G(L);
-    const ts = try lstring.luaS_new(g, k);
+    const ts = try lstring.luaS_new(L, k);
     const key = TValue{ .string = ts };
     const res = L.top;
     L.stack[L.top] = .{ .nil = {} };
@@ -2534,7 +2530,7 @@ pub fn lua_setglobal(L: *lua_State, name: []const u8) void {
     };
     const val = L.stack[L.top - 1];
     L.top -= 1;
-    const key = TValue{ .string = lstring.luaS_new(g, name) catch null };
+    const key = TValue{ .string = lstring.luaS_new(L, name) catch null };
     ltable.set(globals, key, val) catch {};
 }
 
@@ -2556,8 +2552,7 @@ pub fn lua_setfield(L: *lua_State, idx: i32, k: []const u8) !void {
         L.top -= 1;
         return;
     }
-    const g = G(L);
-    const ts = try lstring.luaS_new(g, k);
+    const ts = try lstring.luaS_new(L, k);
     const val = L.stack[L.top - 1];
     L.top -= 1;
     try ltm.luaV_settable(L, obj, TValue{ .string = ts }, val);
@@ -2703,8 +2698,7 @@ pub fn lua_pcallk(L: *lua_State, nargs: i32, nresults: i32, errfunc: i32, ctx: l
         err_occurred = true;
         if (err == error.NotAFunction) {
             const msg = "attempt to call a non-function value";
-            const g = G(L);
-            if (lstring.luaS_new(g, msg)) |ts| {
+            if (lstring.luaS_new(L, msg)) |ts| {
                 L.stack[L.top] = TValue{ .string = ts };
                 L.top += 1;
             } else |_| {
@@ -2750,8 +2744,7 @@ pub fn lua_pcallk(L: *lua_State, nargs: i32, nresults: i32, errfunc: i32, ctx: l
         const final_err_obj = if (L.top > func_idx + @as(usize, @intCast(nargs)) + 1)
             L.stack[L.top - 1]
         else b: {
-            const g = G(L);
-            const ts = lstring.luaS_new(g, "error during execution") catch null;
+            const ts = lstring.luaS_new(L, "error during execution") catch null;
             break :b if (ts) |t| TValue{ .string = t } else TValue{ .nil = {} };
         };
 
@@ -2787,8 +2780,7 @@ pub fn lua_load(L: *lua_State, reader: lua_Reader, dt: ?*anyopaque, chunkname: [
     }
     const c = first_slice.?[0];
     if (c == '\x1b') {
-        const proto = lundump.loadBinaryChunk(L, reader, dt, first_slice.?, chunkname) catch |err| {
-            std.debug.print("Failed to load binary chunk: {any}\n", .{err});
+        const proto = lundump.loadBinaryChunk(L, reader, dt, first_slice.?, chunkname) catch {
             return LUA_ERRSYNTAX;
         };
         return finishLoad(L, proto);
@@ -3017,11 +3009,9 @@ fn markValue(L: *lua_State, gray_list: *std.ArrayList(*VMGCObject), val: TValue)
     switch (val) {
         .string => |s| if (s) |str| {
             str.marked = true;
-            // External strings are real GC objects; mark their VMGCObject so
-            // the sweep keeps them alive while referenced.
-            if (str.externally_owned) {
-                if (getGCObject(g, str)) |gc| try markObject(L, gc, gray_list);
-            }
+            // Strings on allgc (long / external) need their VMGCObject
+            // marked so the sweep keeps them alive while referenced.
+            if (getGCObject(g, str)) |gc| try markObject(L, gc, gray_list);
         },
         .table => |t| if (t) |tbl| if (getGCObject(g, tbl)) |gc| try markObject(L, gc, gray_list),
         .function => |f| if (f) |cl| if (getGCObject(g, cl)) |gc| try markObject(L, gc, gray_list),
@@ -3061,12 +3051,14 @@ fn freeGCObject(L: *lua_State, gc: *VMGCObject) void {
             L.allocator.destroy(u);
         },
         .string => |ts| {
-            // External strings only. Free the caller-owned bytes via the
-            // external allocator (LSTRMEM); fixed external strings (LSTRFIX,
-            // falloc == null) keep their static bytes. Always free the
-            // lua_TString struct itself, which Lua allocated.
+            // External (LSTRFIX / LSTRMEM) strings: bytes are owned by the
+            // caller — free via falloc if non-null, otherwise static.
+            // Non-externally-owned strings on allgc (long non-interned) have
+            // bytes allocated by Lua that must be freed here.
             if (ts.falloc) |falloc| {
                 _ = falloc(ts.ud, @constCast(ts.s.ptr), ts.len + 1, 0);
+            } else if (!ts.externally_owned and ts.s.len > 0) {
+                L.allocator.free(ts.s);
             }
             L.allocator.destroy(ts);
         },
@@ -3079,8 +3071,7 @@ const WeakMode = struct { keys: bool, vals: bool };
 fn getWeakMode(L: *lua_State, mt: *lua_Table) WeakMode {
     var keys = false;
     var vals = false;
-    const g = G(L);
-    const tm_mode_str = lstring.luaS_new(g, "__mode") catch return .{ .keys = false, .vals = false };
+    const tm_mode_str = lstring.luaS_new(L, "__mode") catch return .{ .keys = false, .vals = false };
     const mode_val = ltable.get(mt, .{ .string = tm_mode_str });
     switch (mode_val) {
         .string => |s| {
@@ -3147,6 +3138,23 @@ pub fn luaC_collectgarbage(L: *lua_State) !void {
     for (g.tmname) |opt_name| {
         if (opt_name) |name| {
             name.marked = true;
+        }
+    }
+
+    // Root 3b: intentionally omitted. The string table is NOT a GC root:
+    // interned strings are kept alive only when actually referenced (from the
+    // stack, tables, protos, the metamethod-name table, or the API string
+    // cache below). This matches the reference, which collects unreferenced
+    // strings instead of pinning every interned literal.
+
+    // Root 3c: every string held in the API string cache is reachable, so
+    // mark them. (Mirrors the reference `luaS_clearcache` cleanup that keeps
+    // the cache free of to-be-collected entries.)
+    for (&g.strcache) |*bucket| {
+        for (bucket) |opt_ts| {
+            if (opt_ts) |ts| {
+                ts.marked = true;
+            }
         }
     }
 
@@ -3436,8 +3444,7 @@ pub fn lua_gc(L: *lua_State, what: i32, arg: i32, value: i32) i32 {
 pub fn lua_error(L: *lua_State) anyerror {
     const err_obj = L.stack[L.top - 1];
     if (err_obj == .nil) {
-        const g = G(L);
-        const ts = try lstring.luaS_new(g, "<no error object>");
+        const ts = try lstring.luaS_new(L, "<no error object>");
         L.stack[L.top - 1] = TValue{ .string = ts };
     }
     return error.RuntimeError;
@@ -3463,7 +3470,6 @@ pub fn lua_concat(L: *lua_State, n: i32) void {
         _ = lua_pushstring(L, "");
         return;
     }
-    const g = G(L);
     const top = L.top;
     const start = top - @as(usize, @intCast(n));
     var list = std.ArrayListUnmanaged(u8).empty;
@@ -3495,7 +3501,7 @@ pub fn lua_concat(L: *lua_State, n: i32) void {
             },
         }
     }
-    const ts = lstring.luaS_new(g, list.items) catch {
+    const ts = lstring.luaS_new(L, list.items) catch {
         _ = lua_pushstring(L, "");
         return;
     };
@@ -3543,104 +3549,157 @@ fn skipDigits(s: []const u8, i: usize) usize {
     return j;
 }
 
-pub fn lua_stringtonumber(L: *lua_State, s: []const u8) usize {
-    // returns consumed prefix length + 1 if valid number, else 0
-    if (s.len == 0) return 0;
+fn isspace(c: u8) bool {
+    return c == ' ' or c == '\t' or c == '\n' or c == '\r' or c == 0x0B or c == 0x0C;
+}
 
+fn hexValue(c: u8) u64 {
+    if (c >= '0' and c <= '9') return c - '0';
+    if (c >= 'a' and c <= 'f') return c - 'a' + 10;
+    return c - 'A' + 10;
+}
+
+/// Parse a whole-string integer (leading/trailing spaces ignored, requires
+/// the trimmed string to be an integer); returns null otherwise. Mirrors the
+/// C reference `l_str2int`.
+fn parseInteger(s: []const u8) ?i64 {
     var i: usize = 0;
-    // optional sign
+    while (i < s.len and isspace(s[i])) : (i += 1) {}
+    if (i >= s.len) return null;
+    var neg = false;
+    if (s[i] == '+' or s[i] == '-') {
+        neg = s[i] == '-';
+        i += 1;
+        if (i >= s.len) return null;
+    }
+    var mag: u64 = 0;
+    var digits: usize = 0;
+    if (s[i] == '0' and i + 1 < s.len and (s[i + 1] == 'x' or s[i + 1] == 'X')) {
+        i += 2;
+        while (i < s.len and isHexDigit(s[i])) : (i += 1) {
+            const d = hexValue(s[i]);
+            if (mag > (@as(u64, 9223372036854775807) - d) / 16) return null; // overflow
+            mag = mag * 16 + d;
+            digits += 1;
+        }
+    } else {
+        while (i < s.len and isDigit(s[i])) : (i += 1) {
+            const d = s[i] - '0';
+            if (mag > (@as(u64, 9223372036854775807) - d) / 10) return null; // overflow
+            mag = mag * 10 + d;
+            digits += 1;
+        }
+    }
+    if (digits == 0) return null;
+    var k = i;
+    while (k < s.len and isspace(s[k])) : (k += 1) {}
+    if (k != s.len) return null; // trailing non-space
+    return if (neg) -@as(i64, @intCast(mag)) else @as(i64, @intCast(mag));
+}
+
+/// True iff every byte of `s[off..]` is whitespace.
+fn trailingAllSpace(s: []const u8, off: usize) bool {
+    var k = off;
+    while (k < s.len and isspace(s[k])) : (k += 1) {}
+    return k == s.len;
+}
+
+extern "c" fn strtod(nptr: [*:0]const u8, endptr: *?[*:0]const u8) f64;
+extern "c" fn localeconv() *Lconv;
+const Lconv = extern struct {
+    decimal_point: [*:0]const u8,
+    thousands_sep: [*:0]const u8,
+    grouping: [*:0]const u8,
+};
+
+/// Return the current locale's decimal-point character ('.' if unknown).
+fn localeDecimalPoint() u8 {
+    const lc = localeconv();
+    const dp = lc.decimal_point;
+    if (dp[0] == 0) return '.';
+    return dp[0];
+}
+
+/// Locale-aware float parse mirroring the C reference `l_str2d`: try the C
+/// library `strtod` (which respects the current locale's decimal point),
+/// and if that does not consume the whole (space-trimmed) string, retry after
+/// replacing a '.' with the locale decimal point. Leading/trailing spaces are
+/// tolerated (strtod skips leading; trailing is checked by the caller).
+fn parseLocaleNumber(s: []const u8) ?f64 {
+    if (s.len == 0) return null;
+    var buf: [256]u8 = undefined;
+    if (s.len >= buf.len) return null; // too long for locale fallback
+    @memcpy(buf[0..s.len], s);
+    buf[s.len] = 0;
+    var endptr: ?[*:0]const u8 = undefined;
+    const cstr: [*:0]const u8 = @ptrCast(@constCast(&buf));
+    const n = strtod(cstr, &endptr);
+    if (endptr != null and endptr.? != cstr) {
+        const off = @intFromPtr(endptr.?) - @intFromPtr(&buf);
+        if (trailingAllSpace(s, off)) return n;
+    }
+    // Fallback: replace '.' with the locale decimal point and retry.
+    const dp = localeDecimalPoint();
+    var k: usize = 0;
+    while (k < s.len) : (k += 1) {
+        if (buf[k] == '.') {
+            buf[k] = dp;
+            break;
+        }
+    }
+    const n2 = strtod(cstr, &endptr);
+    if (endptr != null and endptr.? != cstr) {
+        const off = @intFromPtr(endptr.?) - @intFromPtr(&buf);
+        if (trailingAllSpace(s, off)) return n2;
+    }
+    return null;
+}
+
+/// Locale-aware parse of a string to a numeric TValue (integer or float).
+/// Mirrors lua_stringtonumber's parsing (leading/trailing spaces ignored,
+/// "inf"/"nan" rejected) but returns the value instead of pushing it.
+pub fn tonumberValue(s: []const u8) ?TValue {
+    if (s.len == 0) return null;
+    var i: usize = 0;
+    while (i < s.len and isspace(s[i])) : (i += 1) {} // skip leading spaces
+    if (i >= s.len) return null;
     if (s[i] == '+' or s[i] == '-') {
         i += 1;
-        if (i >= s.len) return 0;
+        if (i >= s.len) return null;
     }
-
-    // check for special tokens: inf, nan
-    if (i < s.len) {
+    // reject "inf"/"nan" tokens (reference: l_str2d rejects 'n'/'N')
+    {
         var lower_i = s[i];
-        if (lower_i >= 'A' and lower_i <= 'Z') lower_i = lower_i - 'A' + 'a';
-        if (lower_i == 'i' and i + 2 < s.len) {
+        if (lower_i >= 'A' and lower_i <= 'Z') lower_i += 32;
+        if (lower_i == 'i' or lower_i == 'n') {
             const rest = s[i..];
             var rest_lower: [10]u8 = undefined;
             const copy_len = @min(rest.len, rest_lower.len);
-            @memcpy(rest_lower[0..copy_len], rest[0..copy_len]);
             _ = std.ascii.lowerString(rest_lower[0..copy_len], rest[0..copy_len]);
-            if (std.mem.eql(u8, rest_lower[0..3], "inf")) {
-                if (copy_len >= 8 and std.mem.eql(u8, rest_lower[0..8], "infinity")) {
-                    const val: f64 = if (s[0] == '-') -std.math.inf(f64) else std.math.inf(f64);
-                    lua_pushnumber(L, val);
-                    return i + 8;
-                }
-                const val: f64 = if (s[0] == '-') -std.math.inf(f64) else std.math.inf(f64);
-                lua_pushnumber(L, val);
-                return i + 3;
-            }
-            if (std.mem.eql(u8, rest_lower[0..3], "nan")) {
-                const val: f64 = std.math.nan(f64);
-                lua_pushnumber(L, val);
-                return i + 3;
+            if (std.mem.eql(u8, rest_lower[0..3], "inf") or
+                std.mem.eql(u8, rest_lower[0..3], "nan")) {
+                return null;
             }
         }
     }
+    if (parseInteger(s)) |iv| return TValue{ .integer = iv };
+    if (parseLocaleNumber(s)) |n| return TValue{ .number = n };
+    return null;
+}
 
-    // hex float?
-    if (i + 1 < s.len and s[i] == '0' and (s[i + 1] == 'x' or s[i + 1] == 'X')) {
-        i += 2;
-        var j = i;
-        // integer part
-        while (j < s.len and isHexDigit(s[j])) : (j += 1) {}
-        // optional fractional part
-        if (j < s.len and s[j] == '.') {
-            j += 1;
-            while (j < s.len and isHexDigit(s[j])) : (j += 1) {}
+pub fn lua_stringtonumber(L: *lua_State, s: []const u8) usize {
+    // Mirrors luaO_str2num: leading/trailing spaces ignored, but nothing else
+    // may trail the number. Returns consumed-length + 1 on success, 0 on
+    // failure. The reference rejects "inf"/"nan" tokens.
+    if (tonumberValue(s)) |v| {
+        if (v == .integer) {
+            lua_pushinteger(L, v.integer);
+        } else {
+            lua_pushnumber(L, v.number);
         }
-        if (j == i) return 0; // at least one hex digit required
-        // optional binary exponent
-        if (j < s.len and (s[j] == 'p' or s[j] == 'P')) {
-            j += 1;
-            if (j < s.len and (s[j] == '+' or s[j] == '-')) j += 1;
-            j = skipDigits(s, j);
-            if (j > i and s[j - 1] < '0' or s[j - 1] > '9') {
-                if (j > i + 1 and (s[j - 2] >= '0' and s[j - 2] <= '9')) {} else return 0;
-            }
-        }
-        const sub = s[0..j];
-        const n = std.fmt.parseFloat(f64, sub) catch return 0;
-        lua_pushnumber(L, n);
-        return j + 1;
+        return s.len + 1;
     }
-
-    // decimal
-    var j = i;
-    // integer part (or go to fractional)
-    j = skipDigits(s, j);
-    // is this just digits? could be integer
-    // check for dot (fractional)
-    var has_dot = false;
-    if (j < s.len and s[j] == '.') {
-        has_dot = true;
-        j += 1;
-        j = skipDigits(s, j);
-    }
-    // exponent
-    if (j < s.len and (s[j] == 'e' or s[j] == 'E')) {
-        j += 1;
-        if (j < s.len and (s[j] == '+' or s[j] == '-')) j += 1;
-        j = skipDigits(s, j);
-    }
-    if (j == i) return 0; // no digits consumed
-
-    const sub = s[0..j];
-    // try integer first (only if no dot)
-    if (!has_dot) {
-        if (std.fmt.parseInt(i64, sub, 0)) |iv| {
-            lua_pushinteger(L, iv);
-            return j + 1;
-        } else |_| {}
-    }
-    // try float
-    const n = std.fmt.parseFloat(f64, sub) catch return 0;
-    lua_pushnumber(L, n);
-    return j + 1;
+    return 0;
 }
 
 /// Converts the number at stack index `idx` to a string and writes it into
@@ -3725,6 +3784,10 @@ pub fn luaL_newstate_io(L: *lua_State, gpa: std.mem.Allocator, io: std.Io) !void
         .clibs = .empty,
     };
     g.alloc_ud = @ptrCast(&g.alloc_wrapper);
+    // Initialize the API string cache to empty (all slots null).
+    for (&g.strcache) |*bucket| {
+        for (bucket) |*slot| slot.* = null;
+    }
     const stack = try gpa.alloc(TValue, LUA_MINSTACK + 1);
     for (stack) |*item| {
         item.* = .{ .nil = {} };

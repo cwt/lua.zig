@@ -463,14 +463,14 @@ fn tonumber(L: *lua.lua_State) anyerror!i32 {
         }
         const s = lua.lua_tostring(L, 1);
         if (s) |str| {
-            if (std.fmt.parseFloat(f64, str)) |val| {
-                lua.lua_pushnumber(L, val);
+            // Use lua_stringtonumber so that locale-aware and hex/float
+            // parsing match the C reference; require the whole string to be
+            // consumed (return value == len + 1), as luaO_str2num does.
+            if (lua.lua_stringtonumber(L, str) == str.len + 1) {
                 return 1;
-            } else |_| {}
-            if (std.fmt.parseInt(i64, str, 10)) |val| {
-                lua.lua_pushinteger(L, val);
-                return 1;
-            } else |_| {}
+            }
+            lua.lua_pushnil(L);
+            return 1;
         }
     } else {
         const base = try lauxlib.luaL_checkinteger(L, 2);

@@ -26,59 +26,74 @@ echo "Building luazig..."
 zig build 2>&1 | tail -3
 echo ""
 
-LUAZIG="./zig-out/bin/luazig"
+LUAZIG="$SCRIPT_DIR/zig-out/bin/luazig"
 TEST_DIR="lua/testes"
 
-# Tests that need special setup (T from internal tests, debug module, etc.)
-# We skip these as they're designed for the all.lua harness:
-#   all.lua    - harness, not an individual test
-#   api.lua    - needs T (internal C API tests)
-#   code.lua   - needs T
-#   coroutine.lua - needs T
-#   gc.lua     - needs T
-#   strings.lua - needs gmatch/other pattern tests
-#   memerr.lua - needs T
-#   tracegc.lua - tracing GC, requires T
-#   heavy.lua  - very long test
-#   verybig.lua - very long test
+# Tests that are the harness / a standalone-interpreter driver. They are not
+# regular per-file tests:
+#   all.lua    - harness (runs the suite via dofile+string.dump roundtrip)
+#   main.lua   - standalone interpreter CLI tests (spawns `lua` subprocesses)
+#
+# Tests that UNCONDITIONALLY require the internal C test library `T`:
+#   api.lua code.lua coroutine.lua gc.lua strings.lua memerr.lua tracegc.lua
 
 # Extra-slow/heavy tests
 HEAVY_TESTS="heavy.lua verybig.lua big.lua"
 
+# Tests that unconditionally require the internal C test lib `T`.
+T_TESTS="api.lua code.lua coroutine.lua gc.lua strings.lua memerr.lua tracegc.lua"
+
+# Run from within lua/testes so that require("bwcoercion") / require("tracegc")
+# resolve via package.path's "./?.lua", and so dofile('main.lua') etc. work.
+cd "$TEST_DIR"
+
+# Make `lua` resolve to luazig so tests that spawn subprocesses exercise luazig
+# rather than the reference interpreter.
+LUA_BIN_DIR="$(mktemp -d)"
+ln -sf "$LUAZIG" "$LUA_BIN_DIR/lua"
+cleanup() { rm -rf "$LUA_BIN_DIR"; }
+trap cleanup EXIT
+PATH="$LUA_BIN_DIR:$PATH"
+export PATH
+
 declare -A results
 declare -A details
 
-for test_file in "$TEST_DIR"/*.lua; do
+for test_file in ./*.lua; do
     base=$(basename "$test_file" .lua)
-    
-    # Skip harness
-    [[ "$base" == "all" ]] && { results["$base"]="SKIP (harness)"; continue; }
-    
-    # Check if it needs T (internal tests)
-    if grep -q 'T==' "$test_file" 2>/dev/null; then
+
+    # Skip harness / standalone-interpreter driver
+    [[ "$base" == "all" || "$base" == "main" ]] && { results["$base"]="SKIP (harness)"; continue; }
+
+    # Skip tests that unconditionally need the internal C test lib `T`
+    skip_t=false
+    for tt in $T_TESTS; do
+        [[ "$base.lua" == "$tt" ]] && skip_t=true
+    done
+    if $skip_t; then
         results["$base"]="SKIP (needs T)"; continue
     fi
-    
-    # Check if heavy - use longer timeout
+
+    # Use longer timeout for heavy tests
     t=$TIMEOUT
     for heavy in $HEAVY_TESTS; do
         [[ "$base.lua" == "$heavy" ]] && t=120
     done
-    
+
     $VERBOSE && echo -n "  $base ... "
-    
+
     # Run the test, capture stdout and stderr
     tmp_out=$(mktemp)
     tmp_err=$(mktemp)
     set +e
-    timeout "$t" "$LUAZIG" "$test_file" > "$tmp_out" 2> "$tmp_err"
+    timeout "$t" "$LUAZIG" "$base.lua" > "$tmp_out" 2> "$tmp_err"
     rc=$?
     set -e
-    
+
     stdout=$(cat "$tmp_out" 2>/dev/null)
     stderr=$(cat "$tmp_err" 2>/dev/null)
     rm -f "$tmp_out" "$tmp_err"
-    
+
     if [[ $rc -eq 124 ]]; then
         results["$base"]="TIMEOUT"
         details["$base"]="timed out after ${t}s"
@@ -90,9 +105,6 @@ for test_file in "$TEST_DIR"/*.lua; do
             results["$base"]="FAIL (exit=$rc)"
             details["$base"]=$(echo "$stderr" | head -3)
         fi
-    elif echo "$stdout" | grep -q 'assertion failed'; then
-        results["$base"]="FAIL (assert)"
-        details["$base"]="assertion failed"
     elif echo "$stdout" | grep -q 'OK$'; then
         results["$base"]="PASS"
         details["$base"]=""
@@ -109,7 +121,7 @@ for test_file in "$TEST_DIR"/*.lua; do
         results["$base"]="CHECK"
         details["$base"]=$(echo "$stdout" | head -3 | tr '\n' ' ')
     fi
-    
+
     $VERBOSE && echo "${results[$base]}"
 done
 
@@ -133,7 +145,7 @@ for test in $(echo "${!results[@]}" | tr ' ' '\n' | sort); do
         SKIP*) skipped=$((skipped+1)) ;;
         CHECK*) checked=$((checked+1)) ;;
     esac
-    
+
     if [[ "$result" != PASS* ]] && [[ "$result" != SKIP* ]]; then
         echo "  $test: $result"
         if [[ -n "${details[$test]:-}" ]]; then

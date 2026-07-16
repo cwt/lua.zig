@@ -145,6 +145,21 @@ const reserved_words = [_]struct { name: []const u8, tok: i32 }{
     .{ .name = "while", .tok = TK_WHILE },
 };
 
+// Quoted single-char token text (mirrors `luaX_token2str` for `token < FIRST_RESERVED`).
+const quoted_chars = blk: {
+    var arr: [256][3]u8 = undefined;
+    for (0..256) |i| arr[i] = [3]u8{ '\'', @intCast(i), '\'' };
+    break :blk arr;
+};
+
+// Quoted reserved-word text ('and', 'break', ...), one per entry of `reserved_words`.
+const quoted_reserved = [_][]const u8{
+    "'and'", "'break'", "'do'", "'else'", "'elseif'", "'end'", "'false'",
+    "'for'", "'function'", "'global'", "'goto'", "'if'", "'in'", "'local'",
+    "'nil'", "'not'", "'or'", "'repeat'", "'return'", "'then'", "'true'",
+    "'until'", "'while'",
+};
+
 fn isReserved(name: []const u8) ?i32 {
     for (reserved_words) |r| {
         if (std.mem.eql(u8, r.name, name)) return r.tok;
@@ -199,8 +214,10 @@ pub const LexState = struct {
     // Currently-parsing function state (mirrors the C `LexState.fs`).
     fs: ?*lparser.FuncState = null,
     // Last syntax-error message (for diagnostics; null when no error).
+    // Stored in the inline buffer so it survives error propagation through
+    // the parser (unlike ls.buff which may be cleared during unwind).
     errmsg: ?[]const u8 = null,
-    errmsg_allocated: bool = false,
+    errmsg_buf: [512]u8 = undefined,
 };
 
 // ---------------------------------------------------------------------------
@@ -273,7 +290,7 @@ fn currIsNewline(ls: *LexState) bool {
 // ---------------------------------------------------------------------------
 fn save(ls: *LexState, c: i32) !void {
     if (ls.buff.items.len >= MAX_SIZE) {
-        return lexerror(ls, "lexical element too long");
+        return lexerror(ls, "lexical element too long", TK_EOS);
     }
     try ls.buff.append(ls.allocator, @intCast(c));
 }
@@ -492,25 +509,29 @@ fn utf8esc(buff: *[8]u8, x_val: u32) u8 {
 // ---------------------------------------------------------------------------
 // Error reporting
 // ---------------------------------------------------------------------------
-fn lexerror(ls: *LexState, msg: []const u8) LexError {
-    // Build the reference-style "<msg> near <token>" message and persist it in
-    // the lexer's scratch buffer. That buffer outlives this call (it is freed
-    // by luaD_protectedparser, or by a direct caller's ls.buff.deinit), so the
-    // caller's msg may point into a stack buffer (copied here synchronously).
-    // At EOF the token is TK_EOS, whose token2str is "<eof>", which is what the
-    // REPL uses to detect incomplete input.
-    const token_str = token2str(ls.t.token);
-    ls.buff.clearRetainingCapacity();
-    ls.buff.appendSlice(ls.allocator, msg) catch {};
-    ls.buff.appendSlice(ls.allocator, " near ") catch {};
-    ls.buff.appendSlice(ls.allocator, token_str) catch {};
-    ls.errmsg = ls.buff.items;
-    ls.errmsg_allocated = false;
+fn lexerror(ls: *LexState, msg: []const u8, token: i32) LexError {
+    // Build "<msg> near <token>" into the dedicated inline buffer so the
+    // string is stable during error propagation. Token 0 = no "near" clause.
+    // For NAME/STRING/FLT/INT the near token is the partial token text;
+    // other tokens use token2str.
+    const s = if (token == 0)
+        std.fmt.bufPrint(&ls.errmsg_buf, "{s}", .{msg})
+    else if (token == TK_NAME or token == TK_STRING or token == TK_FLT or token == TK_INT) blk: {
+        // Token text is accumulated in ls.buff. Numerals have a trailing NUL
+        // terminator (see read_numeral's save(ls, 0)); strip it so the
+        // displayed token matches the reference (which does not print the NUL).
+        const tok = ls.buff.items;
+        const tok_text = if (tok.len > 0 and tok[tok.len - 1] == 0) tok[0 .. tok.len - 1] else tok;
+        break :blk std.fmt.bufPrint(&ls.errmsg_buf, "{s} near '{s}'", .{ msg, tok_text });
+    }
+    else
+        std.fmt.bufPrint(&ls.errmsg_buf, "{s} near {s}", .{ msg, token2str(token) });
+    ls.errmsg = s catch msg;
     return error.SyntaxError;
 }
 
 pub fn luaX_syntaxerror(ls: *LexState, msg: []const u8) LexError {
-    return lexerror(ls, msg);
+    return lexerror(ls, msg, ls.t.token);
 }
 
 // ---------------------------------------------------------------------------
@@ -518,7 +539,7 @@ pub fn luaX_syntaxerror(ls: *LexState, msg: []const u8) LexError {
 // ---------------------------------------------------------------------------
 pub fn luaX_newstring(ls: *LexState, str: []const u8) !*lua.lua_TString {
     const L = ls.L;
-    return try lstring.luaS_new(L.l_G.?, str);
+    return try lstring.luaS_new(L, str);
 }
 
 // ---------------------------------------------------------------------------
@@ -547,8 +568,8 @@ pub fn luaX_setinput(
     ls.source = source;
     ls.dyd = .{ .actvar = .empty, .gt = .empty, .label = .empty };
     ls.level = 0;
-    ls.brkn = try lstring.luaS_new(L.l_G.?, "_break");
-    ls.envn = try lstring.luaS_new(L.l_G.?, "_ENV");
+    ls.brkn = try lstring.luaS_new(L, "_break");
+    ls.envn = try lstring.luaS_new(L, "_ENV");
     ls.t = .{};
     ls.lookahead = .{ .token = TK_EOS };
     ls.linenumber = 1;
@@ -587,7 +608,7 @@ fn inclinenumber(ls: *LexState) !void {
     if (currIsNewline(ls) and ls.current != old) next(ls);
     ls.linenumber += 1;
     if (ls.linenumber >= std.math.maxInt(i32)) {
-        return lexerror(ls, "chunk has too many lines");
+        return lexerror(ls, "chunk has too many lines", TK_EOS);
     }
 }
 
@@ -621,7 +642,7 @@ fn read_long_string(ls: *LexState, seminfo: ?*SemInfo, sep: usize) !void {
                 return lexerror(ls, if (seminfo != null)
                     "unfinished long string"
                 else
-                    "unfinished long comment");
+                    "unfinished long comment", TK_EOS);
             },
             ']' => {
                 if ((try skip_sep(ls)) == sep) {
@@ -651,7 +672,7 @@ fn read_long_string(ls: *LexState, seminfo: ?*SemInfo, sep: usize) !void {
 fn esccheck(ls: *LexState, ok: bool, msg: []const u8) !void {
     if (!ok) {
         if (ls.current != EOZ) try save_and_next(ls);
-        return lexerror(ls, msg);
+        return lexerror(ls, msg, TK_STRING);
     }
 }
 
@@ -698,8 +719,8 @@ fn read_string(ls: *LexState, del: i32, seminfo: *SemInfo) !void {
     try save_and_next(ls); // keep delimiter (for error messages)
     while (ls.current != del) {
         switch (ls.current) {
-            EOZ => return lexerror(ls, "unfinished string"),
-            '\n', '\r' => return lexerror(ls, "unfinished string"),
+            EOZ => return lexerror(ls, "unfinished string", TK_EOS),
+            '\n', '\r' => return lexerror(ls, "unfinished string", TK_EOS),
             '\\' => {
                 try save_and_next(ls); // keep '\\'
                 switch (ls.current) {
@@ -718,20 +739,28 @@ fn read_string(ls: *LexState, del: i32, seminfo: *SemInfo) !void {
                         // current is 'u'; '\' already saved
                         try save_and_next(ls); // save 'u'
                         try esccheck(ls, ls.current == '{', "missing '{'");
-                        next(ls); // skip '{'
-                        var r: u32 = 0;
-                        var nd: usize = 0;
+                        try save_and_next(ls); // save '{' (kept for error messages)
+                        // At least one hex digit is required (mirrors the
+                        // reference's `gethexa` for the first digit).
+                        try esccheck(ls, lisxdigit(ls.current), "hexadecimal digit expected");
+                        var r: u32 = @as(u32, @intCast(hexval(ls.current)));
+                        try save_and_next(ls);
+                        var nd: usize = 1;
                         while (lisxdigit(ls.current)) {
+                            // Reference checks the bound *before* shifting so that
+                            // the u32 accumulator never wraps: `(0x7FFFFFFF >> 4)`.
+                            try esccheck(ls, r <= (0x7FFFFFFF >> 4), "UTF-8 value too large");
                             r = (r << 4) | @as(u32, @intCast(hexval(ls.current)));
                             try save_and_next(ls);
                             nd += 1;
                         }
-                        try esccheck(ls, nd > 0, "hexadecimal digit expected");
-                        try esccheck(ls, r <= 0x7FFFFFFF, "UTF-8 value too large");
                         try esccheck(ls, ls.current == '}', "missing '}'");
-                        next(ls); // skip '}'
+                        next(ls); // skip '}' (not saved)
+                        // Remove the escape text saved so far: '\', 'u', '{', and
+                        // the (nd) hex digits. Matches the reference's
+                        // `luaZ_buffremove(buff, 3 + nd)`.
                         var k: usize = 0;
-                        while (k < 2 + nd) : (k += 1) _ = ls.buff.pop();
+                        while (k < 3 + nd) : (k += 1) _ = ls.buff.pop();
                         var ubuf: [8]u8 = undefined;
                         const n = utf8esc(&ubuf, r);
                         var j = n;
@@ -785,7 +814,10 @@ fn read_numeral(ls: *LexState, seminfo: *SemInfo) !i32 {
         try save_and_next(ls); // force an error
     }
     try save(ls, 0);
-    return try str2num(ls.allocator, ls.buff.items, seminfo);
+    const kind = str2num(ls.allocator, ls.buff.items, seminfo) catch {
+        return lexerror(ls, "malformed number", TK_INT);
+    };
+    return kind;
 }
 
 // ---------------------------------------------------------------------------
@@ -822,7 +854,7 @@ fn llex(ls: *LexState, seminfo: *SemInfo) !i32 {
                     try read_long_string(ls, seminfo, sep);
                     return TK_STRING;
                 } else if (sep == 0) {
-                    return lexerror(ls, "invalid long string delimiter");
+                    return lexerror(ls, "invalid long string delimiter", TK_STRING);
                 }
                 return '[';
             },
@@ -904,36 +936,24 @@ fn llex(ls: *LexState, seminfo: *SemInfo) !i32 {
 // ---------------------------------------------------------------------------
 pub fn token2str(token: i32) []const u8 {
     if (token < FIRST_RESERVED) {
-        if (token < 0) return "<eof>";
-        const static = struct {
-            const chars = blk: {
-                var arr: [256][]const u8 = undefined;
-                for (0..256) |i| {
-                    const single = &[1]u8{@intCast(i)};
-                    arr[i] = single;
-                }
-                break :blk arr;
-            };
-        };
-        if (token >= 0 and token < 256) {
-            return static.chars[@intCast(token)];
-        }
-        return "?";
+        // single-char symbol: quote it (e.g. '+')
+        if (token >= 0x20 and token < 0x7f) return &quoted_chars[@intCast(token)];
+        return "<nonprintable>";
     }
-    for (reserved_words) |r| {
-        if (r.tok == token) return r.name;
+    for (reserved_words, 0..) |r, i| {
+        if (r.tok == token) return quoted_reserved[i];
     }
     return switch (token) {
-        TK_IDIV => "//",
-        TK_CONCAT => "..",
-        TK_DOTS => "...",
-        TK_EQ => "==",
-        TK_GE => ">=",
-        TK_LE => "<=",
-        TK_NE => "~=",
-        TK_SHL => "<<",
-        TK_SHR => ">>",
-        TK_DBCOLON => "::",
+        TK_IDIV => "'//'",
+        TK_CONCAT => "'..'",
+        TK_DOTS => "'...'",
+        TK_EQ => "'=='",
+        TK_GE => "'>='",
+        TK_LE => "'<='",
+        TK_NE => "'~='",
+        TK_SHL => "'<<'",
+        TK_SHR => "'>>'",
+        TK_DBCOLON => "'::'",
         TK_EOS => "<eof>",
         TK_FLT => "<number>",
         TK_INT => "<integer>",

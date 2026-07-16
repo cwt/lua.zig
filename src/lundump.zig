@@ -141,8 +141,7 @@ const LoadState = struct {
         defer self.allocator.free(buf);
         try self.loadBlock(buf);
 
-        const g = self.L.l_G orelse return error.NoGlobalState;
-        const ts = try lstring.luaS_new(g, buf[0..len]);
+        const ts = try lstring.luaS_new(self.L, buf[0..len]);
 
         try self.strings.append(self.allocator, ts);
         return ts;

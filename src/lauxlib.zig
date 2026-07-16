@@ -72,13 +72,18 @@ pub fn luaL_len(L: *lua.lua_State, idx: i32) !usize {
 
 pub fn luaL_checkinteger(L: *lua.lua_State, idx: i32) !i64 {
     const n = lua.lua_tointeger(L, idx);
-    if (n == null) return error.InvalidType;
+    if (n == null) {
+        return luaL_typeerror(L, idx, "integer");
+    }
     return n.?;
 }
 
 pub fn luaL_checklstring(L: *lua.lua_State, idx: i32, len: ?*usize) ![]const u8 {
     const s = lua.lua_tolstring(L, idx, len);
-    return s orelse error.InvalidType;
+    if (s == null) {
+        return luaL_typeerror(L, idx, "string");
+    }
+    return s.?;
 }
 
 pub fn luaL_checkstring(L: *lua.lua_State, idx: i32) ![]const u8 {

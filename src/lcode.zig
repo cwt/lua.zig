@@ -105,7 +105,6 @@ pub fn luaK_nil(fs: *FuncState, from: i32, n: i32) void {
 
 fn getjump(fs: *FuncState, pc: i32) i32 {
     if (pc < 0) {
-        std.debug.print("DEBUG: getjump called with negative pc = {d}\n", .{pc});
         return NO_JUMP;
     }
     const offset = lvm.GETARG_sJ(fs.code.items[@as(usize, @intCast(pc))]);
@@ -214,14 +213,21 @@ pub fn luaK_patchtohere(fs: *FuncState, list: i32) void {
 fn savelineinfo(fs: *FuncState, line: i32) !void {
     const linedif = line - fs.previousline;
     const pc = fs.code.items.len - 1;
+    // f->lineinfo is 1:1 with instructions, indexed by pc. When called
+    // from luaK_code the lineinfo vector is one short (instruction just
+    // appended), so we grow it; when called from luaK_fixline it already
+    // holds an entry for this pc, so we overwrite in place.
+    if (fs.lineinfo.items.len <= pc) {
+        try fs.lineinfo.append(fs.ls.allocator, 0);
+    }
     if (@abs(linedif) >= lvm.LIMLINEDIFF or fs.iwthabs >= lvm.MAXIWTHABS) {
         try fs.abslineinfo.append(fs.ls.allocator, .{ .pc = @intCast(pc), .line = line });
         fs.nabslineinfo += 1;
-        try fs.lineinfo.append(fs.ls.allocator, @intCast(lvm.ABSLINEINFO));
+        fs.lineinfo.items[pc] = @intCast(lvm.ABSLINEINFO);
         fs.previousline = line;
         fs.iwthabs = 1;
     } else {
-        try fs.lineinfo.append(fs.ls.allocator, @intCast(linedif));
+        fs.lineinfo.items[pc] = @intCast(linedif);
         fs.previousline = line;
         fs.iwthabs += 1;
     }
@@ -229,12 +235,17 @@ fn savelineinfo(fs: *FuncState, line: i32) !void {
 
 fn removelastlineinfo(fs: *FuncState) void {
     const pc = fs.code.items.len - 1;
-    if (fs.lineinfo.items[pc] != lvm.ABSLINEINFO) {
-        fs.previousline -= fs.lineinfo.items[pc];
-        fs.iwthabs -= 1;
-    } else {
+    // Mirrors the reference: adjust counters (and drop the absolute
+    // abslineinfo entry if present) but do NOT shrink the lineinfo array
+    // -- luaK_fixline's subsequent savelineinfo overwrites the slot in
+    // place. Only removelastinstruction pops the lineinfo vector.
+    if (pc < fs.lineinfo.items.len and fs.lineinfo.items[pc] == lvm.ABSLINEINFO) {
         fs.nabslineinfo -= 1;
         fs.iwthabs = lvm.MAXIWTHABS + 1;
+        _ = fs.abslineinfo.pop();
+    } else {
+        fs.previousline -= fs.lineinfo.items[pc];
+        fs.iwthabs -= 1;
     }
 }
 
@@ -719,9 +730,6 @@ fn jumponcond(fs: *FuncState, e: *expdesc, cond: i32) i32 {
 }
 
 pub fn luaK_goiftrue(fs: *FuncState, e: *expdesc) void {
-    if (e.f < -1 or e.t < -1) {
-        std.debug.print("DEBUG: luaK_goiftrue: e.k={s}, e.t={d}, e.f={d}, line={d}\n", .{ @tagName(e.k), e.t, e.f, fs.ls.linenumber });
-    }
     var pc: i32 = undefined;
     luaK_dischargevars(fs, e);
     switch (e.k) {
@@ -742,9 +750,6 @@ pub fn luaK_goiftrue(fs: *FuncState, e: *expdesc) void {
 }
 
 fn luaK_goiffalse(fs: *FuncState, e: *expdesc) void {
-    if (e.f < -1 or e.t < -1) {
-        std.debug.print("DEBUG: luaK_goiffalse: e.k={s}, e.t={d}, e.f={d}, line={d}\n", .{ @tagName(e.k), e.t, e.f, fs.ls.linenumber });
-    }
     var pc: i32 = undefined;
     luaK_dischargevars(fs, e);
     switch (e.k) {

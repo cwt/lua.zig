@@ -301,9 +301,12 @@ inline fn getStr(t: *Table, key: *const TString) TValue {
                 // when at least one side is external, to keep interned-key
                 // lookups (the dominant case) free of per-node memcmp.
                 if (ks == key) return t.node.items[n].val;
-                if (key.externally_owned or ks.externally_owned) {
-                    if (std.mem.eql(u8, ks.s, key.s)) return t.node.items[n].val;
-                }
+                // Non-interned or externally-owned strings need a content
+                // comparison when pointers differ. Interned strings are
+                // always caught by the pointer-equal fast path above, so
+                // this fallback only costs memcmp for the rare cases where
+                // strings are not interned.
+                if (std.mem.eql(u8, ks.s, key.s)) return t.node.items[n].val;
             }
         }
         if (t.node.items[n].next == -1) return TValue{ .nil = {} };

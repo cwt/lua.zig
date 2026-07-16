@@ -46,6 +46,15 @@ pub const LUA_ERRERR: i32 = 5;
 // Maximum number of nested C calls (for yieldability)
 pub const LUAI_MAXCCALLS: u32 = 200;
 
+// Short strings (< LUAI_MAXSHORTLEN) are interned; long strings (>=) are not.
+pub const LUAI_MAXSHORTLEN: usize = 40;
+
+// Size of the API string cache used by luaS_new. The cache reuses recently
+// created strings (including long ones) by content, so consecutive identical
+// string literals share one object. Mirrors the C reference STRCACHE_N/M.
+pub const STRCACHE_N = 53;
+pub const STRCACHE_M = 2;
+
 // Basic types
 pub const LUA_TNONE: i32 = -1;
 pub const LUA_TNIL: i32 = 0;
