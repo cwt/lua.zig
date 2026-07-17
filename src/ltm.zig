@@ -91,25 +91,25 @@ pub fn luaD_call(L: *lua.lua_State, func_idx: usize, nresults: i32) !void {
 }
 
 pub fn luaT_callTM(L: *lua.lua_State, f: lua.TValue, p1: lua.TValue, p2: lua.TValue, p3: lua.TValue) !void {
-    const old_top = L.top;
     if (lua.lua_checkstack(L, 4) == 0) return error.OutOfMemory;
-    L.stack[L.top] = f;
-    L.stack[L.top + 1] = p1;
-    L.stack[L.top + 2] = p2;
-    L.stack[L.top + 3] = p3;
-    L.top += 4;
+    const old_top = L.top;
+    L.stack[old_top] = f;
+    L.stack[old_top + 1] = p1;
+    L.stack[old_top + 2] = p2;
+    L.stack[old_top + 3] = p3;
+    L.top = old_top + 4;
     try luaD_call(L, old_top, 0);
     L.top = old_top;
 }
 
 pub fn luaT_callTMres(L: *lua.lua_State, f: lua.TValue, p1: lua.TValue, p2: lua.TValue, res: usize) !lua.TValue {
-    const old_top = L.top;
     if (lua.lua_checkstack(L, 3) == 0) return error.OutOfMemory;
+    const old_top = L.top;
     L.stack[old_top] = f;
     L.stack[old_top + 1] = p1;
     L.stack[old_top + 2] = p2;
     L.top = old_top + 3;
-    try luaD_call(L, old_top, 1);
+    try luaD_call(L, old_top, 2);
     const result = L.stack[old_top];
     L.stack[res] = result;
     L.top = old_top;

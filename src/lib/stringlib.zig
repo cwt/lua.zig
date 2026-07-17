@@ -211,33 +211,36 @@ const strlib = [_]struct {
 };
 
 fn arith(L: *lua.lua_State, op: i32) anyerror!i32 {
-    // Convert both operands to numbers if they are strings
-    const t1 = lua.lua_type(L, 1);
-    const t2 = lua.lua_type(L, 2);
-    if (t1 == lua.LUA_TSTRING) {
-        const s1 = lua.lua_tostring(L, 1) orelse "";
-        if (lua.lua_stringtonumber(L, s1) == 0) {
-            return lauxlib.luaL_error(L, "attempt to perform arithmetic on a string value");
+    // Convert both operands to numbers if they are strings, pushing the
+    // converted values on top WITHOUT mutating the original slots (the
+    // reference 'tonum' pushes a copy and leaves the caller's variables
+    // untouched). The two top slots are then the operands for arithmetic.
+    // Helper: push a numeric copy of the operand at `arg` on top, without
+    // mutating the original slot (string → converted number; number → copy).
+    const pushOperand = struct {
+        fn call(l: *lua.lua_State, arg: i32) !void {
+            const t = lua.lua_type(l, arg);
+            if (t == lua.LUA_TSTRING) {
+                const s = lua.lua_tostring(l, arg) orelse "";
+                if (lua.lua_stringtonumber(l, s) == 0) {
+                    return lauxlib.luaL_error(l, "attempt to perform arithmetic on a string value");
+                }
+            } else if (t != lua.LUA_TNUMBER) {
+                return lauxlib.luaL_error(l, "attempt to perform arithmetic on a string value");
+            } else {
+                lua.lua_pushvalue(l, arg);
+            }
         }
-        lua.lua_replace(L, 1);
-    } else if (t1 != lua.LUA_TNUMBER) {
-        return lauxlib.luaL_error(L, "attempt to perform arithmetic on a string value");
-    }
-    if (t2 == lua.LUA_TSTRING) {
-        const s2 = lua.lua_tostring(L, 2) orelse "";
-        if (lua.lua_stringtonumber(L, s2) == 0) {
-            return lauxlib.luaL_error(L, "attempt to perform arithmetic on a string value");
-        }
-        lua.lua_replace(L, 2);
-    } else if (t2 != lua.LUA_TNUMBER) {
-        return lauxlib.luaL_error(L, "attempt to perform arithmetic on a string value");
-    }
-    // Now both are numbers — delegate to core arithmetic
-    const is_int1 = lua.lua_isinteger(L, 1);
-    const is_int2 = lua.lua_isinteger(L, 2);
+    }.call;
+    try pushOperand(L, 1);
+    try pushOperand(L, 2);
+    // Slots -2 and -1 now hold numeric copies of the operands.
+    const top = lua.lua_gettop(L);
+    const is_int1 = lua.lua_isinteger(L, top - 1);
+    const is_int2 = lua.lua_isinteger(L, top);
     if (is_int1 != 0 and is_int2 != 0) {
-        const iv1 = lua.lua_tointeger(L, 1) orelse 0;
-        const iv2 = lua.lua_tointeger(L, 2) orelse 0;
+        const iv1 = lua.lua_tointeger(L, top - 1) orelse 0;
+        const iv2 = lua.lua_tointeger(L, top) orelse 0;
         const result = switch (op) {
             lua.LUA_OPADD => iv1 +% iv2,
             lua.LUA_OPSUB => iv1 -% iv2,
@@ -257,12 +260,13 @@ fn arith(L: *lua.lua_State, op: i32) anyerror!i32 {
             lua.LUA_OPBXOR => iv1 ^ iv2,
             lua.LUA_OPSHL => lua.luaV_shift(iv1, iv2),
             lua.LUA_OPSHR => lua.luaV_shift(iv1, -iv2),
+            lua.LUA_OPUNM => -iv1,
             else => return lauxlib.luaL_error(L, "unsupported arithmetic operation"),
         };
         lua.lua_pushinteger(L, result);
     } else {
-        const fv1 = lua.lua_tonumber(L, 1) orelse 0.0;
-        const fv2 = lua.lua_tonumber(L, 2) orelse 0.0;
+        const fv1 = lua.lua_tonumber(L, top - 1) orelse 0.0;
+        const fv2 = lua.lua_tonumber(L, top) orelse 0.0;
         const result = switch (op) {
             lua.LUA_OPADD => fv1 + fv2,
             lua.LUA_OPSUB => fv1 - fv2,
@@ -271,14 +275,16 @@ fn arith(L: *lua.lua_State, op: i32) anyerror!i32 {
             lua.LUA_OPPOW => std.math.pow(f64, fv1, fv2),
             lua.LUA_OPDIV => fv1 / fv2,
             lua.LUA_OPIDIV => @floor(fv1 / fv2),
+            lua.LUA_OPUNM => -fv1,
             else => return lauxlib.luaL_error(L, "unsupported arithmetic operation"),
         };
         lua.lua_pushnumber(L, result);
     }
-    // The arguments (slots 1, 2) remain below the freshly-pushed result and
-    // are discarded when the C frame is popped; only the result (on top) is
-    // returned. Do NOT pop here — lua_pop removes from the top, which would
-    // discard the result itself (matching the reference lstrlib.c arith).
+    // `top` holds the second operand copy; the result was just pushed on top
+    // (slot top+1). Move the result down onto the second operand's slot and
+    // truncate, leaving exactly one value (the result) on top for the caller.
+    lua.lua_replace(L, top);
+    lua.lua_settop(L, top);
     return 1;
 }
 

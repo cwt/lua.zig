@@ -682,6 +682,65 @@ test "__add arithmetic metamethod via C API" {
     try std.testing.expectEqual(@as(f64, 123.0), v);
 }
 
+test "BUG-FIX #1/#2: luaT_callTMres passes both operands to binary metamethod" {
+    // A binary metamethod must receive BOTH operands (nargs=2) and old_top
+    // must be captured AFTER lua_checkstack, so the call frame is valid even
+    // when the stack is about to grow. Regression for the metamethod
+    // dispatch where only one operand was passed.
+    const gpa = std.testing.allocator;
+    var L: lua.lua_State = undefined;
+    try lua.luaL_newstate(&L, gpa);
+    defer lua.lua_close(&L);
+
+    lua.lua_createtable(&L, 0, 0);
+    const t1_idx = lua.lua_gettop(&L);
+    lua.lua_createtable(&L, 0, 0);
+    const t2_idx = lua.lua_gettop(&L);
+    lua.lua_createtable(&L, 0, 1);
+    const mt_idx = lua.lua_gettop(&L);
+
+    // __add records how many operands it received and returns a sentinel.
+    const AddFn = struct {
+        fn add(LS: *lua.lua_State) anyerror!i32 {
+            const nargs = lua.lua_gettop(LS);
+            if (nargs != 2) return error.TestFailed; // both operands must be present
+            _ = lua.lua_tonumber(LS, 1);
+            _ = lua.lua_tonumber(LS, 2);
+            lua.lua_pushnumber(LS, 99.0);
+            return 1;
+        }
+    };
+    lua.lua_pushcfunction(&L, AddFn.add);
+    try lua.lua_setfield(&L, mt_idx, "__add");
+    lua.lua_pushvalue(&L, mt_idx);
+    _ = lua.lua_setmetatable(&L, t1_idx);
+
+    lua.lua_pushvalue(&L, t1_idx);
+    lua.lua_pushvalue(&L, t2_idx);
+    lua.lua_arith(&L, lua.LUA_OPADD);
+    const v = lua.lua_tonumber(&L, -1) orelse return error.TestFailed;
+    try std.testing.expectEqual(@as(f64, 99.0), v);
+}
+
+test "BUG-FIX #3: string metatable __unm arithmetic (LUA_OPUNM)" {
+    // lua string metatable arithmetic must handle LUA_OPUNM in both the
+    // integer and float operand paths. Verifies "-(\"3\")" yields -3.0.
+    const gpa = std.testing.allocator;
+    var L: lua.lua_State = undefined;
+    try lua.luaL_newstate(&L, gpa);
+    defer lua.lua_close(&L);
+    try lua.luaL_openlibs(&L);
+
+    // "return -('3')" must evaluate to -3.0 via the string __unm metamethod.
+    var reader_state = StringReaderState{ .code = "return -('3')", .read_done = false };
+    const status = lua.lua_load(&L, stringReader, &reader_state, "=test", "t");
+    try std.testing.expectEqual(@as(i32, lua.LUA_OK), status);
+    const rc = lua.lua_pcallk(&L, 0, 1, 0, 0, null);
+    try std.testing.expectEqual(@as(i32, lua.LUA_OK), rc);
+    const v = lua.lua_tonumber(&L, -1) orelse return error.TestFailed;
+    try std.testing.expectEqual(@as(f64, -3.0), v);
+}
+
 test "VM execution of arithmetic metamethod" {
     const gpa = std.testing.allocator;
     var L: lua.lua_State = undefined;
