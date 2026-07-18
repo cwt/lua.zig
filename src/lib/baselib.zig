@@ -338,10 +338,20 @@ fn pairs(L: *lua.lua_State) anyerror!i32 {
 
 fn pcall(L: *lua.lua_State) anyerror!i32 {
     try lauxlib.luaL_checkany(L, 1);
-    const status = lua.lua_pcallk(L, lua.lua_gettop(L) - 1, lua.LUA_MULTRET, 0, 0, null);
-    lua.lua_pushboolean(L, if (status == lua.LUA_OK) @as(i32, 1) else @as(i32, 0));
-    lua.lua_insert(L, 1);
-    return lua.lua_gettop(L);
+    lua.lua_pushboolean(L, 1); // first result if no errors
+    lua.lua_insert(L, 1); // put it in place
+    const status = lua.lua_pcallk(L, lua.lua_gettop(L) - 2, lua.LUA_MULTRET, 0, 0, null);
+    return finishpcall(L, status, 0);
+}
+
+fn finishpcall(L: *lua.lua_State, status: i32, extra: usize) i32 {
+    if (status != lua.LUA_OK and status != lua.LUA_YIELD) {
+        lua.lua_pushboolean(L, 0); // first result (false)
+        lua.lua_pushvalue(L, -2); // error message
+        return 2; // return false, msg
+    } else {
+        return @as(i32, @intCast(lua.lua_gettop(L))) - @as(i32, @intCast(extra));
+    }
 }
 
 fn print(L: *lua.lua_State) anyerror!i32 {

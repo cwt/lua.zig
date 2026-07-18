@@ -245,14 +245,18 @@ fn arith(L: *lua.lua_State, op: i32) anyerror!i32 {
             lua.LUA_OPADD => iv1 +% iv2,
             lua.LUA_OPSUB => iv1 -% iv2,
             lua.LUA_OPMUL => iv1 *% iv2,
-            lua.LUA_OPMOD => @rem(iv1, iv2),
+            lua.LUA_OPMOD => blk: {
+                if (iv2 == 0) return lauxlib.luaL_error(L, "attempt to divide by zero");
+                break :blk if (iv2 == -1) 0 else @rem(iv1, iv2);
+            },
             lua.LUA_OPPOW => @as(i64, @intFromFloat(@floor(@as(f64, @floatFromInt(iv1)) / @as(f64, @floatFromInt(iv2))))),
             lua.LUA_OPDIV => @as(i64, @intFromFloat(@as(f64, @floatFromInt(iv1)) / @as(f64, @floatFromInt(iv2)))),
             lua.LUA_OPIDIV => blk: {
                 const ib = iv1;
                 const ic = iv2;
-                const q = if (ic == -1) ib else @divTrunc(ib, ic);
-                const r = @rem(ib, ic);
+                if (ic == 0) return lauxlib.luaL_error(L, "attempt to divide by zero");
+                const q: i64 = if (ic == -1) 0 -% ib else @divTrunc(ib, ic);
+                const r: i64 = if (ic == -1) 0 else @rem(ib, ic);
                 break :blk if (r == 0 or (ib >= 0) == (ic >= 0)) q else q - 1;
             },
             lua.LUA_OPBAND => iv1 & iv2,
@@ -271,10 +275,14 @@ fn arith(L: *lua.lua_State, op: i32) anyerror!i32 {
             lua.LUA_OPADD => fv1 + fv2,
             lua.LUA_OPSUB => fv1 - fv2,
             lua.LUA_OPMUL => fv1 * fv2,
-            lua.LUA_OPMOD => fv1 - @floor(fv1 / fv2) * fv2,
+            lua.LUA_OPMOD => blk: {
+                break :blk fv1 - @floor(fv1 / fv2) * fv2;
+            },
             lua.LUA_OPPOW => std.math.pow(f64, fv1, fv2),
             lua.LUA_OPDIV => fv1 / fv2,
-            lua.LUA_OPIDIV => @floor(fv1 / fv2),
+            lua.LUA_OPIDIV => blk: {
+                break :blk @floor(fv1 / fv2);
+            },
             lua.LUA_OPUNM => -fv1,
             else => return lauxlib.luaL_error(L, "unsupported arithmetic operation"),
         };

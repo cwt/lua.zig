@@ -70,7 +70,8 @@ pub fn luaT_gettmbyobj(L: *lua.lua_State, o: lua.TValue, event: TMS) lua.TValue 
             const t = o.typ();
             if (t >= 0 and t < 9) {
                 if (L.l_G) |g| {
-                    return if (g.mt[@intCast(t)]) |m| luaT_gettm(m, event, g.tmname[@intFromEnum(event)].?) orelse lua.TValue{ .nil = {} } else lua.TValue{ .nil = {} };
+                    const result = if (g.mt[@intCast(t)]) |m| luaT_gettm(m, event, g.tmname[@intFromEnum(event)].?) orelse lua.TValue{ .nil = {} } else lua.TValue{ .nil = {} };
+                    return result;
                 }
             }
             return lua.TValue{ .nil = {} };
@@ -84,42 +85,55 @@ pub fn luaT_gettmbyobj(L: *lua.lua_State, o: lua.TValue, event: TMS) lua.TValue 
     return lua.TValue{ .nil = {} };
 }
 
+pub fn savestate(L: *lua.lua_State) void {
+    if (L.ci) |ci| {
+        const val = L.stack[ci.func];
+        if (val == .function and val.function != null and val.function.?.* == .lua) {
+            L.top = ci.top;
+        }
+    }
+}
+
 pub fn luaD_call(L: *lua.lua_State, func_idx: usize, nresults: i32) !void {
     if (try lua.precall(L, func_idx, nresults)) |new_ci| {
         try lvm.run(L, new_ci);
     }
 }
 
-pub fn luaT_callTM(L: *lua.lua_State, f: lua.TValue, p1: lua.TValue, p2: lua.TValue, p3: lua.TValue) !void {
+pub fn luaT_callTM(L: *lua.lua_State, f: lua.TValue, p1: *const lua.TValue, p2: *const lua.TValue, p3: *const lua.TValue) !void {
+    savestate(L);
     if (lua.lua_checkstack(L, 4) == 0) return error.OutOfMemory;
     const old_top = L.top;
     L.stack[old_top] = f;
-    L.stack[old_top + 1] = p1;
-    L.stack[old_top + 2] = p2;
-    L.stack[old_top + 3] = p3;
+    L.stack[old_top + 1] = p1.*;
+    L.stack[old_top + 2] = p2.*;
+    L.stack[old_top + 3] = p3.*;
     L.top = old_top + 4;
     try luaD_call(L, old_top, 0);
     L.top = old_top;
 }
 
-pub fn luaT_callTMres(L: *lua.lua_State, f: lua.TValue, p1: lua.TValue, p2: lua.TValue, res: usize) !lua.TValue {
+pub fn luaT_callTMres(L: *lua.lua_State, f: lua.TValue, p1: *const lua.TValue, p2: *const lua.TValue, res: usize) !lua.TValue {
+    savestate(L);
     if (lua.lua_checkstack(L, 3) == 0) return error.OutOfMemory;
     const old_top = L.top;
     L.stack[old_top] = f;
-    L.stack[old_top + 1] = p1;
-    L.stack[old_top + 2] = p2;
+    L.stack[old_top + 1] = p1.*;
+    L.stack[old_top + 2] = p2.*;
     L.top = old_top + 3;
-    try luaD_call(L, old_top, 2);
+    luaD_call(L, old_top, 2) catch |e| {
+        return e;
+    };
     const result = L.stack[old_top];
     L.stack[res] = result;
     L.top = old_top;
     return result;
 }
 
-pub fn luaT_trybinTM(L: *lua.lua_State, p1: lua.TValue, p2: lua.TValue, res: usize, event: TMS) !void {
-    var tm = luaT_gettmbyobj(L, p1, event);
+pub fn luaT_trybinTM(L: *lua.lua_State, p1: *const lua.TValue, p2: *const lua.TValue, res: usize, event: TMS) !void {
+    var tm = luaT_gettmbyobj(L, p1.*, event);
     if (tm == .nil) {
-        tm = luaT_gettmbyobj(L, p2, event);
+        tm = luaT_gettmbyobj(L, p2.*, event);
     }
     if (tm == .nil) {
         return error.RuntimeError;
@@ -127,14 +141,15 @@ pub fn luaT_trybinTM(L: *lua.lua_State, p1: lua.TValue, p2: lua.TValue, res: usi
     _ = try luaT_callTMres(L, tm, p1, p2, res);
 }
 
-pub fn luaT_callorderTM(L: *lua.lua_State, p1: lua.TValue, p2: lua.TValue, event: TMS) !bool {
-    var tm = luaT_gettmbyobj(L, p1, event);
+pub fn luaT_callorderTM(L: *lua.lua_State, p1: *const lua.TValue, p2: *const lua.TValue, event: TMS) !bool {
+    var tm = luaT_gettmbyobj(L, p1.*, event);
     if (tm == .nil) {
-        tm = luaT_gettmbyobj(L, p2, event);
+        tm = luaT_gettmbyobj(L, p2.*, event);
     }
     if (tm == .nil) {
         return error.RuntimeError;
     }
+    savestate(L);
     const res_val = try luaT_callTMres(L, tm, p1, p2, L.top);
     return switch (res_val) {
         .nil => false,
@@ -156,12 +171,18 @@ pub inline fn luaT_equalobj(L: *lua.lua_State, t1: lua.TValue, t2: lua.TValue) !
     if (t1 == .integer and t2 == .integer) {
         return t1.integer == t2.integer;
     }
-    // Cross-type numeric: integer vs number — compare by converting to f64.
+    // Cross-type numeric: integer vs number. Match luaV_equalobj: an integer
+    // i equals a float f iff BOTH f == cast(float, i) AND cast(integer, f) == i
+    // (so precision-losing conversions do not report false equality).
     if (t1 == .integer and t2 == .number) {
-        return @as(f64, @floatFromInt(t1.integer)) == t2.number;
+        const i = t1.integer;
+        const f = t2.number;
+        return f == @as(f64, @floatFromInt(i)) and i == @as(i64, @intFromFloat(f));
     }
     if (t1 == .number and t2 == .integer) {
-        return t1.number == @as(f64, @floatFromInt(t2.integer));
+        const f = t1.number;
+        const i = t2.integer;
+        return f == @as(f64, @floatFromInt(i)) and i == @as(i64, @intFromFloat(f));
     }
     if (@as(std.meta.Tag(lua.TValue), t1) != @as(std.meta.Tag(lua.TValue), t2)) {
         return false;
@@ -190,7 +211,8 @@ pub inline fn luaT_equalobj(L: *lua.lua_State, t1: lua.TValue, t2: lua.TValue) !
                 tm = if (h2.metatable) |mt| luaT_gettm(mt, .EQ, G(L).tmname[@intFromEnum(TMS.EQ)].?) else null;
             }
             if (tm) |tm_val| {
-                const res = try luaT_callTMres(L, tm_val, t1, t2, L.top);
+                savestate(L);
+                const res = try luaT_callTMres(L, tm_val, &t1, &t2, L.top);
                 return switch (res) {
                     .nil => false,
                     .boolean => |b| b,
@@ -209,7 +231,8 @@ pub inline fn luaT_equalobj(L: *lua.lua_State, t1: lua.TValue, t2: lua.TValue) !
                 tm = if (mt2) |mt| luaT_gettm(mt, .EQ, G(L).tmname[@intFromEnum(TMS.EQ)].?) else null;
             }
             if (tm) |tm_val| {
-                const res = try luaT_callTMres(L, tm_val, t1, t2, L.top);
+                savestate(L);
+                const res = try luaT_callTMres(L, tm_val, &t1, &t2, L.top);
                 return switch (res) {
                     .nil => false,
                     .boolean => |b| b,
@@ -221,6 +244,50 @@ pub inline fn luaT_equalobj(L: *lua.lua_State, t1: lua.TValue, t2: lua.TValue) !
     };
 }
 
+// Cross-type ordering helpers, mirroring PUC-Rio's LTintfloat/LEintfloat/
+// LTfloatint/LEfloatint in lvm.c. Comparing via f64 loses precision for
+// integers that do not fit exactly in a float, so the reference compares as
+// integers whenever possible and otherwise decides by the sign of the float.
+
+// Cast a float to an integer if it is within [minint, 2^63); returns null
+// otherwise (matches lua_numbertointeger: n >= MININTEGER && n < -MININTEGER).
+fn numToInteger(n: f64) ?i64 {
+    if (n >= -9223372036854775808.0 and n < 9223372036854775808.0) {
+        return @intFromFloat(n);
+    }
+    return null;
+}
+
+// Whether the integer 'i' converts to a float without rounding.
+const MAXINTFITSF: u64 = 1 << 53; // 2^MANT_DIG for f64
+fn l_intfitsf(i: i64) bool {
+    return (MAXINTFITSF +% @as(u64, @bitCast(i))) <= (2 * MAXINTFITSF);
+}
+
+fn LTintfloat(i: i64, f: f64) bool {
+    if (l_intfitsf(i)) return @as(f64, @floatFromInt(i)) < f;
+    if (numToInteger(f)) |fi| return i < fi;
+    return f > 0;
+}
+
+fn LEintfloat(i: i64, f: f64) bool {
+    if (l_intfitsf(i)) return @as(f64, @floatFromInt(i)) <= f;
+    if (numToInteger(f)) |fi| return i <= fi;
+    return f > 0;
+}
+
+fn LTfloatint(f: f64, i: i64) bool {
+    if (l_intfitsf(i)) return f < @as(f64, @floatFromInt(i));
+    if (numToInteger(f)) |fi| return fi < i;
+    return f < 0;
+}
+
+fn LEfloatint(f: f64, i: i64) bool {
+    if (l_intfitsf(i)) return f <= @as(f64, @floatFromInt(i));
+    if (numToInteger(f)) |fi| return fi <= i;
+    return f < 0;
+}
+
 pub fn luaT_lt(L: *lua.lua_State, t1: lua.TValue, t2: lua.TValue) !bool {
     // Same-type numeric
     if (t1 == .number and t2 == .number) {
@@ -229,17 +296,17 @@ pub fn luaT_lt(L: *lua.lua_State, t1: lua.TValue, t2: lua.TValue) !bool {
     if (t1 == .integer and t2 == .integer) {
         return t1.integer < t2.integer;
     }
-    // Cross-type numeric: convert integer to f64 for comparison
+    // Cross-type numeric: compare without f64 precision loss.
     if (t1 == .number and t2 == .integer) {
-        return t1.number < @as(f64, @floatFromInt(t2.integer));
+        return LTfloatint(t1.number, t2.integer);
     }
     if (t1 == .integer and t2 == .number) {
-        return @as(f64, @floatFromInt(t1.integer)) < t2.number;
+        return LTintfloat(t1.integer, t2.number);
     }
     if (t1 == .string and t2 == .string) {
         return std.mem.order(u8, t1.string.?.s, t2.string.?.s) == .lt;
     }
-    return try luaT_callorderTM(L, t1, t2, .LT);
+    return try luaT_callorderTM(L, &t1, &t2, .LT);
 }
 
 pub fn luaT_le(L: *lua.lua_State, t1: lua.TValue, t2: lua.TValue) !bool {
@@ -250,17 +317,17 @@ pub fn luaT_le(L: *lua.lua_State, t1: lua.TValue, t2: lua.TValue) !bool {
     if (t1 == .integer and t2 == .integer) {
         return t1.integer <= t2.integer;
     }
-    // Cross-type numeric: convert integer to f64 for comparison
+    // Cross-type numeric: compare without f64 precision loss.
     if (t1 == .number and t2 == .integer) {
-        return t1.number <= @as(f64, @floatFromInt(t2.integer));
+        return LEfloatint(t1.number, t2.integer);
     }
     if (t1 == .integer and t2 == .number) {
-        return @as(f64, @floatFromInt(t1.integer)) <= t2.number;
+        return LEintfloat(t1.integer, t2.number);
     }
     if (t1 == .string and t2 == .string) {
         return std.mem.order(u8, t1.string.?.s, t2.string.?.s) != .gt;
     }
-    return try luaT_callorderTM(L, t1, t2, .LE);
+    return try luaT_callorderTM(L, &t1, &t2, .LE);
 }
 
 // Maximum metamethod chain length (mirrors MAXTAGLOOP in C reference).
@@ -309,7 +376,7 @@ pub inline fn luaV_gettable(L: *lua.lua_State, t: lua.TValue, key: lua.TValue, r
             }
             if (tm == .function) {
                 // __index is a function: call it
-                _ = try luaT_callTMres(L, tm, current, key, res);
+                _ = try luaT_callTMres(L, tm, &current, &key, res);
                 return;
             }
             // __index is a value — recurse into it
@@ -321,7 +388,7 @@ pub inline fn luaV_gettable(L: *lua.lua_State, t: lua.TValue, key: lua.TValue, r
                 return error.RuntimeError; // no __index, type error
             }
             if (tm == .function) {
-                _ = try luaT_callTMres(L, tm, current, key, res);
+                _ = try luaT_callTMres(L, tm, &current, &key, res);
                 return;
             }
             current = tm;
@@ -370,7 +437,7 @@ pub inline fn luaV_settable(L: *lua.lua_State, t: lua.TValue, key: lua.TValue, v
                 return;
             }
             if (tm == .function) {
-                try luaT_callTM(L, tm, current, key, val);
+                try luaT_callTM(L, tm, &current, &key, &val);
                 return;
             }
             // __newindex is a table — recurse
@@ -381,7 +448,7 @@ pub inline fn luaV_settable(L: *lua.lua_State, t: lua.TValue, key: lua.TValue, v
                 return error.RuntimeError;
             }
             if (tm == .function) {
-                try luaT_callTM(L, tm, current, key, val);
+                try luaT_callTM(L, tm, &current, &key, &val);
                 return;
             }
             current = tm;

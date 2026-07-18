@@ -245,6 +245,48 @@ pub const TValue = union(enum) {
             else => unreachable,
         };
     }
+
+    /// Convert a numeric TValue to an integer, returning `null` when the value
+    /// has no exact integer representation (non-integral float, or out of i64
+    /// range). Unlike `toIntegerExact`, this never traps.
+    pub fn toIntegerExactOpt(self: TValue) ?i64 {
+        return switch (self) {
+            .integer => |n| n,
+            .number => |n| blk: {
+                if (n == @floor(n) and n >= -9223372036854775808.0 and n < 9223372036854775808.0) {
+                    break :blk @as(i64, @intFromFloat(n));
+                }
+                break :blk null;
+            },
+            else => null,
+        };
+    }
+
+    /// Convert a numeric TValue to an integer, requiring the value to have an
+    /// exact integer representation. A non-integral float (e.g. 2.3) raises
+    /// "number has no integer representation", matching PUC-Rio's F2Ieq rule
+    /// for bitwise/shift operands.
+    pub fn toIntegerExactE(self: TValue, L: *lua_State) !i64 {
+        switch (self) {
+            .integer => |n| return n,
+            .number => |n| {
+                // Exact integer representation: integral value within i64 range.
+                if (n == @floor(n) and n >= -9223372036854775808.0 and n < 9223372036854775808.0) {
+                    return @intFromFloat(n);
+                }
+                const ts = lstring.luaS_new(L, "number has no integer representation") catch null;
+                if (ts) |t| {
+                    L.stack[L.top] = TValue{ .string = t };
+                    L.top += 1;
+                } else {
+                    L.stack[L.top] = TValue{ .nil = {} };
+                    L.top += 1;
+                }
+                return error.RuntimeError;
+            },
+            else => unreachable,
+        }
+    }
 };
 
 pub const Node = struct {
@@ -464,9 +506,17 @@ fn freeAllCallInfos(L: *lua_State) void {
 const PF_VAHID: u8 = 1; // function has hidden vararg arguments
 const PF_VATAB: u8 = 2; // function has a vararg table
 
-pub fn precall(L: *lua_State, func_idx: usize, nresults: i32) !?*CallInfo {
+ pub fn precall(L: *lua_State, func_idx: usize, nresults: i32) !?*CallInfo {
     const val = L.stack[func_idx];
     if (val != .function) {
+        const caller_ci = L.ci;
+        var dline: i32 = -1;
+        if (caller_ci) |cc| {
+            const cv = L.stack[cc.func];
+            if (cv == .function and cv.function != null and cv.function.?.* == .lua) {
+                dline = luaG_getfuncline(cv.function.?.lua.p, currentpc(cc));
+            }
+        }
         return error.NotAFunction;
     }
     const cl = val.function.?;
@@ -492,6 +542,7 @@ pub fn precall(L: *lua_State, func_idx: usize, nresults: i32) !?*CallInfo {
                 if (e == error.Yield) {
                     return error.Yield;
                 }
+                std.debug.print("PRECALL_ERR: e={any} func_idx={}\n", .{e, func_idx});
                 L.ci = old_ci;
                 if (old_ci) |prev| {
                     prev.next = null;
@@ -500,6 +551,7 @@ pub fn precall(L: *lua_State, func_idx: usize, nresults: i32) !?*CallInfo {
                 return e;
             };
             if (n < 0) {
+                std.debug.print("PRECALL_NEG: n={} func_idx={}\n", .{n, func_idx});
                 L.ci = old_ci;
                 if (old_ci) |prev| {
                     prev.next = null;
@@ -522,8 +574,8 @@ pub fn precall(L: *lua_State, func_idx: usize, nresults: i32) !?*CallInfo {
             const num_params = proto.numParams;
             const base_idx = func_idx + 1;
             const frame_top = base_idx + proto.maxStackSize;
-            const is_vararg = (proto.flag & (PF_VAHID | PF_VATAB)) != 0;
-            if (frame_top >= L.stack.len) {
+             const is_vararg = (proto.flag & (PF_VAHID | PF_VATAB)) != 0;
+             if (frame_top >= L.stack.len) {
                 const old_len = L.stack.len;
                 const new_len = @max(L.stack.len * 2, frame_top + 10);
                 L.stack = try L.allocator.realloc(L.stack, new_len);
@@ -1204,7 +1256,7 @@ pub fn lua_arith(L: *lua_State, op: i32) void {
                 LUA_OPBNOT => .BNOT,
                 else => unreachable,
             };
-            ltm.luaT_trybinTM(L, p1, p1, L.top - 1, event) catch {};
+            ltm.luaT_trybinTM(L, &p1, &p1, L.top - 1, event) catch {};
         }
     } else {
         if (L.top < 2) return;
@@ -1217,17 +1269,17 @@ pub fn lua_arith(L: *lua_State, op: i32) void {
                 if (n1 == .integer and n2 == .integer) {
                     const result = switch (op) {
                         LUA_OPADD => @as(TValue, .{ .integer = n1.integer + n2.integer }),
-                        LUA_OPSUB => @as(TValue, .{ .integer = n1.integer - n2.integer }),
-                        LUA_OPMUL => @as(TValue, .{ .integer = n1.integer * n2.integer }),
-                        LUA_OPMOD => @as(TValue, .{ .integer = @rem(n1.integer, n2.integer) }),
+                        LUA_OPSUB => @as(TValue, .{ .integer = n1.integer -% n2.integer }),
+                        LUA_OPMUL => @as(TValue, .{ .integer = n1.integer *% n2.integer }),
+                        LUA_OPMOD => @as(TValue, .{ .integer = if (n2.integer == 0 or n2.integer == -1) 0 else @rem(n1.integer, n2.integer) }),
                         LUA_OPPOW => @as(TValue, .{ .number = libm.getLibm().pow(@as(f64, @floatFromInt(n1.integer)), @as(f64, @floatFromInt(n2.integer))) }),
                         LUA_OPDIV => @as(TValue, .{ .number = @as(f64, @floatFromInt(n1.integer)) / @as(f64, @floatFromInt(n2.integer)) }),
                         LUA_OPIDIV => blk: {
                             const ib = n1.integer;
                             const ic = n2.integer;
-                            // Handle minint / -1 (overflows as wrapping)
-                            const q = if (ic == -1) ib else @divTrunc(ib, ic);
-                            const r = @rem(ib, ic);
+                            // Handle minint / -1 (overflows as wrapping) and /0
+                            const q: i64 = if (ic == 0) 0 else if (ic == -1) 0 -% ib else @divTrunc(ib, ic);
+                            const r: i64 = if (ic == 0 or ic == -1) 0 else @rem(ib, ic);
                             break :blk TValue{ .integer = if (r == 0 or (ib >= 0) == (ic >= 0)) q else q - 1 };
                         },
                         LUA_OPBAND => @as(TValue, .{ .integer = n1.integer & n2.integer }),
@@ -1277,7 +1329,7 @@ pub fn lua_arith(L: *lua_State, op: i32) void {
                 LUA_OPSHR => .SHR,
                 else => unreachable,
             };
-            ltm.luaT_trybinTM(L, p1, p2, L.top - 2, event) catch {};
+            ltm.luaT_trybinTM(L, &p1, &p2, L.top - 2, event) catch {};
             L.top -= 1;
         }
     }
@@ -2748,7 +2800,9 @@ pub fn lua_pcallk(L: *lua_State, nargs: i32, nresults: i32, errfunc: i32, ctx: l
             break :b if (ts) |t| TValue{ .string = t } else TValue{ .nil = {} };
         };
 
-        // Restore CallInfo chain and stack
+        // Restore CallInfo chain and stack. The error object is placed where
+        // the first result would go (the function slot), so the surrounding C
+        // pcall wrapper can prepend the status boolean and return [status, msg].
         var curr = L.ci;
         while (curr) |c| {
             if (c == old_ci) break;
@@ -2759,8 +2813,8 @@ pub fn lua_pcallk(L: *lua_State, nargs: i32, nresults: i32, errfunc: i32, ctx: l
             curr = prev;
         }
         L.ci = old_ci;
-        L.top = func_idx + 1;
         L.stack[func_idx] = final_err_obj;
+        L.top = func_idx + 1;
         return LUA_ERRRUN;
     }
 
@@ -2770,6 +2824,76 @@ pub fn lua_pcallk(L: *lua_State, nargs: i32, nresults: i32, errfunc: i32, ctx: l
 pub inline fn lua_pcall(L: *lua_State, nargs: i32, nresults: i32, errfunc: i32) i32 {
     return lua_pcallk(L, nargs, nresults, errfunc, 0, null);
 }
+
+/// Push a runtime-error message onto the stack and return `error.RuntimeError`
+/// so the surrounding protected call reports it. Mirrors PUC-Rio's
+/// `luaG_runerror`. Returns `!lua.TValue` so it can be used as a function's
+/// error return regardless of the function's success payload type.
+pub fn luaG_runerror(L: *lua_State, msg: []const u8) !void {
+    const ts = lstring.luaS_new(L, msg) catch null;
+    if (ts) |t| {
+        L.stack[L.top] = TValue{ .string = t };
+        L.top += 1;
+    } else {
+        L.stack[L.top] = TValue{ .nil = {} };
+        L.top += 1;
+    }
+    return error.RuntimeError;
+}
+
+/// Value-equality test used by `varinfo` to locate the operand register.
+fn tvEqual(a: TValue, b: TValue) bool {
+    if (a == .nil and b == .nil) return true;
+    if (a.isNumberValue() and b.isNumberValue()) {
+        return a.toFloat() == b.toFloat();
+    }
+    if (a == .boolean and b == .boolean) return a.boolean == b.boolean;
+    if (a == .integer and b == .integer) return a.integer == b.integer;
+    if (a == .string and b == .string) return a.string == b.string;
+    return false;
+}
+
+/// Mirror PUC-Rio `varinfo`: locate `o` in the current Lua frame and build a
+/// description such as ` (field 'huge')` or ` (global 'x')`, written into `buf`.
+/// Returns the slice of `buf` used, or `""` if unknown.
+fn luaG_varinfo(L: *lua_State, o: TValue, buf: []u8) []u8 {
+    const ci = L.ci orelse return "";
+    if (!isLua(ci, L)) return "";
+    const val = L.stack[ci.func];
+    if (val != .function or val.function == null) return "";
+    const cl = val.function.?;
+    if (cl.* != .lua) return "";
+    const p = cl.lua.p;
+    const base = ci.base;
+    // Find the register holding a value equal to `o` (instack by value).
+    var reg: i32 = -1;
+    var idx: usize = base;
+    while (idx < L.top) : (idx += 1) {
+        if (tvEqual(L.stack[idx], o)) {
+            reg = @intCast(idx - base);
+            break;
+        }
+    }
+    if (reg < 0) return "";
+    var name: ?[]const u8 = null;
+    const kind = getobjname(p, currentpc(ci), reg, &name) orelse return "";
+    if (name == null) return "";
+    // formatvarinfo: " (kind 'name')".
+    return std.fmt.bufPrint(buf, " ({s} '{s}')", .{ kind, name.? }) catch "";
+}
+
+/// Error when a value cannot be converted to an integer (bitwise/shift operand
+/// or `floor`/integer coercion). Mirrors PUC-Rio `luaG_tointerror`: the message
+/// is `"number%s has no integer representation"`, where `%s` is the operand's
+/// `varinfo` (e.g. ` (field 'huge')`).
+pub fn luaG_tointerror(L: *lua_State, o: TValue) !void {
+    var buf: [256]u8 = undefined;
+    const info = luaG_varinfo(L, o, &buf);
+    var msg: [320]u8 = undefined;
+    const mslice = std.fmt.bufPrint(&msg, "number{s} has no integer representation", .{info}) catch "number has no integer representation";
+    return luaG_runerror(L, mslice);
+}
+
 
 pub fn lua_load(L: *lua_State, reader: lua_Reader, dt: ?*anyopaque, chunkname: []const u8, mode: []const u8) i32 {
     _ = mode;
@@ -3518,7 +3642,7 @@ pub fn lua_len(L: *lua_State, idx: i32) !void {
         .table => |t| {
             const tm = if (t.?.metatable) |mt| ltm.luaT_gettm(mt, .LEN, G(L).tmname[@intFromEnum(ltm.TMS.LEN)].?) else null;
             if (tm) |tm_val| {
-                _ = try ltm.luaT_callTMres(L, tm_val, v, v, L.top);
+                _ = try ltm.luaT_callTMres(L, tm_val, &v, &v, L.top);
                 L.top += 1;
             } else {
                 lua_pushinteger(L, @as(i64, @intCast(ltable.getn(t.?))));
@@ -3529,7 +3653,7 @@ pub fn lua_len(L: *lua_State, idx: i32) !void {
             if (tm == .nil) {
                 return error.RuntimeError;
             }
-            _ = try ltm.luaT_callTMres(L, tm, v, v, L.top);
+            _ = try ltm.luaT_callTMres(L, tm, &v, &v, L.top);
             L.top += 1;
         },
     }
@@ -3572,21 +3696,25 @@ fn parseInteger(s: []const u8) ?i64 {
         i += 1;
         if (i >= s.len) return null;
     }
-    var mag: u64 = 0;
+    const is_neg_val: u32 = if (neg) 1 else 0;
+    var a: u64 = 0;
     var digits: usize = 0;
     if (s[i] == '0' and i + 1 < s.len and (s[i + 1] == 'x' or s[i + 1] == 'X')) {
         i += 2;
         while (i < s.len and isHexDigit(s[i])) : (i += 1) {
             const d = hexValue(s[i]);
-            if (mag > (@as(u64, 9223372036854775807) - d) / 16) return null; // overflow
-            mag = mag * 16 + d;
+            a = a *% 16 +% d;
             digits += 1;
         }
     } else {
+        const max_by_10 = @as(u64, 9223372036854775807) / 10;
+        const max_last_d = @as(u32, 9223372036854775807 % 10);
         while (i < s.len and isDigit(s[i])) : (i += 1) {
-            const d = s[i] - '0';
-            if (mag > (@as(u64, 9223372036854775807) - d) / 10) return null; // overflow
-            mag = mag * 10 + d;
+            const d = @as(u32, s[i] - '0');
+            if (a >= max_by_10 and (a > max_by_10 or d > max_last_d + is_neg_val)) {
+                return null; // overflow
+            }
+            a = a * 10 + d;
             digits += 1;
         }
     }
@@ -3594,7 +3722,8 @@ fn parseInteger(s: []const u8) ?i64 {
     var k = i;
     while (k < s.len and isspace(s[k])) : (k += 1) {}
     if (k != s.len) return null; // trailing non-space
-    return if (neg) -@as(i64, @intCast(mag)) else @as(i64, @intCast(mag));
+    const unsigned_res = if (neg) (0 -% a) else a;
+    return @bitCast(unsigned_res);
 }
 
 /// True iff every byte of `s[off..]` is whitespace.
@@ -3660,30 +3789,31 @@ fn parseLocaleNumber(s: []const u8) ?f64 {
 /// "inf"/"nan" rejected) but returns the value instead of pushing it.
 pub fn tonumberValue(s: []const u8) ?TValue {
     if (s.len == 0) return null;
-    var i: usize = 0;
-    while (i < s.len and isspace(s[i])) : (i += 1) {} // skip leading spaces
-    if (i >= s.len) return null;
-    if (s[i] == '+' or s[i] == '-') {
-        i += 1;
-        if (i >= s.len) return null;
-    }
+    // Trim leading and trailing whitespace (mirrors luaO_str2num: only
+    // surrounding spaces are ignored; nothing else may trail the number).
+    var start: usize = 0;
+    while (start < s.len and isspace(s[start])) : (start += 1) {}
+    if (start >= s.len) return null;
+    var end = s.len;
+    while (end > start and isspace(s[end - 1])) : (end -= 1) {}
+    const trimmed = s[start..end];
+    if (trimmed.len == 0) return null;
     // reject "inf"/"nan" tokens (reference: l_str2d rejects 'n'/'N')
     {
-        var lower_i = s[i];
+        var lower_i = trimmed[0];
         if (lower_i >= 'A' and lower_i <= 'Z') lower_i += 32;
         if (lower_i == 'i' or lower_i == 'n') {
-            const rest = s[i..];
             var rest_lower: [10]u8 = undefined;
-            const copy_len = @min(rest.len, rest_lower.len);
-            _ = std.ascii.lowerString(rest_lower[0..copy_len], rest[0..copy_len]);
+            const copy_len = @min(trimmed.len, rest_lower.len);
+            _ = std.ascii.lowerString(rest_lower[0..copy_len], trimmed[0..copy_len]);
             if (std.mem.eql(u8, rest_lower[0..3], "inf") or
                 std.mem.eql(u8, rest_lower[0..3], "nan")) {
                 return null;
             }
         }
     }
-    if (parseInteger(s)) |iv| return TValue{ .integer = iv };
-    if (parseLocaleNumber(s)) |n| return TValue{ .number = n };
+    if (parseInteger(trimmed)) |iv| return TValue{ .integer = iv };
+    if (parseLocaleNumber(trimmed)) |n| return TValue{ .number = n };
     return null;
 }
 
@@ -3762,7 +3892,8 @@ pub fn lua_closeslot(L: *lua_State, idx: i32) void {
     const tm = if (mt) |m| ltm.luaT_gettm(m, .CLOSE, G(L).tmname[@intFromEnum(ltm.TMS.CLOSE)].?) else null;
     if (tm) |tm_val| {
         // Call __close(value, nil, nil); results are discarded (nresults = 0).
-        _ = ltm.luaT_callTM(L, tm_val, v, TValue{ .nil = {} }, TValue{ .nil = {} }) catch {};
+        const nil_val = TValue{ .nil = {} };
+        _ = ltm.luaT_callTM(L, tm_val, &v, &nil_val, &nil_val) catch {};
     }
 }
 

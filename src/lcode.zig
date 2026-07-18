@@ -404,9 +404,10 @@ fn const2exp(v: *lua.TValue, e: *expdesc) void {
     e.f = NO_JUMP;
     switch (v.*) {
         .number => |n| {
-            if (@floor(n) == n and n >= -9.223372036854776e18 and n <= 9.223372036854776e18) {
+            var iv: i64 = 0;
+            if (flttointeger(n, &iv)) {
                 e.k = .VKINT;
-                e.u = .{ .ival = @intFromFloat(n) };
+                e.u = .{ .ival = iv };
             } else {
                 e.k = .VKFLT;
                 e.u = .{ .nval = n };
@@ -812,7 +813,13 @@ fn isSCint(e: *expdesc) bool {
 }
 
 fn flttointeger(f: f64, i: *i64) bool {
-    if (f >= -9.223372036854775808e18 and f <= 9.223372036854775807e18) {
+    // i64 range is [-2^63, 2^63-1]; 2^63 itself does not fit. Use strict
+    // bounds with exactly-representable f64 endpoints so @intFromFloat never
+    // traps (it panics on out-of-range values). Note 2^63 (=9.22...e18) is
+    // exactly representable and is EXCLUDED by the strict '<' upper bound.
+    const min_i64_f: f64 = -9223372036854775808.0; // exactly -2^63
+    const max_i64_f: f64 = 9223372036854775808.0; // exactly 2^63
+    if (f >= min_i64_f and f < max_i64_f) {
         const fl = @floor(f);
         if (fl == f) {
             i.* = @intFromFloat(fl);

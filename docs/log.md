@@ -3,7 +3,38 @@ type: lessons_learned
 title: Modification Log
 description: Running chronological log of bundle modifications and significant changes.
 tags: [log, changelog]
-timestamp: 2026-07-14T16:10:00Z
+timestamp: 2026-07-18T13:58:00Z
+---
+
+## 2026-07-18 — Bug fixes: Metamethod invocation register allocation (BUG-047) and parseInteger limits (BUG-048)
+
+Fixed two critical bugs: System V AMD64 ABI metamethod invocation stack overwrite (BUG-047) and minint/hex parser boundaries (BUG-048).
+
+### Changes
+
+**Metamethod register allocation fix (BUG-047)** (`src/ltm.zig`, `src/lvm.zig`, `src/lua.zig`):
+- Refactored `luaT_callTM`, `luaT_callTMres`, `luaT_trybinTM`, and `luaT_callorderTM` to accept `*const lua.TValue` pointer arguments rather than passing by value.
+- Prevents the System V AMD64 ABI stack argument alignment bug in the Zig compiler where the stack offset for `res: usize` was miscalculated due to integer register exhaustion.
+- Propagated pointer addresses (`&TValue`) to all call sites in `ltm.zig`, `lvm.zig`, and `lua.zig`.
+
+**`parseInteger` bounds and hex fix (BUG-048)** (`src/lua.zig`):
+- Ported the C reference `l_str2int` logic: decimal bounds checking now uses `max_last_d + is_neg_val` to permit magnitude `9223372036854775808` (`minint` absolute value) only when the negative sign is present.
+- Hex string parsing no longer enforces a strict maximum bounds overflow check during accumulation, allowing it to correctly wrap around on overflow (up to `0xffffffffffffffff`).
+- Casts the parsed magnitude to `i64` safely using `@bitCast` to avoid runtime casting panics.
+- Fixed `tonumberValue` to trim surrounding whitespace before parsing, matching reference behavior.
+
+**Tests**:
+- Added regression test `test "BUG-047 repeated string arithmetic print doesn't crash"` to `tests/test_basic.zig`.
+- Standard Lua test suite runner `run_testes.sh` now completes with `math ... PASS` and `0 failures` overall.
+
+§0.1 self-audit:
+- Allocators: no new heap allocations (operands passed by reference/pointer). ✅
+- Errors: errors propagated cleanly; parseInteger returns optionals. ✅
+- No setjmp/longjmp. ✅
+- Numeric conversions: `@bitCast` is used solely to safely convert signed/unsigned integers for the final parsed value representation (bit-identical twos-complement conversion), which conforms to §0.1 rule 4. ✅
+- No empty `catch {}`. ✅
+- Precision/types: stack limits and types validated. ✅
+
 ---
 
 ## 2026-07-14 — H.10: GC completeness (all lua_gc options, GCPARAM)

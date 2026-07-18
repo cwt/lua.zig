@@ -438,3 +438,16 @@ Legend:
 - **Fix (rev 73, 2026-07-14, Phase H.6):** Rewrote `llex.lexerror` to format `"<msg> near <token>"` into the persistent `ls.buff` (no heap, no dangling pointer) and set `ls.errmsg_allocated = false`; it appends the ` near <eof>` suffix when the token is the end-of-input marker, matching the C reference. `error_expected`/`check_match` now call `lexerror` (which writes into `ls.buff`) instead of formatting into a local buffer and stashing a pointer.
 - **Verification:** REPL multi-line input now detects incompleteness via the ` near <eof>` suffix and continues reading; an existing lexer test (`lex error on unfinished string`) still passes. Suite **117/117 pass**, zero leaks.
 
+## BUG-047 — `print("2"+1); print("2"+1)` crashes on second invocation (ABI Stack Argument Mismatch)  [HIGH] ✅ FIXED
+- **Location:** `src/ltm.zig` (metamethod invocation helpers); callers in `src/lvm.zig` and `src/lua.zig`.
+- **Defect:** Under the System V AMD64 ABI, when passing multiple 16-byte `TValue` union structures by value (which require 2 registers each), the available integer registers are exhausted, causing remaining arguments (such as the target register `res: usize`) to be passed on the stack. The Zig compiler miscalculated the stack offset for `res`, causing it to read the active tag of one of the `TValue` arguments (resulting in `res=4` instead of `res=6`), which corrupts the target register slot.
+- **Impact:** Inside the Lua VM loop, executing string arithmetic coercion (which triggers `MMBINI`/`MMBINK` and calls `luaT_callTMres`) overwrote the active register of the `print` function with the coerced integer result, causing a crash on subsequent calls to `print`.
+- **Fix:** Refactored the metamethod helper signatures (`luaT_callTM`, `luaT_callTMres`, `luaT_trybinTM`, and `luaT_callorderTM`) in `src/ltm.zig` to accept pointer arguments (`*const lua.TValue`) instead of passing them by value. This ensures all arguments fit in CPU registers, eliminating stack allocation and successfully preventing the compiler ABI bug. Wired pointer propagation to all VM/C-API metamethod dispatch call sites.
+
+## BUG-048 — `parseInteger` rejects `minint` (`-9223372036854775808`) and hex boundaries  [HIGH] ✅ FIXED
+- **Location:** `src/lua.zig` (`parseInteger` helper).
+- **Defect:** The overflow bounds checks in `parseInteger` limited the absolute magnitude of parsed decimal integers to `maxint` (`9223372036854775807`), which incorrectly rejected the valid integer `minint` (`-9223372036854775808`). Additionally, hex literal parsing also capped values to `maxint`, preventing correct parsing of large hex values like `0x8000000000000000` or `0xffffffffffffffff`.
+- **Impact:** `math.lua` from the Lua test suite failed because `tonumber(tostring(minint))` returned `nil`, leading to an arithmetic/comparison failure. Hex literals with MSB=1 could not be parsed as integers.
+- **Fix:** Rewrote `parseInteger` to mirror the C reference's `l_str2int` logic: decimal bounds checks now use `max_last_d + is_neg_val` to correctly permit magnitude `9223372036854775808` only when the sign is negative. Hex string parsing now allows values to accumulate and wrap around on overflow (up to `0xffffffffffffffff`), cast to `i64` safely using `@bitCast` without any runtime casting panics.
+
+

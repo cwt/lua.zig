@@ -4537,3 +4537,19 @@ test "H.8 deprecated compatibility aliases (newuserdata, getuservalue, setuserva
     try std.testing.expectEqual(@as(i32, lua.LUA_TNUMBER), lua.lua_type(&L, -1));
     lua.lua_pop(&L, 1);
 }
+
+test "BUG-047 repeated string arithmetic print doesn't crash" {
+    const gpa = std.testing.allocator;
+    var L: lua.lua_State = undefined;
+    try lua.luaL_newstate(&L, gpa);
+    defer lua.lua_close(&L);
+    try lua.luaL_openlibs(&L);
+
+    const script = "print('2'+1); print('2'+1)";
+    const status = try lua.luaL_dostring(&L, script, "=(test)");
+    if (status != lua.LUA_OK) {
+        std.debug.print("TEST_FAILED_STATUS: {} err_msg={?s}\n", .{ status, lua.lua_tostring(&L, -1) });
+    }
+    try std.testing.expectEqual(@as(i32, lua.LUA_OK), status);
+}
+
