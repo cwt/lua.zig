@@ -465,6 +465,45 @@ fn setmetatable(L: *lua.lua_State) anyerror!i32 {
     return 1;
 }
 
+fn isspace(c: u8) bool {
+    return c == ' ' or (c >= 9 and c <= 13);
+}
+
+fn isalnum(c: u8) bool {
+    return (c >= '0' and c <= '9') or (c >= 'a' and c <= 'z') or (c >= 'A' and c <= 'Z');
+}
+
+fn b_str2int(s: []const u8, base: u32, pn: *i64) ?usize {
+    var i: usize = 0;
+    while (i < s.len and isspace(s[i])) : (i += 1) {}
+    if (i >= s.len) return null;
+    var neg = false;
+    if (s[i] == '-') {
+        neg = true;
+        i += 1;
+    } else if (s[i] == '+') {
+        i += 1;
+    }
+    if (i >= s.len or !isalnum(s[i])) return null;
+    var n: u64 = 0;
+    while (i < s.len and isalnum(s[i])) : (i += 1) {
+        const c = s[i];
+        const digit: u32 = if (c >= '0' and c <= '9')
+            @as(u32, c - '0')
+        else if (c >= 'a' and c <= 'z')
+            @as(u32, c - 'a') + 10
+        else if (c >= 'A' and c <= 'Z')
+            @as(u32, c - 'A') + 10
+        else
+            return null;
+        if (digit >= base) return null;
+        n = n *% base +% digit;
+    }
+    while (i < s.len and isspace(s[i])) : (i += 1) {}
+    pn.* = @bitCast(if (neg) (0 -% n) else n);
+    return i;
+}
+
 fn tonumber(L: *lua.lua_State) anyerror!i32 {
     if (lua.lua_isnoneornil(L, 2)) {
         if (lua.lua_type(L, 1) == lua.LUA_TNUMBER) {
@@ -473,9 +512,6 @@ fn tonumber(L: *lua.lua_State) anyerror!i32 {
         }
         const s = lua.lua_tostring(L, 1);
         if (s) |str| {
-            // Use lua_stringtonumber so that locale-aware and hex/float
-            // parsing match the C reference; require the whole string to be
-            // consumed (return value == len + 1), as luaO_str2num does.
             if (lua.lua_stringtonumber(L, str) == str.len + 1) {
                 return 1;
             }
@@ -487,11 +523,15 @@ fn tonumber(L: *lua.lua_State) anyerror!i32 {
         if (base < 2 or base > 36) {
             return lauxlib.luaL_error(L, "base out of range");
         }
-        const s = try lauxlib.luaL_checklstring(L, 1, null);
-        if (std.fmt.parseInt(i64, s, @as(u8, @intCast(base)))) |val| {
-            lua.lua_pushinteger(L, val);
-            return 1;
-        } else |_| {}
+        try lauxlib.luaL_checktype(L, 1, lua.LUA_TSTRING);
+        const s = lua.lua_tostring(L, 1).?;
+        var val: i64 = 0;
+        if (b_str2int(s, @as(u32, @intCast(base)), &val)) |consumed| {
+            if (consumed == s.len) {
+                lua.lua_pushinteger(L, val);
+                return 1;
+            }
+        }
     }
     lua.lua_pushnil(L);
     return 1;

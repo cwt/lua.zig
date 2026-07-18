@@ -23,6 +23,10 @@ Fixed two critical bugs: System V AMD64 ABI metamethod invocation stack overwrit
 - Casts the parsed magnitude to `i64` safely using `@bitCast` to avoid runtime casting panics.
 - Fixed `tonumberValue` to trim surrounding whitespace before parsing, matching reference behavior.
 
+**`tonumber` custom base parser fix** (`src/lib/baselib.zig`):
+- Ported the C reference `b_str2int` custom base parser to handle leading/trailing spaces, optional signs (+/-), valid alphanumeric character loops, and unsigned wrapping.
+- Prevents errors when parsing base-converted strings with surrounding whitespace (e.g. `'  001010  '`).
+
 **Tests**:
 - Added regression test `test "BUG-047 repeated string arithmetic print doesn't crash"` to `tests/test_basic.zig`.
 - Standard Lua test suite runner `run_testes.sh` now completes with `math ... PASS` and `0 failures` overall.

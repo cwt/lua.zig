@@ -450,4 +450,11 @@ Legend:
 - **Impact:** `math.lua` from the Lua test suite failed because `tonumber(tostring(minint))` returned `nil`, leading to an arithmetic/comparison failure. Hex literals with MSB=1 could not be parsed as integers.
 - **Fix:** Rewrote `parseInteger` to mirror the C reference's `l_str2int` logic: decimal bounds checks now use `max_last_d + is_neg_val` to correctly permit magnitude `9223372036854775808` only when the sign is negative. Hex string parsing now allows values to accumulate and wrap around on overflow (up to `0xffffffffffffffff`), cast to `i64` safely using `@bitCast` without any runtime casting panics.
 
+## BUG-049 — `tonumber` with custom base fails on strings with surrounding whitespace or hex prefix  [HIGH] ✅ FIXED
+- **Location:** `src/lib/baselib.zig` (`tonumber` function).
+- **Defect:** Custom base string parsing (when `base` argument is provided) was delegating directly to `std.fmt.parseInt` on the raw input string. `parseInt` does not trim whitespace and does not recognize the optional `0x`/`0X` prefix for base-16 strings, resulting in parsing failures.
+- **Impact:** `math.lua` failed with assertion failures on `assert(tonumber('  001010  ', 2) == 10)`.
+- **Fix:** Ported `b_str2int` from `lbaselib.c` to parse strings using arbitrary bases (2 to 36): it skips initial spaces, detects sign (+/-), maps digits, prevents invalid alphanumeric digits, and skips trailing spaces. It checks that the entire string was consumed.
+
+
 
