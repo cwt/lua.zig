@@ -32,6 +32,156 @@ fn tointerr(L: *lua.lua_State, o: lua.TValue) !lua.TValue {
     unreachable;
 }
 
+fn numMod(a: f64, b: f64) f64 {
+    var m = libm.getLibm().fmod(a, b);
+    if (if (m > 0) b < 0 else (m < 0 and b > 0)) {
+        m += b;
+    }
+    return m;
+}
+
+fn forlimit(L: *lua.lua_State, init: i64, lim: lua.TValue, p: *i64, step: i64) bool {
+    const min_f64 = @as(f64, -9223372036854775808.0);
+    const max_exclusive_f64 = @as(f64, 9223372036854775808.0);
+    
+    var converted = false;
+    var val: i64 = 0;
+    const num = toNumeric(lim);
+    if (num) |nv| {
+        switch (nv) {
+            .integer => |n| {
+                val = n;
+                converted = true;
+            },
+            .number => |n| {
+                const f = if (step < 0) @ceil(n) else @floor(n);
+                if (f >= min_f64 and f < max_exclusive_f64) {
+                    val = @as(i64, @intFromFloat(f));
+                    converted = true;
+                }
+            },
+            else => {},
+        }
+    }
+    if (converted) {
+        p.* = val;
+        return if (step > 0) init > val else init < val;
+    }
+    
+    var flim: f64 = 0.0;
+    if (num) |nv| {
+        flim = switch (nv) {
+            .integer => |n| @as(f64, @floatFromInt(n)),
+            .number => |n| n,
+            else => {
+                lua.luaG_runerror(L, "'for' limit must be a number") catch {};
+                return true;
+            },
+        };
+    } else {
+        lua.luaG_runerror(L, "'for' limit must be a number") catch {};
+        return true;
+    }
+    
+    if (0.0 < flim) {
+        if (step < 0) return true;
+        p.* = std.math.maxInt(i64);
+    } else {
+        if (step > 0) return true;
+        p.* = std.math.minInt(i64);
+    }
+    return false;
+}
+
+fn forprep(L: *lua.lua_State, ra_idx: usize) !bool {
+    const pinit = L.stack[ra_idx];
+    const plimit = L.stack[ra_idx + 1];
+    const pstep = L.stack[ra_idx + 2];
+    
+    if (pinit == .integer and pstep == .integer) {
+        const init = pinit.integer;
+        const step = pstep.integer;
+        var limit: i64 = 0;
+        if (step == 0) {
+            try lua.luaG_runerror(L, "'for' step is zero");
+        }
+        if (forlimit(L, init, plimit, &limit, step)) {
+            return true;
+        } else {
+            var count: u64 = 0;
+            if (step > 0) {
+                count = @as(u64, @bitCast(limit)) -% @as(u64, @bitCast(init));
+                if (step != 1) {
+                    count /= @as(u64, @bitCast(step));
+                }
+            } else {
+                count = @as(u64, @bitCast(init)) -% @as(u64, @bitCast(limit));
+                count /= @as(u64, @bitCast(-(step +% 1))) +% 1;
+            }
+            L.stack[ra_idx] = .{ .integer = @bitCast(count) };
+            L.stack[ra_idx + 1] = .{ .integer = step };
+            L.stack[ra_idx + 2] = .{ .integer = init };
+        }
+    } else {
+        var init: f64 = 0.0;
+        var limit: f64 = 0.0;
+        var step: f64 = 0.0;
+        
+        const num_limit = toNumeric(plimit);
+        if (num_limit == null) {
+            try lua.luaG_runerror(L, "'for' limit must be a number");
+        }
+        limit = switch (num_limit.?) {
+            .integer => |n| @as(f64, @floatFromInt(n)),
+            .number => |n| n,
+            else => unreachable,
+        };
+        
+        const num_step = toNumeric(pstep);
+        if (num_step == null) {
+            try lua.luaG_runerror(L, "'for' step must be a number");
+        }
+        step = switch (num_step.?) {
+            .integer => |n| @as(f64, @floatFromInt(n)),
+            .number => |n| n,
+            else => unreachable,
+        };
+        if (step == 0.0) {
+            try lua.luaG_runerror(L, "'for' step is zero");
+        }
+        
+        const num_init = toNumeric(pinit);
+        if (num_init == null) {
+            try lua.luaG_runerror(L, "'for' initial value must be a number");
+        }
+        init = switch (num_init.?) {
+            .integer => |n| @as(f64, @floatFromInt(n)),
+            .number => |n| n,
+            else => unreachable,
+        };
+        
+        if (if (0.0 < step) limit < init else init < limit) {
+            return true;
+        } else {
+            L.stack[ra_idx] = .{ .number = limit };
+            L.stack[ra_idx + 1] = .{ .number = step };
+            L.stack[ra_idx + 2] = .{ .number = init };
+        }
+    }
+    return false;
+}
+
+fn floatforloop(ra_idx: usize, L: *lua.lua_State) bool {
+    const step = L.stack[ra_idx + 1].number;
+    const limit = L.stack[ra_idx].number;
+    const idx = L.stack[ra_idx + 2].number + step;
+    if (if (0.0 < step) idx <= limit else limit <= idx) {
+        L.stack[ra_idx + 2] = .{ .number = idx };
+        return true;
+    }
+    return false;
+}
+
 /// Compute the result of a binary arithmetic operation on two numeric values.
 /// Errors with "attempt to divide by zero" on integer/float // or % by zero,
 /// mirroring the reference (which throws rather than returning 0).
@@ -49,7 +199,7 @@ fn arithCompute(L: *lua.lua_State, op: i32, n1: lua.TValue, n2: lua.TValue) !lua
                 const ib = n1.integer;
                 const ic = n2.integer;
                 const r: i64 = if (ic == -1) 0 else @rem(ib, ic);
-                break :blk lua.TValue{ .integer = r };
+                break :blk lua.TValue{ .integer = if (r != 0 and (r ^ ic) < 0) r + ic else r };
             },
             lua.LUA_OPPOW => .{ .number = libm.getLibm().pow(@as(f64, @floatFromInt(n1.integer)), @as(f64, @floatFromInt(n2.integer))) },
             lua.LUA_OPDIV => .{ .number = @as(f64, @floatFromInt(n1.integer)) / @as(f64, @floatFromInt(n2.integer)) },
@@ -64,7 +214,7 @@ fn arithCompute(L: *lua.lua_State, op: i32, n1: lua.TValue, n2: lua.TValue) !lua
             lua.LUA_OPBOR => .{ .integer = n1.integer | n2.integer },
             lua.LUA_OPBXOR => .{ .integer = n1.integer ^ n2.integer },
             lua.LUA_OPSHL => .{ .integer = lua.luaV_shift(n1.integer, n2.integer) },
-            lua.LUA_OPSHR => .{ .integer = lua.luaV_shift(n1.integer, -n2.integer) },
+            lua.LUA_OPSHR => .{ .integer = lua.luaV_shift(n1.integer, -%n2.integer) },
             else => unreachable,
         };
     }
@@ -74,7 +224,7 @@ fn arithCompute(L: *lua.lua_State, op: i32, n1: lua.TValue, n2: lua.TValue) !lua
         lua.LUA_OPADD => .{ .number = f1 + f2 },
         lua.LUA_OPSUB => .{ .number = f1 - f2 },
         lua.LUA_OPMUL => .{ .number = f1 * f2 },
-        lua.LUA_OPMOD => .{ .number = f1 - @floor(f1 / f2) * f2 },
+        lua.LUA_OPMOD => .{ .number = numMod(f1, f2) },
         lua.LUA_OPPOW => .{ .number = libm.getLibm().pow(f1, f2) },
         lua.LUA_OPDIV => .{ .number = f1 / f2 },
         lua.LUA_OPIDIV => .{ .number = @floor(f1 / f2) },
@@ -101,7 +251,7 @@ fn arithCompute(L: *lua.lua_State, op: i32, n1: lua.TValue, n2: lua.TValue) !lua
         lua.LUA_OPSHR => blk: {
             const ib1 = n1.toIntegerExactOpt() orelse return tointerr(L, n1);
             const ic1 = n2.toIntegerExactOpt() orelse return tointerr(L, n2);
-            break :blk .{ .integer = lua.luaV_shift(ib1, -ic1) };
+            break :blk .{ .integer = lua.luaV_shift(ib1, -%ic1) };
         },
         else => unreachable,
     };
@@ -465,6 +615,12 @@ pub fn run(L: *lua.lua_State, active_ci: *lua.CallInfo) anyerror!void {
 
 
     while (ci.savedpc < code.len) {
+        if (L.l_G.?.gc_running and L.l_G.?.gc_count > L.l_G.?.gc_threshold) {
+            const old_top = L.top;
+            L.top = ci.top;
+            try lua.luaC_collectgarbage(L);
+            L.top = old_top;
+        }
         const instruction: Instruction = code[ci.savedpc];
         const op = GET_OPCODE(instruction);
         ci.savedpc += 1;
@@ -690,12 +846,12 @@ pub fn run(L: *lua.lua_State, active_ci: *lua.CallInfo) anyerror!void {
                   if (rb == .integer and rc == .integer) {
                       if (rc.integer == 0) return lua.luaG_runerror(L, "attempt to divide by zero");
                       const r: i64 = if (rc.integer == -1) 0 else @rem(rb.integer, rc.integer);
-                      L.stack[ra] = .{ .integer = r };
+                      L.stack[ra] = .{ .integer = if (r != 0 and (r ^ rc.integer) < 0) r + rc.integer else r };
                       ci.savedpc += 1;
                   } else if (rb.isNumberValue() and rc.isNumberValue()) {
                      const fb = rb.toFloat();
                      const fc = rc.toFloat();
-                     L.stack[ra] = .{ .number = fb - @floor(fb / fc) * fc };
+                     L.stack[ra] = .{ .number = numMod(fb, fc) };
                      ci.savedpc += 1;
                  }
             },
@@ -791,7 +947,7 @@ pub fn run(L: *lua.lua_State, active_ci: *lua.CallInfo) anyerror!void {
                 const sc = GETARG_sC(instruction);
                 if (rb.isNumberValue()) {
                     const ib = rb.toIntegerExactOpt() orelse return lua.luaG_tointerror(L, rb);
-                    L.stack[ra] = .{ .integer = lua.luaV_shift(ib, -sc) };
+                    L.stack[ra] = .{ .integer = lua.luaV_shift(ib, -%sc) };
                     ci.savedpc += 1;
                 }
             },
@@ -853,12 +1009,12 @@ pub fn run(L: *lua.lua_State, active_ci: *lua.CallInfo) anyerror!void {
                 if (rb == .integer and rc == .integer) {
                     if (rc.integer == 0) return lua.luaG_runerror(L, "attempt to divide by zero");
                     const r: i64 = if (rc.integer == -1) 0 else @rem(rb.integer, rc.integer);
-                    L.stack[ra] = .{ .integer = r };
+                    L.stack[ra] = .{ .integer = if (r != 0 and (r ^ rc.integer) < 0) r + rc.integer else r };
                     ci.savedpc += 1;
                 } else if (rb.isNumberValue() and rc.isNumberValue()) {
                     const fb = rb.toFloat();
                     const fc = rc.toFloat();
-                    L.stack[ra] = .{ .number = fb - @floor(fb / fc) * fc };
+                    L.stack[ra] = .{ .number = numMod(fb, fc) };
                     ci.savedpc += 1;
                 } else {
                     try luaV_doarith(L, lua.LUA_OPMOD, ra, rb, rc);
@@ -984,7 +1140,7 @@ pub fn run(L: *lua.lua_State, active_ci: *lua.CallInfo) anyerror!void {
                 if (rb.isNumberValue() and rc.isNumberValue()) {
                     const ib = rb.toIntegerExactOpt() orelse return lua.luaG_tointerror(L, rb);
                     const ic = rc.toIntegerExactOpt() orelse return lua.luaG_tointerror(L, rc);
-                    L.stack[ra] = .{ .integer = lua.luaV_shift(ib, -ic) };
+                    L.stack[ra] = .{ .integer = lua.luaV_shift(ib, -%ic) };
                     ci.savedpc += 1;
                 } else {
                     try luaV_doarith(L, lua.LUA_OPSHR, ra, rb, rc);
@@ -1105,9 +1261,18 @@ pub fn run(L: *lua.lua_State, active_ci: *lua.CallInfo) anyerror!void {
             },
             .CLOSE => {
                 const ra_idx = ci.base + @as(usize, @intCast(GETARG_A(instruction)));
-                lua.closeupvals(L, ra_idx);
+                try lua.closeupvals(L, ra_idx, null);
             },
-            .TBC => {},
+            .TBC => {
+                const ra_idx = ci.base + @as(usize, @intCast(GETARG_A(instruction)));
+                ci.savedpc -= 1;
+                try lua.checkclosemth(L, ra_idx);
+                ci.savedpc += 1;
+                const v = L.stack[ra_idx];
+                if (v != .nil and (v != .boolean or v.boolean != false)) {
+                    try L.tbclist.append(L.allocator, ra_idx);
+                }
+            },
             .JMP => {
                 const sJ = GETARG_sJ(instruction);
                 ci.savedpc = @intCast(@as(i64, @intCast(ci.savedpc)) + sJ);
@@ -1238,7 +1403,7 @@ pub fn run(L: *lua.lua_State, active_ci: *lua.CallInfo) anyerror!void {
                         const n = try cc.f(L);
                         const num_returned = @as(usize, @intCast(n));
                         const first_result = L.top - num_returned;
-                        lua.poscall(L, ci, first_result, num_returned);
+                        try lua.poscall(L, ci, first_result, num_returned);
                         const old_ci = ci;
                         if (old_ci == active_ci) {
                             L.ci = old_ci.previous;
@@ -1259,7 +1424,7 @@ pub fn run(L: *lua.lua_State, active_ci: *lua.CallInfo) anyerror!void {
                         }
                     },
                     .lua => |lc| {
-                        lua.closeupvals(L, ci.base);
+                        try lua.closeupvals(L, ci.base, null);
                         const count = @as(usize, @intCast(b));
                         // Correct 'ci.func' for PF_VAHID functions: buildhiddenargs
                         // relocated the frame, so restore it before reusing the ci.
@@ -1312,7 +1477,7 @@ pub fn run(L: *lua.lua_State, active_ci: *lua.CallInfo) anyerror!void {
                     ci.base = ci.func + 1;
                 }
                 const old_ci = ci;
-                lua.poscall(L, old_ci, ra_idx, @intCast(n));
+                try lua.poscall(L, old_ci, ra_idx, @intCast(n));
                 if (old_ci == active_ci) {
                     L.ci = old_ci.previous;
                     lua.freeCallInfo(L, old_ci);
@@ -1339,7 +1504,7 @@ pub fn run(L: *lua.lua_State, active_ci: *lua.CallInfo) anyerror!void {
                     ci.base = ci.func + 1;
                 }
                 const old_ci = ci;
-                lua.poscall(L, old_ci, ra_idx, 0);
+                try lua.poscall(L, old_ci, ra_idx, 0);
                 if (old_ci == active_ci) {
                     L.ci = old_ci.previous;
                     lua.freeCallInfo(L, old_ci);
@@ -1366,7 +1531,7 @@ pub fn run(L: *lua.lua_State, active_ci: *lua.CallInfo) anyerror!void {
                     ci.base = ci.func + 1;
                 }
                 const old_ci = ci;
-                lua.poscall(L, old_ci, ra_idx, 1);
+                try lua.poscall(L, old_ci, ra_idx, 1);
                 if (old_ci == active_ci) {
                     L.ci = old_ci.previous;
                     lua.freeCallInfo(L, old_ci);
@@ -1387,32 +1552,25 @@ pub fn run(L: *lua.lua_State, active_ci: *lua.CallInfo) anyerror!void {
             },
             .FORPREP => {
                 const ra_idx = ci.base + @as(usize, @intCast(GETARG_A(instruction)));
-                if (!L.stack[ra_idx].isNumberValue() or !L.stack[ra_idx + 1].isNumberValue() or !L.stack[ra_idx + 2].isNumberValue()) {
-                    return error.RuntimeError;
-                }
-                const init_val = L.stack[ra_idx].toFloat();
-                const limit_val = L.stack[ra_idx + 1].toFloat();
-                const step_val = L.stack[ra_idx + 2].toFloat();
-                if (step_val == 0.0) return error.RuntimeError;
-                if ((step_val > 0.0 and limit_val < init_val) or (step_val < 0.0 and init_val < limit_val)) {
+                if (try forprep(L, ra_idx)) {
                     ci.savedpc += @as(usize, @intCast(GETARG_Bx(instruction) + 1));
-                } else {
-                    L.stack[ra_idx] = .{ .number = limit_val };
-                    L.stack[ra_idx + 1] = .{ .number = step_val };
-                    L.stack[ra_idx + 2] = .{ .number = init_val };
                 }
             },
             .FORLOOP => {
                 const ra_idx = ci.base + @as(usize, @intCast(GETARG_A(instruction)));
-                if (!L.stack[ra_idx].isNumberValue() or !L.stack[ra_idx + 1].isNumberValue() or !L.stack[ra_idx + 2].isNumberValue()) {
-                    return error.RuntimeError;
-                }
-                const step_val = L.stack[ra_idx + 1].toFloat();
-                const limit_val = L.stack[ra_idx].toFloat();
-                const idx = L.stack[ra_idx + 2].toFloat() + step_val;
-                if ((step_val > 0.0 and idx <= limit_val) or (step_val < 0.0 and limit_val <= idx)) {
-                    L.stack[ra_idx + 2] = .{ .number = idx };
-                    ci.savedpc -= @as(usize, @intCast(GETARG_Bx(instruction)));
+                if (L.stack[ra_idx + 2] == .integer) {
+                    const count = @as(u64, @bitCast(L.stack[ra_idx].integer));
+                    if (count > 0) {
+                        const step = L.stack[ra_idx + 1].integer;
+                        const idx = L.stack[ra_idx + 2].integer;
+                        L.stack[ra_idx] = .{ .integer = @bitCast(count - 1) };
+                        L.stack[ra_idx + 2] = .{ .integer = idx +% step };
+                        ci.savedpc -= @as(usize, @intCast(GETARG_Bx(instruction)));
+                    }
+                } else {
+                    if (floatforloop(ra_idx, L)) {
+                        ci.savedpc -= @as(usize, @intCast(GETARG_Bx(instruction)));
+                    }
                 }
             },
             .TFORPREP => {
@@ -1420,6 +1578,9 @@ pub fn run(L: *lua.lua_State, active_ci: *lua.CallInfo) anyerror!void {
                 const temp = L.stack[ra_idx + 2];
                 L.stack[ra_idx + 2] = L.stack[ra_idx + 3];
                 L.stack[ra_idx + 3] = temp;
+                if (L.stack[ra_idx + 2] != .nil and (L.stack[ra_idx + 2] != .boolean or L.stack[ra_idx + 2].boolean)) {
+                    try L.tbclist.append(L.allocator, ra_idx + 2);
+                }
                 ci.savedpc = @intCast(@as(i64, @intCast(ci.savedpc)) + GETARG_Bx(instruction));
             },
             .TFORCALL => {

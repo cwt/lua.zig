@@ -223,6 +223,31 @@ pub fn luaL_checkstack(L: *lua.lua_State, n: i32, msg: []const u8) !void {
     }
 }
 
+extern "c" fn snprintf(buf: [*]u8, size: usize, format: [*]const u8, ...) c_int;
+extern "c" fn strtod(nptr: [*]const u8, endptr: ?*[*]const u8) f64;
+extern "c" fn strspn(str1: [*]const u8, str2: [*]const u8) usize;
+
+fn tostringbuffFloat(n: f64, buff: *[128]u8) usize {
+    var len = snprintf(buff, 128, "%.15g", n);
+    if (len < 0) return 0;
+    buff[@intCast(len)] = 0;
+    const check = strtod(buff, null);
+    if (check != n) {
+        len = snprintf(buff, 128, "%.17g", n);
+        if (len < 0) return 0;
+        buff[@intCast(len)] = 0;
+    }
+    const idx = strspn(buff, "-0123456789");
+    if (buff[idx] == 0) {
+        const ulen: usize = @intCast(len);
+        buff[ulen] = '.';
+        buff[ulen + 1] = '0';
+        buff[ulen + 2] = 0;
+        return ulen + 2;
+    }
+    return @intCast(len);
+}
+
 pub fn luaL_tolstring(L: *lua.lua_State, idx: i32, len: ?*usize) ?[]const u8 {
     const actual_type = lua.lua_type(L, idx);
     switch (actual_type) {
@@ -239,18 +264,11 @@ pub fn luaL_tolstring(L: *lua.lua_State, idx: i32, len: ?*usize) ?[]const u8 {
                 if (lua.lua_tointeger(L, idx)) |iv| {
                     const s = std.fmt.bufPrint(&buf, "{d}", .{iv}) catch return null;
                     _ = lua.lua_pushstring(L, s);
-                } else {
-                    // Integral value outside the i64 range (e.g. 2^100): there is
-                    // no integer TValue type in this f64-only port, so format it as
-                    // a (scientific) float instead of collapsing to 0.
-                    const fv = lua.lua_tonumber(L, idx) orelse 0.0;
-                    const s = std.fmt.bufPrint(&buf, "{e}", .{fv}) catch return null;
-                    _ = lua.lua_pushstring(L, s);
                 }
             } else {
                 const fv = lua.lua_tonumber(L, idx) orelse 0.0;
-                const s = std.fmt.bufPrint(&buf, "{d}", .{fv}) catch return null;
-                _ = lua.lua_pushstring(L, s);
+                const slen = tostringbuffFloat(fv, &buf);
+                _ = lua.lua_pushlstring(L, &buf, slen);
             }
             return lua.lua_tolstring(L, -1, len);
         },

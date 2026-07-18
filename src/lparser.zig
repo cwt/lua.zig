@@ -574,6 +574,7 @@ fn check_readonly(ls: *llex.LexState, e: *expdesc) !void {
         .VVARGIND => {
             needvatab(fs.f);
             e.k = .VINDEXED;
+            if (e.u.ind.ro != 0) varname = fs.k.items[@intCast(e.u.ind.keystr)].string;
         },
         .VINDEXUP, .VINDEXSTR, .VINDEXED => {
             if (e.u.ind.ro != 0) varname = fs.k.items[@intCast(e.u.ind.keystr)].string;

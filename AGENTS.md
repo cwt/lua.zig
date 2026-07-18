@@ -145,7 +145,7 @@ are available as a Git subrepo.
   have all been removed.
 - **juicy-main entry point** is in `src/luazig.zig` using `std.process.Init`.
 - **`build.zig`** builds exe (`luazig`) + library (`lua`). Test step works.
-- **92+ passing tests** in `tests/test_basic.zig` covering nil/boolean/number/integer/
+- **125/127 passing tests** in `tests/test_basic.zig` covering nil/boolean/number/integer/
    string/table type checks, stack push/pop round-trip, string interning,
    table setfield/getfield, seti/geti + length, empty/remove length, hash-part
    string keys, `next` traversal, stack-key gettable/settable, bytecode loader,
@@ -183,8 +183,38 @@ are available as a Git subrepo.
 - **Phase D fix — VM vararg execution (BUG-036 FIXED, 2026-07-13).**
    Ported `luaT_adjustvarargs`/`luaT_getvarargs`/`luaT_getvararg` into `src/ltm.zig` and wired `OP_VARARGPREP`/`OP_VARARG`/`OP_GETVARG` in `src/lvm.zig`. Vararg functions (`function f(a, ...) ... end`, `f(...)`, `select`, `{...}`) now execute correctly. Added `lua_Proto.flag` and `CallInfo.nextraargs`. The hidden-vararg frame is relocated by `buildhiddenargs` (matching the C reference) and restored on every return path: `.RETURN`, `.RETURN0`, `.RETURN1`, and `.TAILCALL` (`.lua`/`.c`) now correct `ci.func`/`ci.base`, and `luaK_finish` sets `SETARG_C(pc, numParams + 1)` on the `RETURN0`/`RETURN1` → `RETURN` conversion for `PF_VAHID` functions. Verified against the Lua 5.5.1 reference binary. **92+ tests pass.**
 
+- **Phase H.11 — Upstream test suite conformance (in progress, 2026-07-19).**
+   Systematic debugging against `lua/testes/*.lua` upstream test files. The `locals.lua`
+   test file progresses to line 555. Key fixes in this session:
+   - **`luaG_errormsg` + `L.errfunc` field:** Implemented the reference `luaG_errormsg`
+     error-handler dispatch. `lua_pcallk` now saves/restores `L.errfunc` (matching
+     `luaD_pcall` in the C reference). `lua_error` delegates to `luaG_errormsg`.
+     Error handler (e.g. `debug.traceback` in `xpcall`) is now invoked at the point
+     of error (inside the failing frame) rather than after CI unwinding — this gives
+     the handler a correct stack trace with all intermediate frames visible.
+   - **`checkclosemth` validation:** `OP_TBC` in the VM and `lua_toclose` now validate
+     that the value has a `__close` metamethod (port of `checkclosemth` from
+     `lua/lfunc.c`). Non-closable values produce the reference error message
+     `"variable '<name>' got a non-closable value"`.
+   - **`error_fn` concat fix:** `baselib.error_fn` now calls `lua_pushvalue(L, 1)`
+     before `lua_concat(L, 2)` to correctly prepend `luaL_where` location to the
+     original error string (previously it was concatenating the wrong stack values).
+   - **Metamethod name stripping:** `funcnamefromcode` now strips the leading `__`
+     from metamethod names in traceback output (e.g. `"in metamethod 'close'"`
+     instead of `"in metamethod '__close'"`).
+   - **CallInfo unwinding in `luaT_callTM1`/`luaT_callTM2`:** On error these helpers
+     now properly unwind the CallInfo chain back to `old_ci`, preventing stale
+     frames from corrupting `debug.getinfo` stack inspection.
+   - **TBC scope return-value clobbering fix:** `poscall` sets `L.top` above return
+     values before calling `closeupvals`, preventing `__close` metamethods from
+     overwriting active return values.
+   - **GC-anchored errors during TBC unwinding:** `closeupvals` keeps the active
+     error value on the Lua stack (not just in a Zig local) so the GC cannot
+     reclaim it when a `__close` metamethod triggers `collectgarbage()`.
+
 ### What is NOT done (future phases)
-Phase H remaining items — see §8 and the Phase H section below.
+- Upstream test suite files beyond `locals.lua` line 555 (see §8).
+- `locals.lua` still fails at line 555 (non-closable value error with metamethod removal at runtime).
 
 ### Phase H partial status
 
@@ -339,10 +369,19 @@ Phases A–F are **complete**: the port runs precompiled Lua 5.5.1 bytecode thro
 
 ## 8. What to work on next
 
-All phases A–G are **done** (VM, runtime, compiler, all 10 standard libraries, and
-H.4–H.6). 117/117 tests passing, zero leaks. The port runs Lua source text directly.
+All phases A–G and H.1–H.10 are **done**. 125/127 unit tests passing.
+The port runs Lua source text directly.
 
-The next work is **Phase H — Drop-in replacement gap closure**. See the Phase H section below for the full breakdown.
+The current work is **Phase H.11 — Upstream test suite conformance**:
+- `locals.lua` fails at line 555 — non-closable value test where a `__close` metamethod
+  is removed at runtime (`getmetatable(xyz).__close = nil`). The `checkclosemth` validation
+  currently only runs at `OP_TBC` time (variable declaration); it needs to also run at
+  scope-exit time (when the `__close` metamethod is actually invoked), matching the C
+  reference's `prepcallclosemth` behavior.
+- Other upstream test files (`attrib.lua`, `big.lua`, `calls.lua`, `constructs.lua`,
+  `db.lua`, `errors.lua`, `events.lua`, `files.lua`, `gengc.lua`, `goto.lua`,
+  `nextvar.lua`, `pm.lua`, `sort.lua`, `tpack.lua`, `utf8.lua`) need verification
+  once `locals.lua` fully passes.
 
 ---
 
@@ -350,7 +389,7 @@ The next work is **Phase H — Drop-in replacement gap closure**. See the Phase 
 
 Phases A–G built a working, self-hosting Lua interpreter. Phase H closes the gap between "working" and "drop-in replacement for Lua 5.5.1". The gaps were identified by a systematic audit comparing `luazig` against `lua/lua.h`, `lua/lauxlib.h`, and the standard library C sources.
 
-**Status:** Complete. H.1–H.10 are all done (2026-07-14). Phase H is complete.
+**Status:** H.1–H.10 complete (2026-07-14). H.11 (upstream test conformance) in progress.
 
 **Scope (portability, API completeness, stub elimination):**
 
@@ -538,5 +577,23 @@ Each H.x sub-phase must compile, pass all existing tests, and add focused tests 
 
 **§0.1 gate applies to all Phase H work.**
 
+### H.11 — Upstream test suite conformance (IN PROGRESS, 2026-07-19)
 
+Systematic debugging of the upstream `lua/testes/*.lua` test suite.
 
+**`locals.lua` progress:** line 555 / 1228 (~45%). Key fixes applied:
+
+| Fix | Files | Description |
+|-----|-------|-------------|
+| `luaG_errormsg` + `L.errfunc` | `src/lua.zig` | Error handler dispatch at point of error; `lua_pcallk` saves/restores `L.errfunc` |
+| `checkclosemth` | `src/lua.zig`, `src/lvm.zig` | TBC validation — non-closable values produce reference error message |
+| `error_fn` concat | `src/lib/baselib.zig` | Added `lua_pushvalue` before `lua_concat` for correct location prepending |
+| Metamethod name strip | `src/lua.zig` | `funcnamefromcode` strips `__` prefix → `"in metamethod 'close'"` |
+| CallInfo unwind in TM | `src/ltm.zig` | `luaT_callTM1`/`luaT_callTM2` unwind CI chain on error |
+| TBC return clobber | `src/lua.zig` | `poscall` sets `L.top` above return values before `closeupvals` |
+| GC-anchored TBC errors | `src/lua.zig` | Error value kept on Lua stack during `closeupvals` |
+
+**Next blocker:** line 555 — runtime removal of `__close` metamethod. The `close_one_slot`
+path needs to detect missing `__close` at scope-exit time (not just at `OP_TBC` time).
+
+**Other test files:** not yet started. Will be debugged in order after `locals.lua` passes.

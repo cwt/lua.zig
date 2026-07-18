@@ -701,6 +701,7 @@ pub fn luaK_storevar(fs: *FuncState, vp: *expdesc, ex: *expdesc) void {
         },
         .VVARGIND => {
             lparser.needvatab(fs.f);
+            codeABRK(fs, .SETTABLE, vp.u.ind.t, vp.u.ind.idx, ex);
         },
         .VINDEXED => {
             codeABRK(fs, .SETTABLE, vp.u.ind.t, vp.u.ind.idx, ex);

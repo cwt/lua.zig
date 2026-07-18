@@ -138,25 +138,23 @@ fn getnextfilename(path: *[]u8) ?[]const u8 {
 }
 
 fn pusherrornotfound(L: *lua.lua_State, path_str: []const u8) void {
-    // Ensure enough stack space for iterating path segments
-    if (lua.lua_checkstack(L, 30) == 0) {
-        _ = lua.lua_pushstring(L, "no file");
-        return;
-    }
+    var list = std.ArrayListUnmanaged(u8).empty;
+    defer list.deinit(L.allocator);
     var parts = std.mem.splitScalar(u8, path_str, luaconf.LUA_PATH_SEP);
     var first = true;
     while (parts.next()) |part| {
         if (first) {
-            _ = lua.lua_pushstring(L, "no file '");
-            _ = lua.lua_pushlstring(L, part, part.len);
-            _ = lua.lua_pushstring(L, "'");
+            list.appendSlice(L.allocator, "no file '") catch return;
+            list.appendSlice(L.allocator, part) catch return;
+            list.appendSlice(L.allocator, "'") catch return;
             first = false;
         } else {
-            _ = lua.lua_pushstring(L, "'\n\tno file '");
-            _ = lua.lua_pushlstring(L, part, part.len);
-            _ = lua.lua_pushstring(L, "'");
+            list.appendSlice(L.allocator, "\n\tno file '") catch return;
+            list.appendSlice(L.allocator, part) catch return;
+            list.appendSlice(L.allocator, "'") catch return;
         }
     }
+    _ = lua.lua_pushlstring(L, list.items, list.items.len);
 }
 
 fn searchpath(L: *lua.lua_State, name: []const u8, path_str: []const u8, sep: []const u8, dirsep: []const u8) ?[]const u8 {
@@ -336,24 +334,40 @@ fn findloader(L: *lua.lua_State, name: []const u8) !void {
     if (lua.lua_type(L, -1) != lua.LUA_TTABLE) {
         return lauxlib.luaL_error(L, "'package.searchers' must be a table");
     }
+    const searchers_idx = lua.lua_gettop(L);
+
+    var msg = std.ArrayListUnmanaged(u8).empty;
+    defer msg.deinit(L.allocator);
+    msg.appendSlice(L.allocator, "\n\t") catch return lauxlib.luaL_error(L, "out of memory");
 
     var i: i32 = 1;
     while (true) : (i += 1) {
-        _ = lua.lua_rawgeti(L, -1, @intCast(i));
+        _ = lua.lua_rawgeti(L, searchers_idx, @intCast(i));
         if (lua.lua_type(L, -1) == lua.LUA_TNIL) {
             lua.lua_pop(L, 1);
-            const msg = std.fmt.allocPrint(L.allocator, "module '{s}' not found", .{name}) catch {
-                return lauxlib.luaL_error(L, "module not found");
+            if (msg.items.len >= 2) {
+                msg.shrinkRetainingCapacity(msg.items.len - 2);
+            }
+            const final_err = std.fmt.allocPrint(L.allocator, "module '{s}' not found:{s}", .{ name, msg.items }) catch {
+                return lauxlib.luaL_error(L, "out of memory");
             };
-            defer L.allocator.free(msg);
-            _ = lua.lua_pushlstring(L, msg, msg.len);
-            return lauxlib.luaL_error(L, msg);
+            defer L.allocator.free(final_err);
+            _ = lua.lua_pushlstring(L, final_err, final_err.len);
+            return lauxlib.luaL_error(L, final_err);
         }
         _ = lua.lua_pushstring(L, name);
         try lua.lua_call(L, 1, 2);
-        if (lua.lua_type(L, -2) == lua.LUA_TFUNCTION) return;
-        // Not a loader; pop both results and try the next searcher.
-        lua.lua_pop(L, 2);
+        if (lua.lua_type(L, -2) == lua.LUA_TFUNCTION) {
+            return;
+        } else if (lua.lua_isstring(L, -2) != 0) {
+            lua.lua_pop(L, 1);
+            const searcher_err = lua.lua_tostring(L, -1).?;
+            msg.appendSlice(L.allocator, searcher_err) catch return lauxlib.luaL_error(L, "out of memory");
+            msg.appendSlice(L.allocator, "\n\t") catch return lauxlib.luaL_error(L, "out of memory");
+            lua.lua_pop(L, 1);
+        } else {
+            lua.lua_pop(L, 2);
+        }
     }
 }
 

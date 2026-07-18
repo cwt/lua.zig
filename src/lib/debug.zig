@@ -405,22 +405,36 @@ fn db_setupvalue(L: *lua.lua_State) !i32 {
     return auxupvalue(L, false);
 }
 
+fn checkupval(L: *lua.lua_State, argf: i32, argnup: i32, check_bounds: bool) !?*anyopaque {
+    const n = @as(i32, @intCast(try lauxlib.luaL_checkinteger(L, argnup)));
+    try lauxlib.luaL_checktype(L, argf, lua.LUA_TFUNCTION);
+    const id = lua.lua_upvalueid(L, argf, n);
+    if (check_bounds and id == null) {
+        return lauxlib.luaL_argerror(L, argnup, "invalid upvalue index");
+    }
+    return id;
+}
+
 fn db_upvalueid(L: *lua.lua_State) !i32 {
-    try lauxlib.luaL_checktype(L, 1, lua.LUA_TFUNCTION);
-    const n = @as(i32, @intCast(try lauxlib.luaL_checkinteger(L, 2)));
-    if (lua.lua_upvalueid(L, 1, n)) |id| {
+    if (try checkupval(L, 1, 2, false)) |id| {
         lua.lua_pushlightuserdata(L, id);
     } else {
-        lua.lua_pushnil(L);
+        lauxlib.luaL_pushfail(L);
     }
     return 1;
 }
 
 fn db_upvaluejoin(L: *lua.lua_State) !i32 {
-    try lauxlib.luaL_checktype(L, 1, lua.LUA_TFUNCTION);
     const n1 = @as(i32, @intCast(try lauxlib.luaL_checkinteger(L, 2)));
-    try lauxlib.luaL_checktype(L, 3, lua.LUA_TFUNCTION);
     const n2 = @as(i32, @intCast(try lauxlib.luaL_checkinteger(L, 4)));
+    _ = try checkupval(L, 1, 2, true);
+    _ = try checkupval(L, 3, 4, true);
+    if (lua.lua_iscfunction(L, 1) != 0) {
+        return lauxlib.luaL_argerror(L, 1, "Lua function expected");
+    }
+    if (lua.lua_iscfunction(L, 3) != 0) {
+        return lauxlib.luaL_argerror(L, 3, "Lua function expected");
+    }
     lua.lua_upvaluejoin(L, 1, n1, 3, n2);
     return 0;
 }

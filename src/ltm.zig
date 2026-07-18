@@ -86,12 +86,7 @@ pub fn luaT_gettmbyobj(L: *lua.lua_State, o: lua.TValue, event: TMS) lua.TValue 
 }
 
 pub fn savestate(L: *lua.lua_State) void {
-    if (L.ci) |ci| {
-        const val = L.stack[ci.func];
-        if (val == .function and val.function != null and val.function.?.* == .lua) {
-            L.top = ci.top;
-        }
-    }
+    _ = L;
 }
 
 pub fn luaD_call(L: *lua.lua_State, func_idx: usize, nresults: i32) !void {
@@ -110,6 +105,61 @@ pub fn luaT_callTM(L: *lua.lua_State, f: lua.TValue, p1: *const lua.TValue, p2: 
     L.stack[old_top + 3] = p3.*;
     L.top = old_top + 4;
     try luaD_call(L, old_top, 0);
+    L.top = old_top;
+}
+
+pub fn luaT_callTM1(L: *lua.lua_State, f: lua.TValue, p1: *const lua.TValue) !void {
+    savestate(L);
+    if (lua.lua_checkstack(L, 2) == 0) return error.OutOfMemory;
+    const old_top = L.top;
+    const old_ci = L.ci;
+    L.stack[old_top] = f;
+    L.stack[old_top + 1] = p1.*;
+    L.top = old_top + 2;
+    luaD_call(L, old_top, 0) catch |e| {
+        var curr = L.ci;
+        while (curr) |c| {
+            if (c == old_ci) break;
+            const prev = c.previous;
+            if (c != &L.base_ci) {
+                L.allocator.destroy(c);
+            }
+            curr = prev;
+        }
+        L.ci = old_ci;
+        if (old_ci) |prev| {
+            prev.next = null;
+        }
+        return e;
+    };
+    L.top = old_top;
+}
+
+pub fn luaT_callTM2(L: *lua.lua_State, f: lua.TValue, p1: *const lua.TValue, p2: *const lua.TValue) !void {
+    savestate(L);
+    if (lua.lua_checkstack(L, 3) == 0) return error.OutOfMemory;
+    const old_top = L.top;
+    const old_ci = L.ci;
+    L.stack[old_top] = f;
+    L.stack[old_top + 1] = p1.*;
+    L.stack[old_top + 2] = p2.*;
+    L.top = old_top + 3;
+    luaD_call(L, old_top, 0) catch |e| {
+        var curr = L.ci;
+        while (curr) |c| {
+            if (c == old_ci) break;
+            const prev = c.previous;
+            if (c != &L.base_ci) {
+                L.allocator.destroy(c);
+            }
+            curr = prev;
+        }
+        L.ci = old_ci;
+        if (old_ci) |prev| {
+            prev.next = null;
+        }
+        return e;
+    };
     L.top = old_top;
 }
 
@@ -410,7 +460,14 @@ pub inline fn luaV_settable(L: *lua.lua_State, t: lua.TValue, key: lua.TValue, v
     if (t == .table) {
         if (t.table) |tbl| {
             if (tbl.metatable == null) {
-                try ltable.set(tbl, key, val);
+                ltable.set(tbl, key, val) catch |err| {
+                    if (err == error.TableIndexIsNil) {
+                        try lua.luaG_runerror(L, "table index is nil");
+                    } else if (err == error.TableIndexIsNaN) {
+                        try lua.luaG_runerror(L, "table index is NaN");
+                    }
+                    return err;
+                };
                 return;
             }
         } else {
@@ -426,14 +483,28 @@ pub inline fn luaV_settable(L: *lua.lua_State, t: lua.TValue, key: lua.TValue, v
             const existing = ltable.get(tbl, key);
             if (existing != .nil) {
                 // Key already present: write directly (raw), no __newindex.
-                try ltable.set(tbl, key, val);
+                ltable.set(tbl, key, val) catch |err| {
+                    if (err == error.TableIndexIsNil) {
+                        try lua.luaG_runerror(L, "table index is nil");
+                    } else if (err == error.TableIndexIsNaN) {
+                        try lua.luaG_runerror(L, "table index is NaN");
+                    }
+                    return err;
+                };
                 return;
             }
             // Key absent — look for __newindex
             const tm = luaT_gettmbyobj(L, current, .NEWINDEX);
             if (tm == .nil) {
                 // No __newindex: raw insert
-                try ltable.set(tbl, key, val);
+                ltable.set(tbl, key, val) catch |err| {
+                    if (err == error.TableIndexIsNil) {
+                        try lua.luaG_runerror(L, "table index is nil");
+                    } else if (err == error.TableIndexIsNaN) {
+                        try lua.luaG_runerror(L, "table index is NaN");
+                    }
+                    return err;
+                };
                 return;
             }
             if (tm == .function) {
@@ -495,7 +566,7 @@ fn createVarargTable(L: *lua.lua_State, first_extra: usize, n: usize) !*lua.lua_
         try ltable.setInt(t, @intCast(i + 1), L.stack[first_extra + i]);
     }
     const nkey = lua.TValue{ .string = try lstring.luaS_new(L, "n") };
-    try ltable.set(t, nkey, lua.TValue{ .number = @as(f64, @floatFromInt(@as(i64, @intCast(n)))) });
+    try ltable.set(t, nkey, lua.TValue{ .integer = @as(i64, @intCast(n)) });
     return t;
 }
 
@@ -503,23 +574,16 @@ fn getnumargs(L: *lua.lua_State, ci: *lua.CallInfo, h: ?*lua.lua_Table) !i32 {
     if (h == null) return ci.nextraargs;
     const nkey = lua.TValue{ .string = try lstring.luaS_new(L, "n") };
     const res = ltable.get(h.?, nkey);
-    // Mirror lua/ltm.c getnumargs: the vararg table's 'n' field must be a
-    // proper non-negative integer not larger than INT_MAX/2. (luazig unifies
-    // integers and floats into a single number type, so "proper integer"
-    // here means an integral value, matching lua.lua_isinteger.)
-    if (res != .number and res != .integer) {
+    if (res != .integer) {
         _ = lua.lua_pushstring(L, "vararg table has no proper 'n'");
         return lua.lua_error(L);
     }
-    const nval = if (res == .integer) @as(f64, @floatFromInt(res.integer)) else res.number;
-    if (@trunc(nval) != nval or
-        nval < 0 or
-        nval > @as(f64, @floatFromInt(std.math.maxInt(i32) / 2)))
-    {
+    const val = res.integer;
+    if (val < 0 or val > @as(i64, @intCast(std.math.maxInt(i32) / 2))) {
         _ = lua.lua_pushstring(L, "vararg table has no proper 'n'");
         return lua.lua_error(L);
     }
-    return @intFromFloat(res.number);
+    return @intCast(val);
 }
 
 // lua/ltm.c luaT_adjustvarargs

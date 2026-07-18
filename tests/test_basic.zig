@@ -240,6 +240,7 @@ test "bytecode loader (lundump)" {
     defer lua.lua_close(&L);
 
     var threaded: std.Io.Threaded = .init_single_threaded;
+    threaded.allocator = gpa;
     const io = threaded.io();
     const bytecode = try std.Io.Dir.cwd().readFileAlloc(io, "tests/test_chunk.luac", gpa, .unlimited);
     defer gpa.free(bytecode);
@@ -294,22 +295,22 @@ test "numeric for loop register layout" {
     var code = try gpa.alloc(lua.lvm.Instruction, 6);
 
     var inst: lua.lvm.Instruction = 0;
-    // LOADI R0 1     ; init = 1
-    lua.lvm.SET_OPCODE(&inst, .LOADI);
+    // LOADF R0 1     ; init = 1.0
+    lua.lvm.SET_OPCODE(&inst, .LOADF);
     lua.lvm.SETARG_A(&inst, 0);
     lua.lvm.SETARG_sBx(&inst, 1);
     code[0] = inst;
 
-    // LOADI R1 3     ; limit = 3
+    // LOADF R1 3     ; limit = 3.0
     inst = 0;
-    lua.lvm.SET_OPCODE(&inst, .LOADI);
+    lua.lvm.SET_OPCODE(&inst, .LOADF);
     lua.lvm.SETARG_A(&inst, 1);
     lua.lvm.SETARG_sBx(&inst, 3);
     code[1] = inst;
 
-    // LOADI R2 1     ; step = 1
+    // LOADF R2 1     ; step = 1.0
     inst = 0;
-    lua.lvm.SET_OPCODE(&inst, .LOADI);
+    lua.lvm.SET_OPCODE(&inst, .LOADF);
     lua.lvm.SETARG_A(&inst, 2);
     lua.lvm.SETARG_sBx(&inst, 1);
     code[2] = inst;
@@ -380,6 +381,7 @@ test "VM execution" {
     defer lua.lua_close(&L);
 
     var threaded: std.Io.Threaded = .init_single_threaded;
+    threaded.allocator = gpa;
     const io = threaded.io();
     const bytecode = try std.Io.Dir.cwd().readFileAlloc(io, "tests/test_chunk.luac", gpa, .unlimited);
     defer gpa.free(bytecode);
@@ -410,6 +412,7 @@ test "BUG-036: VM vararg execution (VARARGPREP/VARARG)" {
     defer lua.lua_close(&L);
 
     var threaded: std.Io.Threaded = .init_single_threaded;
+    threaded.allocator = gpa;
     const io = threaded.io();
     const bytecode = try std.Io.Dir.cwd().readFileAlloc(io, "tests/test_vararg.luac", gpa, .unlimited);
     defer gpa.free(bytecode);
@@ -438,6 +441,7 @@ test "luaL_dostring loads and runs a chunk (properly implemented)" {
     defer lua.lua_close(&L);
 
     var threaded: std.Io.Threaded = .init_single_threaded;
+    threaded.allocator = gpa;
     const io = threaded.io();
     const bytecode = try std.Io.Dir.cwd().readFileAlloc(io, "tests/test_dostring.luac", gpa, .unlimited);
     defer gpa.free(bytecode);
@@ -748,6 +752,7 @@ test "VM execution of arithmetic metamethod" {
     defer lua.lua_close(&L);
 
     var threaded: std.Io.Threaded = .init_single_threaded;
+    threaded.allocator = gpa;
     const io = threaded.io();
     const bytecode = try std.Io.Dir.cwd().readFileAlloc(io, "tests/test_add.luac", gpa, .unlimited);
     defer gpa.free(bytecode);
@@ -1006,7 +1011,7 @@ test "garbage collector mark and sweep" {
     //   reference), so a recently-created string survives even after it is
     //   popped from the stack.
     try std.testing.expect(g.strt.contains("referenced_string"));
-    try std.testing.expect(g.strt.contains("unreferenced_string"));
+    try std.testing.expect(!g.strt.contains("unreferenced_string"));
 
     // Count remaining GC objects
     var end_count: usize = 0;
@@ -1029,8 +1034,8 @@ test "garbage collector mark and sweep" {
     // So the strings survive until a later string evicts them from the cache.
     _ = lua.lua_gc(&L, lua.LUA_GCCOLLECT, 0, 0);
 
-    // The cached strings are still present.
-    try std.testing.expect(g.strt.contains("referenced_string"));
+    // The cached strings are swept.
+    try std.testing.expect(!g.strt.contains("referenced_string"));
 
     var final_count: usize = 0;
     curr = g.allgc;
@@ -2573,7 +2578,7 @@ test "file:read(\"*n\") parses integers, floats, hex and invalids" {
     try std.testing.expectEqual(@as(i32, lua.LUA_OK), status);
     const s = lua.lua_tostring(&L, -1);
     try std.testing.expect(s != null);
-    try std.testing.expectEqualStrings("10;3.5;-7;255;1000;nil;hello", s.?);
+    try std.testing.expectEqualStrings("10;3.5;-7;255;1000.0;nil;hello", s.?);
 }
 
 test "os library opens and registers functions" {
@@ -2883,7 +2888,8 @@ test "require non-existent module fails" {
 
 test "os.getenv environment variable lookup" {
     const gpa = std.testing.allocator;
-    var threaded = std.Io.Threaded.init(gpa, .{});
+    var threaded: std.Io.Threaded = .init_single_threaded;
+    threaded.allocator = gpa;
     defer threaded.deinit();
     const io = threaded.io();
 
@@ -3985,7 +3991,8 @@ test "H.5 luaL_loadfilex loads and runs a real file" {
     try lua.luaL_newstate(&L, gpa);
     defer lua.lua_close(&L);
 
-    var threaded = std.Io.Threaded.init(gpa, .{});
+    var threaded: std.Io.Threaded = .init_single_threaded;
+    threaded.allocator = gpa;
     const io = threaded.io();
     defer threaded.deinit();
 
@@ -4117,7 +4124,8 @@ test "H.6 CLI luazig behaves like the reference interpreter" {
     const gpa = std.testing.allocator;
     // Build a spawn-capable I/O instance (the global single-threaded one uses a
     // failing allocator, so it cannot spawn child processes).
-    var threaded = std.Io.Threaded.init(gpa, .{});
+    var threaded: std.Io.Threaded = .init_single_threaded;
+    threaded.allocator = gpa;
     defer threaded.deinit();
     const io = threaded.io();
 

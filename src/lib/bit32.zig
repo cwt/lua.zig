@@ -25,14 +25,17 @@ fn maskfield(v: i64) u64 {
 
 // Logical left/right shift of a 32-bit value by |disp| bits.
 // Returns 0 when |disp| >= NBITS (the C `b_shift` behaviour).
-fn b_shift(x: u64, disp: i64, left: bool) u64 {
+fn b_shift(x: u64, disp: i64) u64 {
     const r = x & MASK;
-    const i: i64 = if (disp < 0) -disp else disp;
-    if (i >= NBITS) return 0;
-    if (left) {
-        return (r << @as(u6, @intCast(i))) & MASK;
-    } else {
+    if (disp == std.math.minInt(i64)) return 0;
+    if (disp < 0) {
+        const i = -disp;
+        if (i >= NBITS) return 0;
         return (r >> @as(u6, @intCast(i))) & MASK;
+    } else {
+        const i = disp;
+        if (i >= NBITS) return 0;
+        return (r << @as(u6, @intCast(i))) & MASK;
     }
 }
 
@@ -76,38 +79,35 @@ fn bit_not(L: *lua.lua_State) !i32 {
 }
 
 fn bit_test(L: *lua.lua_State) !i32 {
-    var r: u64 = maskfield(try lauxlib.luaL_checkinteger(L, 1));
+    var r: u64 = ~@as(u64, 0);
     const n = lua.lua_gettop(L);
-    var i: i32 = 2;
+    var i: i32 = 1;
     while (i <= n) : (i += 1) {
         r &= maskfield(try lauxlib.luaL_checkinteger(L, i));
     }
-    lua.lua_pushboolean(L, if (r != 0) 1 else 0);
+    lua.lua_pushboolean(L, if ((r & MASK) != 0) 1 else 0);
     return 1;
 }
 
 fn bit_lshift(L: *lua.lua_State) !i32 {
     const x = maskfield(try lauxlib.luaL_checkinteger(L, 1));
     const disp = try lauxlib.luaL_checkinteger(L, 2);
-    lua.lua_pushinteger(L, @as(i64, @bitCast(b_shift(x, disp, true))));
+    lua.lua_pushinteger(L, @as(i64, @bitCast(b_shift(x, disp))));
     return 1;
 }
 
 fn bit_rshift(L: *lua.lua_State) !i32 {
     const x = maskfield(try lauxlib.luaL_checkinteger(L, 1));
     const disp = try lauxlib.luaL_checkinteger(L, 2);
-    lua.lua_pushinteger(L, @as(i64, @bitCast(b_shift(x, -disp, false))));
+    lua.lua_pushinteger(L, @as(i64, @bitCast(b_shift(x, -%disp))));
     return 1;
 }
 
 fn bit_arshift(L: *lua.lua_State) !i32 {
     const x = maskfield(try lauxlib.luaL_checkinteger(L, 1));
     const disp = try lauxlib.luaL_checkinteger(L, 2);
-    // If disp < 0, or the value's bit 31 is not set, this is a plain
-    // logical shift right by |disp|. Otherwise it is an arithmetic shift
-    // (sign-extend bit 31).
     if (disp < 0 or (x & (@as(u64, 1) << 31)) == 0) {
-        lua.lua_pushinteger(L, @as(i64, @bitCast(b_shift(x, -disp, false))));
+        lua.lua_pushinteger(L, @as(i64, @bitCast(b_shift(x, -%disp))));
         return 1;
     }
     if (disp >= NBITS) {

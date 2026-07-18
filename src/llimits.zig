@@ -45,6 +45,9 @@ pub const LUA_ERRERR: i32 = 5;
 
 // Maximum number of nested C calls (for yieldability)
 pub const LUAI_MAXCCALLS: u32 = 200;
+pub const LUAI_MAXSTACK: usize = 1000000;
+pub const STACKERRSPACE: usize = 200;
+pub const ERRORSTACKSIZE: usize = LUAI_MAXSTACK + STACKERRSPACE;
 
 // Short strings (< LUAI_MAXSHORTLEN) are interned; long strings (>=) are not.
 pub const LUAI_MAXSHORTLEN: usize = 40;

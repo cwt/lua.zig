@@ -328,12 +328,13 @@ fn l_str2int(s: []const u8, result: *i64) ?usize {
     if (neg or (i < s.len and s[i] == '+')) i += 1;
     var a: u64 = 0;
     var empty = true;
+    var is_hex = false;
     if (i + 1 < s.len and s[i] == '0' and (s[i + 1] == 'x' or s[i + 1] == 'X')) {
         i += 2;
+        is_hex = true;
         while (i < s.len and lisxdigit(s[i])) : (i += 1) {
             const d = hexval(s[i]);
-            if (a > (std.math.maxInt(u64) >> 4)) return null;
-            a = (a << 4) | d;
+            a = (a << 4) +% d;
             empty = false;
         }
     } else {
@@ -350,14 +351,16 @@ fn l_str2int(s: []const u8, result: *i64) ?usize {
     }
     while (i < s.len and lisspace(s[i])) : (i += 1) {}
     if (empty or i != s.len) return null;
-    const maxu: u64 = @bitCast(@as(i64, std.math.maxInt(i64)));
-    const limit: u64 = if (neg) maxu + 1 else maxu;
-    if (a > limit) return null;
+    if (!is_hex) {
+        const maxu: u64 = @bitCast(@as(i64, std.math.maxInt(i64)));
+        const limit: u64 = if (neg) maxu + 1 else maxu;
+        if (a > limit) return null;
+    }
     if (neg) {
         const na: u64 = 0 -% a;
         result.* = @bitCast(na);
     } else {
-        result.* = @as(i64, @intCast(a));
+        result.* = @bitCast(a);
     }
     return i;
 }

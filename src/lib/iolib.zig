@@ -111,23 +111,22 @@ fn getiofile(L_: *L, findex: []const u8) !*LStream {
 }
 
 fn g_iofile(L_: *L, findex: []const u8, mode: []const u8) !i32 {
-    if (lua.lua_isnoneornil(L_, 1)) {
-            _ = lua.lua_rawgetp(L_, lua.LUA_REGISTRYINDEX, @ptrCast(findex.ptr));
-        return 1;
-    }
-    const filename = lua.lua_tostring(L_, 1);
-    if (filename) |fn_| {
-        const f = fopen(fn_, mode) orelse {
-            return lauxlib.luaL_fileresult(L_, false, fn_);
-        };
-        const p = try newfile(L_);
-        p.* = LStream{ .fd = f, .closef = io_fclose, .buf = null, .buf_len = 0, .buf_mode = 0, .unget = null };
-        lua.lua_replace(L_, 1);
+    if (!lua.lua_isnoneornil(L_, 1)) {
+        const filename = lua.lua_tostring(L_, 1);
+        if (filename) |fn_| {
+            const f = fopen(fn_, mode) orelse {
+                return lauxlib.luaL_fileresult(L_, false, fn_);
+            };
+            const p = try newfile(L_);
+            p.* = LStream{ .fd = f, .closef = io_fclose, .buf = null, .buf_len = 0, .buf_mode = 0, .unget = null };
+        } else {
+            _ = try tostream(L_, 1);
+            lua.lua_pushvalue(L_, 1);
+        }
         lua.lua_rawsetp(L_, lua.LUA_REGISTRYINDEX, @constCast(@ptrCast(findex.ptr)));
-        return 0;
     }
-    lua.lua_rawsetp(L_, lua.LUA_REGISTRYINDEX, @constCast(@ptrCast(findex.ptr)));
-    return 0;
+    _ = lua.lua_rawgetp(L_, lua.LUA_REGISTRYINDEX, @ptrCast(findex.ptr));
+    return 1;
 }
 
 fn io_input(L_: *L) !i32 {
@@ -461,7 +460,7 @@ fn writeToStream(p: *LStream, data: []const u8) bool {
 }
 
 fn g_write(L_: *L, p: *LStream, arg: i32) !i32 {
-    const nargs = lua.lua_gettop(L_) - (arg - 1);
+    const nargs = lua.lua_gettop(L_) - arg;
     var status = true;
     for (0..@as(usize, @intCast(nargs))) |i| {
         const idx = arg + @as(i32, @intCast(i));
@@ -489,7 +488,10 @@ fn g_write(L_: *L, p: *LStream, arg: i32) !i32 {
             }
         }
     }
-    return lauxlib.luaL_fileresult(L_, status, null);
+    if (status) {
+        return 1;
+    }
+    return lauxlib.luaL_fileresult(L_, false, null);
 }
 
 fn io_write(L_: *L) !i32 {
@@ -499,6 +501,7 @@ fn io_write(L_: *L) !i32 {
 
 fn f_write(L_: *L) !i32 {
     const p = try tostream(L_, 1);
+    lua.lua_pushvalue(L_, 1);
     return g_write(L_, p, 2);
 }
 

@@ -28,6 +28,7 @@ pub const KV = struct { key: TValue, val: TValue };
 /// Classify a numeric TValue as an integer key, if it has an integral value
 /// within the representable integer range.
 inline fn asInt(v: TValue) ?i64 {
+    if (v == .integer) return v.integer;
     if (v != .number) return null;
     const n = v.number;
     if (n != @floor(n)) return null;
@@ -262,7 +263,7 @@ pub inline fn getInt(t: *Table, k: i64) TValue {
             return t.array.items[u - 1];
         }
     }
-    return getHash(t, TValue{ .number = @as(f64, @floatFromInt(k)) });
+    return getHash(t, TValue{ .integer = k });
 }
 
 inline fn getHash(t: *Table, key: TValue) TValue {
@@ -332,7 +333,7 @@ pub fn setInt(t: *Table, k: i64, val: TValue) !void {
                 return;
             }
         }
-        removeFromHash(t, TValue{ .number = @as(f64, @floatFromInt(k)) });
+        removeFromHash(t, TValue{ .integer = k });
         return;
     }
     if (k >= 1) {
@@ -347,11 +348,11 @@ pub fn setInt(t: *Table, k: i64, val: TValue) !void {
         }
         if (u > t.array.items.len + 1) {
             // gap: keep it in the hash part rather than filling with holes
-            try setHash(t, TValue{ .number = @as(f64, @floatFromInt(k)) }, val);
+            try setHash(t, TValue{ .integer = k }, val);
             return;
         }
     }
-    try setHash(t, TValue{ .number = @as(f64, @floatFromInt(k)) }, val);
+    try setHash(t, TValue{ .integer = k }, val);
 }
 
 fn setHash(t: *Table, key: TValue, val: TValue) !void {
@@ -391,6 +392,7 @@ fn setHash(t: *Table, key: TValue, val: TValue) !void {
 /// Set the value for any key. A nil value removes the entry.
 pub fn set(t: *Table, key: TValue, val: TValue) !void {
     if (key == .nil) return error.TableIndexIsNil;
+    if (key == .number and std.math.isNan(key.number)) return error.TableIndexIsNaN;
     if (asInt(key)) |k| {
         try setInt(t, k, val);
         return;
@@ -416,7 +418,7 @@ pub fn next(t: *Table, key: TValue) ?KV {
         var i: usize = 1;
         while (i <= t.array.items.len) : (i += 1) {
             if (t.array.items[i - 1] != .nil) {
-                return .{ .key = TValue{ .number = @as(f64, @floatFromInt(i)) }, .val = t.array.items[i - 1] };
+                return .{ .key = TValue{ .integer = @intCast(i) }, .val = t.array.items[i - 1] };
             }
         }
         return scanHashFrom(t, 0);
@@ -428,7 +430,7 @@ pub fn next(t: *Table, key: TValue) ?KV {
                 var i = u + 1;
                 while (i <= t.array.items.len) : (i += 1) {
                     if (t.array.items[i - 1] != .nil) {
-                        return .{ .key = TValue{ .number = @as(f64, @floatFromInt(i)) }, .val = t.array.items[i - 1] };
+                        return .{ .key = TValue{ .integer = @intCast(i) }, .val = t.array.items[i - 1] };
                     }
                 }
                 return scanHashFrom(t, 0);
@@ -471,7 +473,7 @@ pub fn getn(t: *Table) usize {
 }
 
 fn hashHasInt(t: *Table, k: usize) bool {
-    const v = getHash(t, TValue{ .number = @as(f64, @floatFromInt(k)) });
+    const v = getHash(t, TValue{ .integer = @as(i64, @intCast(k)) });
     return v != .nil;
 }
 

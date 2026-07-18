@@ -212,10 +212,9 @@ fn dofile(L: *lua.lua_State) anyerror!i32 {
 fn error_fn(L: *lua.lua_State) anyerror!i32 {
     lua.lua_settop(L, 1);
     const level: i32 = @intCast(lauxlib.luaL_optinteger(L, 2, 1));
-    // Mirror the reference luaB_error: prepend the caller's location when the
-    // first argument is a string and level > 0.
-    if (lua.lua_isstring(L, 1) != 0 and level > 0) {
+    if (lua.lua_type(L, 1) == lua.LUA_TSTRING and level > 0) {
         lauxlib.luaL_where(L, level);
+        lua.lua_pushvalue(L, 1);
         lua.lua_concat(L, 2);
     }
     return lua.lua_error(L);
@@ -285,6 +284,10 @@ fn loadfile(L: *lua.lua_State) anyerror!i32 {
     var slice_data = skipFilePreamble(contents);
     const status = lua.lua_load(L, sliceReader, @as(?*anyopaque, @ptrCast(&slice_data)), filename, mode);
     if (status == lua.LUA_OK) {
+        if (lua.lua_gettop(L) >= 3 and lua.lua_type(L, 3) != lua.LUA_TNIL) {
+            lua.lua_pushvalue(L, 3);
+            _ = lua.lua_setupvalue(L, -2, 1);
+        }
         return 1;
     } else {
         lua.lua_pushnil(L);
@@ -301,6 +304,10 @@ fn load(L: *lua.lua_State) anyerror!i32 {
     var slice_data = chunk;
     const status = lua.lua_load(L, sliceReader, @as(?*anyopaque, @ptrCast(&slice_data)), chunkname, mode);
     if (status == lua.LUA_OK) {
+        if (lua.lua_gettop(L) >= 4 and lua.lua_type(L, 4) != lua.LUA_TNIL) {
+            lua.lua_pushvalue(L, 4);
+            _ = lua.lua_setupvalue(L, -2, 1);
+        }
         return 1;
     } else {
         lua.lua_pushnil(L);
@@ -366,16 +373,20 @@ fn print(L: *lua.lua_State) anyerror!i32 {
         try lua.lua_call(L, 1, 1);
         var len: usize = 0;
         const s = lua.lua_tolstring(L, -1, &len);
-        if (i > 1) {
-            try std.Io.File.stdout().writeStreamingAll(io, "\t");
-        }
-        if (s) |str| {
-            try std.Io.File.stdout().writeStreamingAll(io, str);
+        if (!@import("builtin").is_test) {
+            if (i > 1) {
+                try std.Io.File.stdout().writeStreamingAll(io, "\t");
+            }
+            if (s) |str| {
+                try std.Io.File.stdout().writeStreamingAll(io, str);
+            }
         }
         lua.lua_pop(L, 1);
     }
     lua.lua_pop(L, 1);
-    try std.Io.File.stdout().writeStreamingAll(io, "\n");
+    if (!@import("builtin").is_test) {
+        try std.Io.File.stdout().writeStreamingAll(io, "\n");
+    }
     return 0;
 }
 
@@ -386,12 +397,16 @@ fn warn(L: *lua.lua_State) anyerror!i32 {
     while (i <= n) : (i += 1) {
         var len: usize = 0;
         const s = lauxlib.luaL_tolstring(L, i, &len);
-        if (s) |str| {
-            try std.Io.File.stderr().writeStreamingAll(io, str);
+        if (!@import("builtin").is_test) {
+            if (s) |str| {
+                try std.Io.File.stderr().writeStreamingAll(io, str);
+            }
         }
         lua.lua_pop(L, 1);
     }
-    try std.Io.File.stderr().writeStreamingAll(io, "\n");
+    if (!@import("builtin").is_test) {
+        try std.Io.File.stderr().writeStreamingAll(io, "\n");
+    }
     return 0;
 }
 
@@ -425,7 +440,7 @@ fn rawset(L: *lua.lua_State) anyerror!i32 {
     try lauxlib.luaL_checkany(L, 2);
     try lauxlib.luaL_checkany(L, 3);
     lua.lua_settop(L, 3);
-    lua.lua_rawset(L, 1);
+    try lua.lua_rawset(L, 1);
     return 1;
 }
 
@@ -564,12 +579,10 @@ fn type_fn(L: *lua.lua_State) anyerror!i32 {
 
 fn xpcall(L: *lua.lua_State) anyerror!i32 {
     const n = lua.lua_gettop(L);
-    try lauxlib.luaL_checkany(L, 2);
-    lua.lua_pushvalue(L, 2);
-    lua.lua_insert(L, 1);
-    lua.lua_remove(L, 3);
-    const status = lua.lua_pcallk(L, n - 2, lua.LUA_MULTRET, 1, 0, null);
-    lua.lua_pushboolean(L, if (status == lua.LUA_OK) @as(i32, 1) else @as(i32, 0));
-    lua.lua_insert(L, 1);
-    return lua.lua_gettop(L);
+    try lauxlib.luaL_checktype(L, 2, lua.LUA_TFUNCTION);
+    lua.lua_pushboolean(L, 1);
+    lua.lua_pushvalue(L, 1);
+    lua.lua_rotate(L, 3, 2);
+    const status = lua.lua_pcallk(L, n - 2, lua.LUA_MULTRET, 2, 0, null);
+    return finishpcall(L, status, 2);
 }

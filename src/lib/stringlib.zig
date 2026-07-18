@@ -5,6 +5,7 @@
 const std = @import("std");
 const lua = @import("../lua.zig");
 const lauxlib = @import("../lauxlib.zig");
+const libm = @import("../libm.zig");
 
 const format = @import("string/format.zig");
 const pattern = @import("string/pattern.zig");
@@ -217,6 +218,15 @@ fn arith(L: *lua.lua_State, op: i32) anyerror!i32 {
     // untouched). The two top slots are then the operands for arithmetic.
     // Helper: push a numeric copy of the operand at `arg` on top, without
     // mutating the original slot (string → converted number; number → copy).
+    const numMod = struct {
+        fn call(a: f64, b: f64) f64 {
+            var m = libm.getLibm().fmod(a, b);
+            if (if (m > 0) b < 0 else (m < 0 and b > 0)) {
+                m += b;
+            }
+            return m;
+        }
+    }.call;
     const pushOperand = struct {
         fn call(l: *lua.lua_State, arg: i32) !void {
             const t = lua.lua_type(l, arg);
@@ -247,7 +257,8 @@ fn arith(L: *lua.lua_State, op: i32) anyerror!i32 {
             lua.LUA_OPMUL => iv1 *% iv2,
             lua.LUA_OPMOD => blk: {
                 if (iv2 == 0) return lauxlib.luaL_error(L, "attempt to divide by zero");
-                break :blk if (iv2 == -1) 0 else @rem(iv1, iv2);
+                const r = if (iv2 == -1) @as(i64, 0) else @rem(iv1, iv2);
+                break :blk if (r != 0 and (r ^ iv2) < 0) r + iv2 else r;
             },
             lua.LUA_OPPOW => @as(i64, @intFromFloat(@floor(@as(f64, @floatFromInt(iv1)) / @as(f64, @floatFromInt(iv2))))),
             lua.LUA_OPDIV => @as(i64, @intFromFloat(@as(f64, @floatFromInt(iv1)) / @as(f64, @floatFromInt(iv2)))),
@@ -263,7 +274,7 @@ fn arith(L: *lua.lua_State, op: i32) anyerror!i32 {
             lua.LUA_OPBOR => iv1 | iv2,
             lua.LUA_OPBXOR => iv1 ^ iv2,
             lua.LUA_OPSHL => lua.luaV_shift(iv1, iv2),
-            lua.LUA_OPSHR => lua.luaV_shift(iv1, -iv2),
+            lua.LUA_OPSHR => lua.luaV_shift(iv1, -%iv2),
             lua.LUA_OPUNM => -iv1,
             else => return lauxlib.luaL_error(L, "unsupported arithmetic operation"),
         };
@@ -276,7 +287,7 @@ fn arith(L: *lua.lua_State, op: i32) anyerror!i32 {
             lua.LUA_OPSUB => fv1 - fv2,
             lua.LUA_OPMUL => fv1 * fv2,
             lua.LUA_OPMOD => blk: {
-                break :blk fv1 - @floor(fv1 / fv2) * fv2;
+                break :blk numMod(fv1, fv2);
             },
             lua.LUA_OPPOW => std.math.pow(f64, fv1, fv2),
             lua.LUA_OPDIV => fv1 / fv2,

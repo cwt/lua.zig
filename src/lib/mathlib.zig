@@ -107,7 +107,7 @@ fn math_fmod(L: *lua.lua_State) !i32 {
     if (lua.lua_isinteger(L, 1) != 0 and lua.lua_isinteger(L, 2) != 0) {
         const d = try lauxlib.luaL_checkinteger(L, 2);
         try lauxlib.luaL_argcheck(L, d != 0, 2, "zero");
-        if ((@as(lua.lua_Unsigned, @bitCast(d)) + 1) <= 1) {
+        if ((@as(lua.lua_Unsigned, @bitCast(d)) +% 1) <= 1) {
             lua.lua_pushinteger(L, 0);
         } else {
             lua.lua_pushinteger(L, @rem(try lauxlib.luaL_checkinteger(L, 1), d));
@@ -238,47 +238,105 @@ fn math_type(L: *lua.lua_State) !i32 {
     return 1;
 }
 
+fn rotl(x: u64, n: i32) u64 {
+    const un = @as(u6, @intCast(n));
+    return (x << un) | (x >> @as(u6, @intCast(64 - n)));
+}
+
+fn nextrand(state: *[4]u64) u64 {
+    const state0 = state[0];
+    const state1 = state[1];
+    const state2 = state[2] ^ state0;
+    const state3 = state[3] ^ state1;
+    const res = rotl(state1 *% 5, 7) *% 9;
+    state[0] = state0 ^ state3;
+    state[1] = state1 ^ state2;
+    state[2] = state2 ^ (state1 << 17);
+    state[3] = rotl(state3, 45);
+    return res;
+}
+
+fn I2d(x: u64) f64 {
+    const FIGS = 53;
+    const shift64_FIG = 64 - FIGS;
+    const scaleFIG = 1.0 / 9007199254740992.0;
+    const sx = @as(i64, @bitCast(x >> shift64_FIG));
+    var res = @as(f64, @floatFromInt(sx)) * scaleFIG;
+    if (sx < 0) {
+        res += 1.0;
+    }
+    return res;
+}
+
+fn setseed(state: *[4]u64, n1: u64, n2: u64) void {
+    state[0] = n1;
+    state[1] = 0xff;
+    state[2] = n2;
+    state[3] = 0;
+    var i: i32 = 0;
+    while (i < 16) : (i += 1) {
+        _ = nextrand(state);
+    }
+}
+
+fn project(ran: u64, n: u64, state: *[4]u64) u64 {
+    var r = ran;
+    var lim = n;
+    var sh: u32 = 1;
+    while ((lim & (lim +% 1)) != 0) {
+        lim |= (lim >> @as(u6, @intCast(sh)));
+        sh *= 2;
+    }
+    r &= lim;
+    while (r > n) {
+        r = nextrand(state) & lim;
+    }
+    return r;
+}
+
 fn math_random(L: *lua.lua_State) !i32 {
     const g = L.l_G.?;
-    const r = g.prng.random();
+    const state = &g.prng_state;
+    const rv = nextrand(state);
     const nargs = lua.lua_gettop(L);
     if (nargs == 0) {
-        lua.lua_pushnumber(L, r.float(f64));
+        lua.lua_pushnumber(L, I2d(rv));
         return 1;
     } else if (nargs == 1) {
         const up = try lauxlib.luaL_checkinteger(L, 1);
         if (up == 0) {
-            lua.lua_pushinteger(L, r.int(i64));
+            lua.lua_pushinteger(L, @as(i64, @bitCast(rv)));
             return 1;
         }
-        const p = r.intRangeLessThan(lua.lua_Unsigned, 0, @as(lua.lua_Unsigned, @bitCast(up)));
+        const p = project(rv, @as(u64, @bitCast(up -% 1)), state);
         lua.lua_pushinteger(L, @as(i64, @bitCast(p)) + 1);
         return 1;
-    } else {
+    } else if (nargs == 2) {
         const low = try lauxlib.luaL_checkinteger(L, 1);
         const up = try lauxlib.luaL_checkinteger(L, 2);
         try lauxlib.luaL_argcheck(L, low <= up, 1, "interval is empty");
-        const p = r.intRangeLessThan(lua.lua_Unsigned, 0, @as(lua.lua_Unsigned, @bitCast(up - low + 1)));
-        lua.lua_pushinteger(L, @as(i64, @bitCast(p + @as(lua.lua_Unsigned, @bitCast(low)))));
+        const p = project(rv, @as(u64, @bitCast(up -% low)), state);
+        lua.lua_pushinteger(L, @as(i64, @bitCast(p +% @as(u64, @bitCast(low)))));
         return 1;
+    } else {
+        return lauxlib.luaL_error(L, "wrong number of arguments");
     }
 }
 
 fn math_randomseed(L: *lua.lua_State) !i32 {
     const g = L.l_G.?;
     const io = g.io;
-    const n1: lua.lua_Unsigned = if (lua.lua_type(L, 1) == lua.LUA_TNONE) blk: {
-        break :blk @as(u64, @intCast(std.Io.Timestamp.now(io, .real).nanoseconds));
-    } else blk: {
-        break :blk @as(lua.lua_Unsigned, @bitCast(try lauxlib.luaL_checkinteger(L, 1)));
-    };
-    const n2: lua.lua_Unsigned = if (lua.lua_type(L, 2) == lua.LUA_TNONE) blk: {
-        break :blk @as(u64, @intCast(std.Io.Timestamp.now(io, .awake).nanoseconds));
-    } else blk: {
-        break :blk @as(lua.lua_Unsigned, @bitCast(lauxlib.luaL_optinteger(L, 2, 0)));
-    };
-    const seed = n1 ^ (n2 << 1);
-    g.prng = std.Random.Xoshiro256.init(seed);
+    const state = &g.prng_state;
+    var n1: lua.lua_Unsigned = 0;
+    var n2: lua.lua_Unsigned = 0;
+    if (lua.lua_type(L, 1) == lua.LUA_TNONE) {
+        n1 = @as(u64, @intCast(std.Io.Timestamp.now(io, .real).nanoseconds));
+        n2 = nextrand(state);
+    } else {
+        n1 = @as(lua.lua_Unsigned, @bitCast(try lauxlib.luaL_checkinteger(L, 1)));
+        n2 = @as(lua.lua_Unsigned, @bitCast(lauxlib.luaL_optinteger(L, 2, 0)));
+    }
+    setseed(state, n1, n2);
     lua.lua_pushinteger(L, @as(i64, @bitCast(n1)));
     lua.lua_pushinteger(L, @as(i64, @bitCast(n2)));
     return 2;
