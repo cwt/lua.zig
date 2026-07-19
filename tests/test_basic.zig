@@ -4553,11 +4553,7 @@ test "BUG-047 repeated string arithmetic print doesn't crash" {
     defer lua.lua_close(&L);
     try lua.luaL_openlibs(&L);
 
-    const script = "print('2'+1); print('2'+1)";
-    const status = try lua.luaL_dostring(&L, script, "=(test)");
-    if (status != lua.LUA_OK) {
-        std.debug.print("TEST_FAILED_STATUS: {} err_msg={?s}\n", .{ status, lua.lua_tostring(&L, -1) });
-    }
+    const status = try lua.luaL_dostring(&L, "print('2'+1); print('2'+1)", "=test");
     try std.testing.expectEqual(@as(i32, lua.LUA_OK), status);
 }
 

@@ -790,6 +790,9 @@ pub fn run(L: *lua.lua_State, active_ci: *lua.CallInfo) anyerror!void {
                 } else if (rb == .number) {
                     L.stack[ra] = .{ .number = rb.number + @as(f64, @floatFromInt(sc)) };
                     ci.savedpc += 1;
+                } else {
+                    try luaV_doarith(L, lua.LUA_OPADD, ra, rb, .{ .integer = @as(i64, sc) });
+                    ci.savedpc += 1;
                 }
             },
             .ADDK => {
@@ -803,6 +806,9 @@ pub fn run(L: *lua.lua_State, active_ci: *lua.CallInfo) anyerror!void {
                     const fb = rb.toFloat();
                     const fc = rc.toFloat();
                     L.stack[ra] = .{ .number = fb + fc };
+                    ci.savedpc += 1;
+                } else {
+                    try luaV_doarith(L, lua.LUA_OPADD, ra, rb, rc);
                     ci.savedpc += 1;
                 }
             },
@@ -818,6 +824,9 @@ pub fn run(L: *lua.lua_State, active_ci: *lua.CallInfo) anyerror!void {
                     const fc = rc.toFloat();
                     L.stack[ra] = .{ .number = fb - fc };
                     ci.savedpc += 1;
+                } else {
+                    try luaV_doarith(L, lua.LUA_OPSUB, ra, rb, rc);
+                    ci.savedpc += 1;
                 }
             },
             .MULK => {
@@ -832,23 +841,29 @@ pub fn run(L: *lua.lua_State, active_ci: *lua.CallInfo) anyerror!void {
                     const fc = rc.toFloat();
                     L.stack[ra] = .{ .number = fb * fc };
                     ci.savedpc += 1;
+                } else {
+                    try luaV_doarith(L, lua.LUA_OPMUL, ra, rb, rc);
+                    ci.savedpc += 1;
                 }
             },
             .MODK => {
                 const ra = ci.base + @as(usize, @intCast(GETARG_A(instruction)));
                 const rb = L.stack[ci.base + @as(usize, @intCast(GETARG_B(instruction)))];
-                 const rc = proto.k[@as(usize, @intCast(GETARG_C(instruction)))];
-                  if (rb == .integer and rc == .integer) {
-                      if (rc.integer == 0) return lua.luaG_runerror(L, "attempt to divide by zero");
-                      const r: i64 = if (rc.integer == -1) 0 else @rem(rb.integer, rc.integer);
-                      L.stack[ra] = .{ .integer = if (r != 0 and (r ^ rc.integer) < 0) r + rc.integer else r };
-                      ci.savedpc += 1;
-                  } else if (rb.isNumberValue() and rc.isNumberValue()) {
-                     const fb = rb.toFloat();
-                     const fc = rc.toFloat();
-                     L.stack[ra] = .{ .number = numMod(fb, fc) };
-                     ci.savedpc += 1;
-                 }
+                const rc = proto.k[@as(usize, @intCast(GETARG_C(instruction)))];
+                if (rb == .integer and rc == .integer) {
+                    if (rc.integer == 0) return lua.luaG_runerror(L, "attempt to divide by zero");
+                    const r: i64 = if (rc.integer == -1) 0 else @rem(rb.integer, rc.integer);
+                    L.stack[ra] = .{ .integer = if (r != 0 and (r ^ rc.integer) < 0) r + rc.integer else r };
+                    ci.savedpc += 1;
+                } else if (rb.isNumberValue() and rc.isNumberValue()) {
+                    const fb = rb.toFloat();
+                    const fc = rc.toFloat();
+                    L.stack[ra] = .{ .number = numMod(fb, fc) };
+                    ci.savedpc += 1;
+                } else {
+                    try luaV_doarith(L, lua.LUA_OPMOD, ra, rb, rc);
+                    ci.savedpc += 1;
+                }
             },
             .POWK => {
                 const ra = ci.base + @as(usize, @intCast(GETARG_A(instruction)));
@@ -858,6 +873,9 @@ pub fn run(L: *lua.lua_State, active_ci: *lua.CallInfo) anyerror!void {
                     const fb = rb.toFloat();
                     const fc = rc.toFloat();
                     L.stack[ra] = .{ .number = libm.getLibm().pow(fb, fc) };
+                    ci.savedpc += 1;
+                } else {
+                    try luaV_doarith(L, lua.LUA_OPPOW, ra, rb, rc);
                     ci.savedpc += 1;
                 }
             },
@@ -869,6 +887,9 @@ pub fn run(L: *lua.lua_State, active_ci: *lua.CallInfo) anyerror!void {
                     const fb = rb.toFloat();
                     const fc = rc.toFloat();
                     L.stack[ra] = .{ .number = fb / fc };
+                    ci.savedpc += 1;
+                } else {
+                    try luaV_doarith(L, lua.LUA_OPDIV, ra, rb, rc);
                     ci.savedpc += 1;
                 }
             },
@@ -891,6 +912,9 @@ pub fn run(L: *lua.lua_State, active_ci: *lua.CallInfo) anyerror!void {
                     const fc = rc.toFloat();
                     L.stack[ra] = .{ .number = @floor(fb / fc) };
                     ci.savedpc += 1;
+                } else {
+                    try luaV_doarith(L, lua.LUA_OPIDIV, ra, rb, rc);
+                    ci.savedpc += 1;
                 }
             },
             .BANDK => {
@@ -901,6 +925,9 @@ pub fn run(L: *lua.lua_State, active_ci: *lua.CallInfo) anyerror!void {
                     const ib = rb.toIntegerExactOpt() orelse return lua.luaG_tointerror(L, rb);
                     const ic = rc.toIntegerExactOpt() orelse return lua.luaG_tointerror(L, rc);
                     L.stack[ra] = .{ .integer = ib & ic };
+                    ci.savedpc += 1;
+                } else {
+                    try luaV_doarith(L, lua.LUA_OPBAND, ra, rb, rc);
                     ci.savedpc += 1;
                 }
             },
@@ -913,6 +940,9 @@ pub fn run(L: *lua.lua_State, active_ci: *lua.CallInfo) anyerror!void {
                     const ic = rc.toIntegerExactOpt() orelse return lua.luaG_tointerror(L, rc);
                     L.stack[ra] = .{ .integer = ib | ic };
                     ci.savedpc += 1;
+                } else {
+                    try luaV_doarith(L, lua.LUA_OPBOR, ra, rb, rc);
+                    ci.savedpc += 1;
                 }
             },
             .BXORK => {
@@ -924,6 +954,9 @@ pub fn run(L: *lua.lua_State, active_ci: *lua.CallInfo) anyerror!void {
                     const ic = rc.toIntegerExactOpt() orelse return lua.luaG_tointerror(L, rc);
                     L.stack[ra] = .{ .integer = ib ^ ic };
                     ci.savedpc += 1;
+                } else {
+                    try luaV_doarith(L, lua.LUA_OPBXOR, ra, rb, rc);
+                    ci.savedpc += 1;
                 }
             },
             .SHLI => {
@@ -934,6 +967,9 @@ pub fn run(L: *lua.lua_State, active_ci: *lua.CallInfo) anyerror!void {
                     const ib = rb.toIntegerExactOpt() orelse return lua.luaG_tointerror(L, rb);
                     L.stack[ra] = .{ .integer = lua.luaV_shift(sc, ib) };
                     ci.savedpc += 1;
+                } else {
+                    try luaV_doarith(L, lua.LUA_OPSHL, ra, rb, .{ .integer = @as(i64, sc) });
+                    ci.savedpc += 1;
                 }
             },
             .SHRI => {
@@ -943,6 +979,9 @@ pub fn run(L: *lua.lua_State, active_ci: *lua.CallInfo) anyerror!void {
                 if (rb.isNumberValue()) {
                     const ib = rb.toIntegerExactOpt() orelse return lua.luaG_tointerror(L, rb);
                     L.stack[ra] = .{ .integer = lua.luaV_shift(ib, -%sc) };
+                    ci.savedpc += 1;
+                } else {
+                    try luaV_doarith(L, lua.LUA_OPSHR, ra, rb, .{ .integer = @as(i64, sc) });
                     ci.savedpc += 1;
                 }
             },

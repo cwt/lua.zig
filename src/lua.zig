@@ -2971,7 +2971,7 @@ pub fn lua_pcallk(L: *lua_State, nargs: i32, nresults: i32, errfunc: i32, ctx: l
         break :blk null;
     } else null;
     const old_errfunc = L.errfunc;
-    L.errfunc = if (errfunc_abs) |efi| @as(isize, @intCast(efi)) else 0;
+    L.errfunc = if (errfunc_abs) |efi| @as(isize, @intCast(efi + 1)) else 0;
     defer L.errfunc = old_errfunc;
 
     var err_occurred = false;
@@ -3040,6 +3040,7 @@ pub fn lua_pcallk(L: *lua_State, nargs: i32, nresults: i32, errfunc: i32, ctx: l
                             L.top += 1;
                         }
                     }
+
                 };
             }
         }
@@ -3867,7 +3868,7 @@ pub fn lua_gc(L: *lua_State, what: i32, arg: i32, value: i32) i32 {
 
 pub fn luaG_errormsg(L: *lua_State) anyerror {
     if (L.errfunc != 0) {
-        const errfunc = @as(usize, @intCast(L.errfunc));
+        const errfunc = @as(usize, @intCast(L.errfunc - 1));
         const err_obj = L.stack[L.top - 1];
         
         L.stack[L.top] = err_obj;
