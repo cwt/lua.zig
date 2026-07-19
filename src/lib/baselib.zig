@@ -200,7 +200,9 @@ fn dofile(L: *lua.lua_State) anyerror!i32 {
     defer L.allocator.free(contents);
 
     var slice_data = skipFilePreamble(contents);
-    const status = lua.lua_load(L, sliceReader, @as(?*anyopaque, @ptrCast(&slice_data)), filename, "bt");
+    const chunkname = try std.fmt.allocPrint(L.allocator, "@{s}", .{filename});
+    defer L.allocator.free(chunkname);
+    const status = lua.lua_load(L, sliceReader, @as(?*anyopaque, @ptrCast(&slice_data)), chunkname, "bt");
     if (status != lua.LUA_OK) {
         return lua.lua_error(L);
     }

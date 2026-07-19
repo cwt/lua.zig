@@ -680,25 +680,20 @@ pub fn run(L: *lua.lua_State, active_ci: *lua.CallInfo) anyerror!void {
                 const a = @as(usize, @intCast(GETARG_A(instruction)));
                 const b = @as(usize, @intCast(GETARG_B(instruction)));
                 const uv = cl.upvals[b].?;
-                L.stack[ci.base + a] = if (uv.index) |idx| L.stack[idx] else uv.value;
+                L.stack[ci.base + a] = uv.v.*;
             },
             .SETUPVAL => {
                 const a = @as(usize, @intCast(GETARG_A(instruction)));
                 const b = @as(usize, @intCast(GETARG_B(instruction)));
                 const uv = cl.upvals[b].?;
-                const val = L.stack[ci.base + a];
-                if (uv.index) |idx| {
-                    L.stack[idx] = val;
-                } else {
-                    uv.value = val;
-                }
+                uv.v.* = L.stack[ci.base + a];
             },
             .GETTABUP => {
                 const a = ci.base + @as(usize, @intCast(GETARG_A(instruction)));
                 const b = @as(usize, @intCast(GETARG_B(instruction)));
                 const c = @as(usize, @intCast(GETARG_C(instruction)));
                 const uv = cl.upvals[b].?;
-                const table_val = if (uv.index) |idx| L.stack[idx] else uv.value;
+                const table_val = uv.v.*;
                 const key = proto.k[c];
                 try ltm.luaV_gettable(L, table_val, key, a);
             },
@@ -731,7 +726,7 @@ pub fn run(L: *lua.lua_State, active_ci: *lua.CallInfo) anyerror!void {
                 const b = @as(usize, @intCast(GETARG_B(instruction)));
                 const c = @as(usize, @intCast(GETARG_C(instruction)));
                 const uv = cl.upvals[a].?;
-                const table_val = if (uv.index) |idx| L.stack[idx] else uv.value;
+                const table_val = uv.v.*;
                 const key = proto.k[b];
                 const val = if (GETARG_k(instruction) != 0) proto.k[c] else L.stack[ci.base + c];
                 try ltm.luaV_settable(L, table_val, key, val);
@@ -1265,9 +1260,6 @@ pub fn run(L: *lua.lua_State, active_ci: *lua.CallInfo) anyerror!void {
             },
             .TBC => {
                 const ra_idx = ci.base + @as(usize, @intCast(GETARG_A(instruction)));
-                ci.savedpc -= 1;
-                try lua.checkclosemth(L, ra_idx);
-                ci.savedpc += 1;
                 const v = L.stack[ra_idx];
                 if (v != .nil and (v != .boolean or v.boolean != false)) {
                     try L.tbclist.append(L.allocator, ra_idx);
