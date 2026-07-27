@@ -42,6 +42,10 @@ fn tcreate(L: *lua.lua_State) anyerror!i32 {
     try lauxlib.luaL_argcheck(L, s >= 0 and s <= std.math.maxInt(i32), 1, "out of range");
     const r = lauxlib.luaL_optinteger(L, 2, 0);
     try lauxlib.luaL_argcheck(L, r >= 0 and r <= std.math.maxInt(i32), 2, "out of range");
+    const max_size: i64 = 1 << 26; // Max ~67 million elements
+    if (s > max_size or r > max_size) {
+        return lauxlib.luaL_error(L, "table overflow");
+    }
     lua.lua_createtable(L, @intCast(s), @intCast(r));
     return 1;
 }
@@ -160,18 +164,20 @@ fn tunpack(L: *lua.lua_State) anyerror!i32 {
     const i_val = lauxlib.luaL_optinteger(L, 2, 1);
     const e_val = lauxlib.luaL_optinteger(L, 3, len);
     if (i_val > e_val) return 0;
-    var n: u64 = @intCast(e_val - i_val);
-    if (n >= std.math.maxInt(i32) - 1) {
+    const diff = @as(u64, @bitCast(e_val)) -% @as(u64, @bitCast(i_val));
+    if (diff >= @as(u64, @intCast(std.math.maxInt(i32) - 1))) {
         return lauxlib.luaL_error(L, "too many results to unpack");
     }
-    n += 1;
-    try lauxlib.luaL_checkstack(L, @intCast(n), "too many results to unpack");
+    const n: i32 = @intCast(diff + 1);
+    if (lua.lua_checkstack(L, n) == 0) {
+        return lauxlib.luaL_error(L, "too many results to unpack");
+    }
     var idx = i_val;
     while (idx < e_val) : (idx += 1) {
         _ = try lua.lua_geti(L, 1, idx);
     }
     _ = try lua.lua_geti(L, 1, e_val);
-    return @intCast(n);
+    return n;
 }
 
 fn sort_comp(L: *lua.lua_State, a: i32, b: i32) !bool {
@@ -189,10 +195,8 @@ fn sort_comp(L: *lua.lua_State, a: i32, b: i32) !bool {
 }
 
 fn set2(L: *lua.lua_State, i: u32, j: u32) !void {
-    _ = try lua.lua_geti(L, 1, @intCast(i)); // push tab[i]
-    _ = try lua.lua_geti(L, 1, @intCast(j)); // push tab[j]
-    try lua.lua_seti(L, 1, @intCast(i));     // tab[i] = tab[j]
-    try lua.lua_seti(L, 1, @intCast(j));     // tab[j] = old tab[i]
+    try lua.lua_seti(L, 1, @intCast(i));
+    try lua.lua_seti(L, 1, @intCast(j));
 }
 
 fn choosePivot(lo: u32, up_: u32, rnd: u32) u32 {
