@@ -105,10 +105,10 @@ for test_file in ./*.lua; do
             results["$base"]="FAIL (exit=$rc)"
             details["$base"]=$(echo "$stderr" | head -3)
         fi
-    elif echo "$stdout" | grep -q 'OK$'; then
+    elif echo "$stdout" | grep -qi 'ok$'; then
         results["$base"]="PASS"
         details["$base"]=""
-    elif echo "$stdout" | grep -q '^\s*OK'; then
+    elif echo "$stdout" | grep -qi '^\s*ok'; then
         results["$base"]="PASS"
         details["$base"]=""
     elif [[ -z "$stdout" ]] && [[ -z "$stderr" ]]; then
