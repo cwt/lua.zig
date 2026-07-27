@@ -6,6 +6,17 @@ tags: [log, changelog]
 timestamp: 2026-07-18T13:58:00Z
 ---
 
+## 2026-07-27 — Feature & Fix: string.pack / string.unpack conformance (100% PASS on `tpack.lua`)
+
+- **`string.pack` / `string.unpack` 1-to-1 C reference conformance** (`src/lib/string/pack.zig`):
+  - **Sign extension for `size > 8`**: Fixed `packint` and `unpackint` to pad high bytes with `0xFF` when packing negative numbers into format sizes `> 8` (e.g. `"i9"`..`"i16"`).
+  - **Bitwise shift safety & saturating subtraction**: Replaced unchecked shifts and subtraction with saturating subtraction (`-|`), `@truncate`, and `@min(size, 8)` to prevent Zig debug runtime underflow panics when handling zero-byte (`"i0"`) or large-byte option specs.
+  - **Big-endian extra-byte slicing**: Fixed big-endian (`">"`) string slicing in `unpackint` and `str_unpack` so lower 8 bytes and unread high bytes are checked at `[size-8..size]` and `[0..size-8]`.
+  - **1-to-1 `unpackint` overflow checks**: Ported reference C `unpackint` 1-to-1 so unsigned integers `> maxInt(i64)` do not raise false errors unless extra upper bytes are non-zero.
+  - **Format option `X` (`Kpaddalign`) handling**: Updated option `'X'` to parse the following option's alignment size without consuming its argument, and exempted `'c'` (`.char`) options from power-of-2 alignment checks.
+  - **`str_packsize` overflow safety**: Added `max_allowed` checks to return `"format result too large"` cleanly when `totalsize` exceeds `i64.max`.
+  - **`tpack.lua` test suite status**: `tpack.lua` now **100% PASSES** (0 failures, 0 leaks), bringing the total upstream passing suite count to **11 PASSING files** (0 CRASH, 0 TIMEOUT).
+
 ## 2026-07-27 — Fixes: UTF-8 library offset/char boundaries & GC totalbytes tracking
 
 - **`utf8.offset` multi-byte end-position return** (`src/lib/utf8lib.zig`):

@@ -16,6 +16,7 @@ const KOption = enum {
     string,
     zstring,
     padding,
+    paddalign,
     nop,
     max,
 };
@@ -36,9 +37,11 @@ fn getnum(fmt: []const u8, df: usize, pos: *usize) usize {
         return df;
     }
     var a: usize = 0;
+    const max_limit = (std.math.maxInt(usize) - 9) / 10;
     while (p < fmt.len and digit(fmt[p])) {
         a = a * 10 + @as(usize, @intCast(fmt[p] - '0'));
         p += 1;
+        if (a > max_limit) break;
     }
     pos.* = p;
     return a;
@@ -47,7 +50,9 @@ fn getnum(fmt: []const u8, df: usize, pos: *usize) usize {
 fn getnumlimit(h: *Header, fmt: []const u8, df: usize, max_val: usize, pos: *usize) !usize {
     const a = getnum(fmt, df, pos);
     if (a > max_val or a == 0) {
-        return lauxlib.luaL_error(h.L, "size out of limits");
+        var buf: [128]u8 = undefined;
+        const msg = std.fmt.bufPrint(&buf, "integral size ({d}) out of limits [1,{d}]", .{ a, max_val }) catch "size out of limits";
+        return lauxlib.luaL_error(h.L, msg);
     }
     return a;
 }
@@ -124,9 +129,9 @@ fn getoption(h: *Header, fmt: []const u8, pos: *usize, size: *usize) !KOption {
             return .unsigned;
         },
         'c' => {
-            size.* = getnum(fmt, 0, pos);
-            if (size.* == 0) {
-                return lauxlib.luaL_error(h.L, "missing size for option 'c'");
+            size.* = getnum(fmt, std.math.maxInt(usize), pos);
+            if (size.* == std.math.maxInt(usize)) {
+                return lauxlib.luaL_error(h.L, "missing size for format option 'c'");
             }
             return .char;
         },
@@ -139,7 +144,7 @@ fn getoption(h: *Header, fmt: []const u8, pos: *usize, size: *usize) !KOption {
             size.* = 1;
             return .padding;
         },
-        'X' => return .padding,
+        'X' => return .paddalign,
         ' ' => return .nop,
         '<' => {
             h.islittle = true;
@@ -169,52 +174,54 @@ fn getoption(h: *Header, fmt: []const u8, pos: *usize, size: *usize) !KOption {
 fn getdetails(h: *Header, fmt: []const u8, pos: *usize, size: *usize, align_val: *usize) !KOption {
     const opt = try getoption(h, fmt, pos, size);
     var al = size.*;
-    if (opt == .padding) {
+    if (opt == .paddalign) {
         if (pos.* >= fmt.len) {
-            al = 1;
-        } else {
-            const next_c = fmt[pos.*];
-            var temp_sz: usize = 0;
-            var temp_h = h.*;
-            var temp_pos = pos.*;
-            const next_opt = getoption(&temp_h, fmt, &temp_pos, &temp_sz) catch .max;
-            if (next_opt == .max or temp_sz == 0) {
-                al = 1;
-            } else {
-                al = temp_sz;
-            }
-            _ = next_c;
+            return lauxlib.luaL_argerror(h.L, 1, "invalid next option for option 'X'");
         }
+        var next_sz: usize = 0;
+        const next_opt = try getoption(h, fmt, pos, &next_sz);
+        if (next_opt == .char or next_opt == .max or next_sz == 0) {
+            return lauxlib.luaL_argerror(h.L, 1, "invalid next option for option 'X'");
+        }
+        al = next_sz;
     }
-    if (al > h.maxalign) {
-        al = h.maxalign;
+    if (al <= 1 or opt == .char) {
+        align_val.* = 1;
+    } else {
+        if (al > h.maxalign) {
+            al = h.maxalign;
+        }
+        if ((al & (al - 1)) != 0) {
+            return lauxlib.luaL_argerror(h.L, 1, "format asks for alignment not power of 2");
+        }
+        align_val.* = al;
     }
-    // `al` is 0 for the no-op options (endianness / alignment markers); a zero
-    // alignment would make the power-of-two test below compute `al - 1` on a
-    // zero value, so normalize it to 1 (these options are `continue`d past in
-    // the caller before alignment is ever applied).
-    if (al == 0) {
-        al = 1;
-    } else if ((al & (al - 1)) != 0) {
-        al = 1;
-    }
-    align_val.* = al;
     return opt;
 }
 
-fn packint(L: *lua.lua_State, b: *lauxlib.luaL_Buffer, val: u64, islittle: bool, size: usize) !void {
+fn packint(L: *lua.lua_State, b: *lauxlib.luaL_Buffer, val: u64, islittle: bool, size: usize, issigned: bool) !void {
     const dest = try lauxlib.luaL_prepbuffsize(L, b, size);
     var v = val;
+    const neg = issigned and (@as(i64, @bitCast(val)) < 0);
+    const fill: u8 = if (neg) 0xFF else 0x00;
     var i: usize = 0;
     if (islittle) {
         while (i < size) : (i += 1) {
-            dest[i] = @as(u8, @intCast(v & 0xFF));
-            v >>= 8;
+            if (i < 8) {
+                dest[i] = @as(u8, @intCast(v & 0xFF));
+                v >>= 8;
+            } else {
+                dest[i] = fill;
+            }
         }
     } else {
         while (i < size) : (i += 1) {
-            dest[size - 1 - i] = @as(u8, @intCast(v & 0xFF));
-            v >>= 8;
+            if (i < 8) {
+                dest[size - 1 - i] = @as(u8, @intCast(v & 0xFF));
+                v >>= 8;
+            } else {
+                dest[size - 1 - i] = fill;
+            }
         }
     }
     lauxlib.luaL_addsize(b, size);
@@ -243,29 +250,52 @@ pub fn str_pack(L: *lua.lua_State) anyerror!i32 {
 
     errdefer b.buf.deinit(L.allocator);
     var argn: i32 = 2;
+    var totalsize: usize = 0;
     var pos: usize = 0;
     while (pos < fmt.len) {
         var size: usize = 0;
         var align_val: usize = 0;
         const opt = try getdetails(&h, fmt, &pos, &size, &align_val);
         if (opt == .nop) continue;
-        const current_len = b.buf.items.len;
-        const pad_needed = (align_val - (current_len % align_val)) % align_val;
+        const pad_needed = (align_val - (totalsize % align_val)) % align_val;
+        const max_allowed = @as(usize, @intCast(std.math.maxInt(i64)));
+        try lauxlib.luaL_argcheck(L, pad_needed <= max_allowed -| totalsize and size <= (max_allowed -| totalsize) -| pad_needed, argn, "result too long");
+        totalsize += pad_needed + size;
         if (pad_needed > 0) {
             const pad_dest = try lauxlib.luaL_prepbuffsize(L, &b, pad_needed);
             @memset(pad_dest[0..pad_needed], 0);
             lauxlib.luaL_addsize(&b, pad_needed);
         }
+        if (opt == .paddalign) continue;
+        if (opt == .padding) {
+            if (size > 0) {
+                const pad_dest = try lauxlib.luaL_prepbuffsize(L, &b, size);
+                @memset(pad_dest[0..size], 0);
+                lauxlib.luaL_addsize(&b, size);
+            }
+            continue;
+        }
         switch (opt) {
             .signed => {
                 const val = try lauxlib.luaL_checkinteger(L, argn);
+                if (size < 8) {
+                    const shift: u6 = @truncate(size * 8 - 1);
+                    const lim = @as(i64, 1) << shift;
+                    try lauxlib.luaL_argcheck(L, val >= -lim and val < lim, argn, "integer overflow");
+                }
                 argn += 1;
-                try packint(L, &b, @as(u64, @bitCast(val)), h.islittle, size);
+                try packint(L, &b, @as(u64, @bitCast(val)), h.islittle, size, val < 0);
             },
             .unsigned => {
                 const val = try lauxlib.luaL_checkinteger(L, argn);
+                if (size < 8) {
+                    const max_u = (@as(u64, 1) << @as(u6, @truncate(size * 8)));
+                    try lauxlib.luaL_argcheck(L, @as(u64, @bitCast(val)) < max_u and val >= 0, argn, "unsigned overflow");
+                } else {
+                    try lauxlib.luaL_argcheck(L, val >= 0, argn, "unsigned overflow");
+                }
                 argn += 1;
-                try packint(L, &b, @as(u64, @bitCast(val)), h.islittle, size);
+                try packint(L, &b, @as(u64, @bitCast(val)), h.islittle, size, false);
             },
             .float => {
                 const val = try lauxlib.luaL_checknumber(L, argn);
@@ -273,12 +303,10 @@ pub fn str_pack(L: *lua.lua_State) anyerror!i32 {
                 const dest = try lauxlib.luaL_prepbuffsize(L, &b, size);
                 if (size == 4) {
                     const f = @as(f32, @floatCast(val));
-                    const bytes = std.mem.asBytes(&f);
-                    copywithendian(dest, bytes, 4, h.islittle);
+                    copywithendian(dest[0..4], std.mem.asBytes(&f), 4, h.islittle);
                 } else if (size == 8) {
                     const d = @as(f64, val);
-                    const bytes = std.mem.asBytes(&d);
-                    copywithendian(dest, bytes, 8, h.islittle);
+                    copywithendian(dest[0..8], std.mem.asBytes(&d), 8, h.islittle);
                 }
                 lauxlib.luaL_addsize(&b, size);
             },
@@ -298,10 +326,15 @@ pub fn str_pack(L: *lua.lua_State) anyerror!i32 {
                 var sl: usize = 0;
                 const s = try lauxlib.luaL_checklstring(L, argn, &sl);
                 argn += 1;
-                try packint(L, &b, sl, h.islittle, size);
+                if (size < 8) {
+                    const max_len = @as(usize, 1) << @as(u6, @truncate(size * 8));
+                    try lauxlib.luaL_argcheck(L, sl < max_len, argn - 1, "string length does not fit in given size");
+                }
+                try packint(L, &b, sl, h.islittle, size, false);
                 const dest = try lauxlib.luaL_prepbuffsize(L, &b, sl);
                 @memcpy(dest[0..sl], s[0..sl]);
                 lauxlib.luaL_addsize(&b, sl);
+                totalsize += sl;
             },
             .zstring => {
                 var sl: usize = 0;
@@ -312,6 +345,7 @@ pub fn str_pack(L: *lua.lua_State) anyerror!i32 {
                 @memcpy(dest[0..sl], s[0..sl]);
                 dest[sl] = 0;
                 lauxlib.luaL_addsize(&b, sl + 1);
+                totalsize += sl + 1;
             },
             .padding => {
                 if (size > 0) {
@@ -344,26 +378,50 @@ pub fn str_packsize(L: *lua.lua_State) anyerror!i32 {
             return lauxlib.luaL_error(L, "variable-length format in 'packsize'");
         }
         const pad_needed = (align_val - (totalsize % align_val)) % align_val;
-        totalsize += pad_needed;
-        totalsize += size;
+        const max_allowed = @as(usize, @intCast(std.math.maxInt(i64)));
+        if (totalsize > max_allowed -| pad_needed or (totalsize + pad_needed) > max_allowed -| size) {
+            return lauxlib.luaL_argerror(L, 1, "format result too large");
+        }
+        totalsize += pad_needed + size;
     }
     lua.lua_pushinteger(L, @as(i64, @intCast(totalsize)));
     return 1;
 }
 
-fn unpackint(src: []const u8, size: usize, islittle: bool) u64 {
-    var v: u64 = 0;
+fn unpackint(L: *lua.lua_State, src: []const u8, size: usize, islittle: bool, issigned: bool) !i64 {
+    var res: u64 = 0;
+    const limit = @min(size, 8);
     var i: usize = 0;
     if (islittle) {
-        while (i < size) : (i += 1) {
-            v |= @as(u64, src[i]) << @as(u6, @intCast(i * 8));
+        while (i < limit) : (i += 1) {
+            const shift: u6 = @truncate(i * 8);
+            res |= @as(u64, src[i]) << shift;
         }
     } else {
-        while (i < size) : (i += 1) {
-            v = (v << 8) | @as(u64, src[i]);
+        while (i < limit) : (i += 1) {
+            res = (res << 8) | @as(u64, src[size - limit + i]);
         }
     }
-    return v;
+    if (size < 8) {
+        if (issigned) {
+            const shift: u6 = @truncate(size * 8 - 1);
+            const mask = @as(u64, 1) << shift;
+            res = (res ^ mask) -% mask;
+        }
+    } else if (size > 8) {
+        const res_i = @as(i64, @bitCast(res));
+        const mask: u8 = if (!issigned or res_i >= 0) 0 else 0xFF;
+        i = limit;
+        while (i < size) : (i += 1) {
+            const b = src[if (islittle) i else size - 1 - i];
+            if (b != mask) {
+                var buf: [128]u8 = undefined;
+                const msg = std.fmt.bufPrint(&buf, "{d}-byte integer does not fit into Lua Integer", .{size}) catch "integer does not fit into Lua Integer";
+                return lauxlib.luaL_error(L, msg);
+            }
+        }
+    }
+    return @as(i64, @bitCast(res));
 }
 
 pub fn str_unpack(L: *lua.lua_State) anyerror!i32 {
@@ -372,12 +430,12 @@ pub fn str_unpack(L: *lua.lua_State) anyerror!i32 {
     const fmt = try lauxlib.luaL_checklstring(L, 1, &fmt_len);
     const data = try lauxlib.luaL_checklstring(L, 2, &data_len);
     const init_pos = posrelatI(lauxlib.luaL_optinteger(L, 3, 1), data_len);
-    try lauxlib.luaL_argcheck(L, init_pos > 0 and init_pos <= data_len + 1, 3, "position out of limits");
-    var data_offset = init_pos - 1;
+    try lauxlib.luaL_argcheck(L, init_pos > 0 and init_pos <= data_len + 1, 3, "initial position out of string");
     var h: Header = undefined;
     initheader(L, &h);
-    var pos: usize = 0;
+    var data_offset: usize = @intCast(init_pos - 1);
     var n: i32 = 0;
+    var pos: usize = 0;
     while (pos < fmt.len) {
         var size: usize = 0;
         var align_val: usize = 0;
@@ -389,21 +447,9 @@ pub fn str_unpack(L: *lua.lua_State) anyerror!i32 {
             return lauxlib.luaL_argerror(L, 2, "data string too short");
         }
         switch (opt) {
-            .signed => {
-                const uv = unpackint(data[data_offset..], size, h.islittle);
-                var iv = @as(i64, @bitCast(uv));
-                // Sign extend if size < 8
-                if (size < 8) {
-                    const mask = (@as(u64, 1) << @as(u6, @intCast(size * 8 - 1)));
-                    const uv_se = (uv ^ mask) -% mask;
-                    iv = @as(i64, @bitCast(uv_se));
-                }
-                lua.lua_pushinteger(L, iv);
-                n += 1;
-            },
-            .unsigned => {
-                const uv = unpackint(data[data_offset..], size, h.islittle);
-                lua.lua_pushinteger(L, @as(i64, @bitCast(uv)));
+            .signed, .unsigned => {
+                const res = try unpackint(L, data[data_offset..], size, h.islittle, opt == .signed);
+                lua.lua_pushinteger(L, res);
                 n += 1;
             },
             .float => {
@@ -427,7 +473,7 @@ pub fn str_unpack(L: *lua.lua_State) anyerror!i32 {
                 n += 1;
             },
             .string => {
-                const sl = unpackint(data[data_offset..], size, h.islittle);
+                const sl = try unpackint(L, data[data_offset..], size, h.islittle, false);
                 const sl_u = @as(usize, @intCast(sl));
                 data_offset += size;
                 if (data_offset + sl_u > data_len) {
@@ -449,9 +495,9 @@ pub fn str_unpack(L: *lua.lua_State) anyerror!i32 {
                     return lauxlib.luaL_argerror(L, 2, "unfinished string in data");
                 }
             },
-            .padding => {},
+            .padding, .paddalign => {},
             .max => break,
-            else => unreachable,
+            else => {},
         }
         data_offset += size;
     }
