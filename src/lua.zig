@@ -935,6 +935,7 @@ pub const global_State = struct {
     panic: ?lua_CFunction = null,
     gc_threshold: usize = 1000,
     gc_count: usize = 0,
+    totalbytes: usize = 0,
     /// GC control: if false, GC is stopped (LUA_GCSTOP). Allocations still
     /// happen but do not trigger collection.
     gc_running: bool = true,
@@ -965,6 +966,19 @@ pub fn registerGC(L: *lua_State, val: anytype) !void {
     };
     g.allgc = gc;
     g.gc_count += 1;
+
+    const sz: usize = switch (union_val) {
+        .table => |t| @sizeOf(lua_Table) + t.array.capacity * @sizeOf(TValue) + t.node.capacity * @sizeOf(Node),
+        .string => |ts| @sizeOf(lua_TString) + ts.s.len + 1,
+        .closure => |cl| switch (cl.*) {
+            .c => |cc| @sizeOf(lua_Closure) + @sizeOf(lua_CClosure) + cc.upvals.len * @sizeOf(TValue),
+            .lua => |lc| @sizeOf(lua_Closure) + @sizeOf(lua_LClosure) + lc.upvals.len * @sizeOf(?*UpVal),
+        },
+        .userdata => |ud| @sizeOf(lua_Udata) + ud.data.len,
+        .proto => @sizeOf(lua_Proto),
+        .upval => @sizeOf(UpVal),
+    };
+    g.totalbytes += sz + @sizeOf(VMGCObject);
 
     switch (union_val) {
         .table => |t| t.gc = gc,
@@ -3578,6 +3592,23 @@ fn markValue(L: *lua_State, gray_list: *std.ArrayList(*VMGCObject), val: TValue)
 }
 
 fn freeGCObject(L: *lua_State, gc: *VMGCObject) void {
+    const g = G(L);
+    const sz: usize = switch (gc.val) {
+        .table => |t| @sizeOf(lua_Table) + t.array.capacity * @sizeOf(TValue) + t.node.capacity * @sizeOf(Node),
+        .string => |ts| @sizeOf(lua_TString) + ts.s.len + 1,
+        .closure => |cl| switch (cl.*) {
+            .c => |cc| @sizeOf(lua_Closure) + @sizeOf(lua_CClosure) + cc.upvals.len * @sizeOf(TValue),
+            .lua => |lc| @sizeOf(lua_Closure) + @sizeOf(lua_LClosure) + lc.upvals.len * @sizeOf(?*UpVal),
+        },
+        .userdata => |ud| @sizeOf(lua_Udata) + ud.data.len,
+        .proto => @sizeOf(lua_Proto),
+        .upval => @sizeOf(UpVal),
+    };
+    if (g.totalbytes >= sz + @sizeOf(VMGCObject)) {
+        g.totalbytes -= sz + @sizeOf(VMGCObject);
+    } else {
+        g.totalbytes = 0;
+    }
     switch (gc.val) {
         .table => |t| {
             ltable.deinit(t);
@@ -3977,12 +4008,10 @@ pub fn lua_gc(L: *lua_State, what: i32, arg: i32, value: i32) i32 {
             return 0;
         },
         LUA_GCCOUNT => {
-            // Total memory tracked by the allocator is not available directly
-            // from std.mem.Allocator; return 0 for now.
-            return 0;
+            return @as(i32, @intCast(g.totalbytes / 1024));
         },
         LUA_GCCOUNTB => {
-            return 0;
+            return @as(i32, @intCast(g.totalbytes % 1024));
         },
         LUA_GCSTEP => {
             // Run a full synchronous collection for each step request.
