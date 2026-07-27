@@ -6,6 +6,18 @@ tags: [log, changelog]
 timestamp: 2026-07-18T13:58:00Z
 ---
 
+## 2026-07-27 — Fixes: UTF-8 library offset/char boundaries & GC totalbytes tracking
+
+- **`utf8.offset` multi-byte end-position return** (`src/lib/utf8lib.zig`):
+  - Fixed `utf8.offset` to return both start position and end position (last continuation byte) for multi-byte characters, matching Lua 5.5 reference `lutf8lib.c`.
+  - Added bounds checking to avoid slice out-of-bounds panics when checking continuation bytes at string boundary.
+- **`utf8.char` overflow safety** (`src/lib/utf8lib.zig`):
+  - Used `@bitCast` to `u64` when checking integer arguments, preventing casting panics on negative values (`-1`) or values larger than `u32.max`.
+- **GC Memory Tracking (`g.totalbytes`)** (`src/lua.zig`):
+  - Added `totalbytes: usize` tracking to `global_State`.
+  - Updated `registerGC` and `freeGCObject` to accurately accumulate and deduct bytes for tables, strings, closures, userdata, protos, and upvalues.
+  - Updated `lua_gc` (`LUA_GCCOUNT`, `LUA_GCCOUNTB`) to report actual memory usage, fixing `collectgarbage("count")` assertions in test suite (`sort.lua`).
+
 ## 2026-07-20 — Feature: Unroll mechanism & continuation support for TBC yielding
 
 Fixed coroutine resumption stack unwinding and continuation handling (`finishpcall_k`) when yielding inside to-be-closed (`__close`) variable metamethods in protected calls (`pcall`/`xpcall`).
