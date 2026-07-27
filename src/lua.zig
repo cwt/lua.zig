@@ -1188,9 +1188,13 @@ pub fn lua_copy(L: *lua_State, fromidx: i32, toidx: i32) void {
 }
 
 pub fn lua_checkstack(L: *lua_State, n: i32) i32 {
-    const needed = L.top + @as(usize, @intCast(n));
+    if (n <= 0) return 1;
+    const extra = @as(usize, @intCast(n));
+    if (extra > llimits.LUAI_MAXSTACK) return 0;
+    const needed = L.top + extra;
+    if (needed > llimits.LUAI_MAXSTACK) return 0;
     if (needed <= L.stack.len) return 1;
-    const new_cap = needed + LUA_MINSTACK;
+    const new_cap = @min(needed + LUA_MINSTACK, llimits.LUAI_MAXSTACK);
     const old_ptr = L.stack.ptr;
     const old_len = L.stack.len;
     const old_base = @intFromPtr(old_ptr);
