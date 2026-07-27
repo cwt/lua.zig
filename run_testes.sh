@@ -38,7 +38,7 @@ TEST_DIR="lua/testes"
 #   api.lua code.lua coroutine.lua gc.lua strings.lua memerr.lua tracegc.lua
 
 # Extra-slow/heavy tests
-HEAVY_TESTS="heavy.lua verybig.lua big.lua constructs.lua"
+HEAVY_TESTS="heavy.lua verybig.lua big.lua constructs.lua sort.lua"
 
 # Tests that unconditionally require the internal C test lib `T`.
 T_TESTS="api.lua code.lua coroutine.lua gc.lua strings.lua memerr.lua tracegc.lua"
