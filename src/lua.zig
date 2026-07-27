@@ -393,14 +393,16 @@ pub fn destroyProto(allocator: std.mem.Allocator, f: *lua_Proto) void {
 }
 
 pub fn findupval(L: *lua_State, idx: usize) !*UpVal {
+    const target_ptr = &L.stack[idx];
+    const target_addr = @intFromPtr(target_ptr);
     var prev: ?*UpVal = null;
     var curr = L.openupval;
     while (curr) |uv| {
-        const uv_idx = uv.v - L.stack.ptr;
-        if (uv_idx == idx) {
+        const addr = @intFromPtr(uv.v);
+        if (addr == target_addr) {
             return uv;
         }
-        if (uv_idx < idx) {
+        if (addr < target_addr) {
             break;
         }
         prev = uv;
@@ -409,7 +411,7 @@ pub fn findupval(L: *lua_State, idx: usize) !*UpVal {
     const uv = try L.allocator.create(UpVal);
     uv.* = .{
         .value = .{ .nil = {} },
-        .v = &L.stack[idx],
+        .v = target_ptr,
         .next = curr,
         .refcount = 0,
     };
@@ -513,17 +515,23 @@ fn close_one_slot(L: *lua_State, abs: usize, err_val: ?TValue) anyerror!?TValue 
 
 pub fn closeupvals(L: *lua_State, limit: usize, err_val: ?TValue) !void {
 
-    var curr = L.openupval;
-    while (curr) |uv| {
-        const uv_idx = uv.v - L.stack.ptr;
-        if (uv_idx >= limit) {
-            uv.value = uv.v.*;
+    const lim = if (limit < L.stack.len) limit else L.stack.len;
+    const limit_addr = @intFromPtr(&L.stack[lim]);
+    while (L.openupval) |uv| {
+        const addr = @intFromPtr(uv.v);
+        if (addr >= limit_addr) {
+            const base = @intFromPtr(L.stack.ptr);
+            const end = base + L.stack.len * @sizeOf(TValue);
+            if (addr >= base and addr < end) {
+                uv.value = uv.v.*;
+            } else {
+                uv.value = .{ .nil = {} };
+            }
             uv.v = &uv.value;
             L.openupval = uv.next;
-            curr = L.openupval;
-            continue;
+        } else {
+            break;
         }
-        break;
     }
 
     var has_err = (err_val != null);
@@ -720,13 +728,13 @@ const PF_VATAB: u8 = 2; // function has a vararg table
         .c => L.top + 20,
         .lua => |lc| func_idx + 1 + lc.p.maxStackSize,
     };
-    const limit = if (L.stack.len > llimits.LUAI_MAXSTACK) L.stack.len else llimits.LUAI_MAXSTACK;
-    if (needed > limit) {
-        if (limit > llimits.LUAI_MAXSTACK) {
-            return error.StackError;
+    if (needed > L.stack.len) {
+        if (needed > llimits.LUAI_MAXSTACK) {
+            return error.StackOverflow;
         }
-        _ = lua_checkstack(L, @intCast(llimits.ERRORSTACKSIZE - L.top));
-        return error.StackOverflow;
+        if (lua_checkstack(L, @intCast(needed - L.top)) == 0) {
+            return error.StackOverflow;
+        }
     }
     switch (cl.*) {
         .c => |cc| {
@@ -797,7 +805,8 @@ const PF_VATAB: u8 = 2; // function has a vararg table
              if (frame_top >= L.stack.len) {
                 const old_len = L.stack.len;
                 var new_len = @max(L.stack.len * 2, frame_top + 10);
-                if (new_len > limit) new_len = limit;
+                const max_limit = llimits.ERRORSTACKSIZE;
+                if (new_len > max_limit) new_len = max_limit;
                 const old_ptr = L.stack.ptr;
                 const old_base = @intFromPtr(old_ptr);
                 const old_end = old_base + old_len * @sizeOf(TValue);
@@ -1194,7 +1203,7 @@ pub fn lua_checkstack(L: *lua_State, n: i32) i32 {
     const needed = L.top + extra;
     if (needed > llimits.LUAI_MAXSTACK) return 0;
     if (needed <= L.stack.len) return 1;
-    const new_cap = @min(needed + LUA_MINSTACK, llimits.LUAI_MAXSTACK);
+    const new_cap = @min(needed + LUA_MINSTACK + 20, llimits.ERRORSTACKSIZE);
     const old_ptr = L.stack.ptr;
     const old_len = L.stack.len;
     const old_base = @intFromPtr(old_ptr);
@@ -3720,6 +3729,13 @@ fn luaS_clearcache(L: *lua_State) void {
     }
 }
 
+pub inline fn luaC_condGC(L: *lua_State) void {
+    const g = G(L);
+    if (g.gc_running and g.totalbytes >= g.gc_threshold) {
+        luaC_collectgarbage(L) catch {};
+    }
+}
+
 pub fn luaC_collectgarbage(L: *lua_State) !void {
     const g = G(L);
 
@@ -3847,7 +3863,16 @@ pub fn luaC_collectgarbage(L: *lua_State) !void {
                 }
             },
             .upval => |uv| {
-                try markValue(L, &gray_list, uv.value);
+                if (uv.v == &uv.value) {
+                    try markValue(L, &gray_list, uv.value);
+                } else {
+                    const addr = @intFromPtr(uv.v);
+                    const base = @intFromPtr(L.stack.ptr);
+                    const end = base + L.stack.len * @sizeOf(TValue);
+                    if (addr >= base and addr < end) {
+                        try markValue(L, &gray_list, uv.v.*);
+                    }
+                }
             },
             .proto => |p| {
                 if (p.source) |src| src.marked = true;
@@ -4048,6 +4073,12 @@ pub fn lua_gc(L: *lua_State, what: i32, arg: i32, value: i32) i32 {
 
 pub fn luaG_errormsg(L: *lua_State) anyerror {
     if (L.errfunc != 0) {
+        if (lua_checkstack(L, 2) == 0 or L.top + 2 >= L.stack.len) {
+            if (lstring.luaS_new(L, "error in error handling")) |ts| {
+                L.stack[L.top - 1] = TValue{ .string = ts };
+            } else |_| {}
+            return error.StackError;
+        }
         const errfunc = @as(usize, @intCast(L.errfunc - 1));
         const err_obj = L.stack[L.top - 1];
         

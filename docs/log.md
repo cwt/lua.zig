@@ -6,6 +6,22 @@ tags: [log, changelog]
 timestamp: 2026-07-18T13:58:00Z
 ---
 
+## 2026-07-27 — Feature & Fix: Vararg Table Conformance & Stack/GC Safety (100% PASS on `vararg.lua`)
+
+- **Stack Growth & Headroom Safety** (`src/lua.zig`):
+  - Fixed `precall` stack growth check to compare `needed` against `L.stack.len` instead of `LUAI_MAXSTACK`, ensuring `L.stack` grows when required for function frames.
+  - Capped stack reallocation capacity at `ERRORSTACKSIZE` (`1,000,200`) instead of `LUAI_MAXSTACK` (`1,000,000`), providing necessary headroom for error objects and traceback formatting in `luaG_errormsg` without stack index out of bounds panics.
+  - Added stack capacity validation in `luaG_errormsg` before pushing error handler functions.
+- **Open Upvalue Relocation & GC Marking** (`src/lua.zig`, `src/ltm.zig`):
+  - Updated `buildhiddenargs` to update open upvalue pointers (`uv.v`) when frame slots are shifted.
+  - Fixed `findupval` and `closeupvals` to use exact pointer address comparison (`target_addr` / `limit_addr`) matching reference C `lfunc.c`, safely handling stack reallocation and preventing unlinked upvalue loss.
+  - Updated `markObject` in GC to safely mark closed (`uv.value`) vs open (`uv.v.*`) upvalues without reading uninitialized memory.
+- **Vararg Table (`...v` / `PF_VATAB`) Support** (`src/lparser.zig`, `src/ltm.zig`):
+  - Added `needvatab(f)` in `parlist` when parsing named vararg table parameters (`...v`).
+  - Ensured `PF_VATAB` and `PF_VAHID` flags are mutually exclusive matching reference `lua/ltm.c`.
+  - Set `L.top = ci.top` in `luaT_adjustvarargs` for `PF_VATAB` functions to protect register space from being overwritten by subsequent expressions.
+- **Upstream Test Suite Status**: `vararg.lua` now **100% PASSES** (0 failures, 0 leaks), bringing the total upstream passing suite count to **12 PASSING files** (0 CRASH, 0 TIMEOUT).
+
 ## 2026-07-27 — Feature & Fix: string.pack / string.unpack conformance (100% PASS on `tpack.lua`)
 
 - **`string.pack` / `string.unpack` 1-to-1 C reference conformance** (`src/lib/string/pack.zig`):

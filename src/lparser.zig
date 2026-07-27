@@ -339,6 +339,7 @@ pub fn luaY_nvarstack(fs: *FuncState) i32 {
 
 pub fn needvatab(f: *lua.lua_Proto) void {
     f.flag |= PF_VATAB;
+    f.flag &= ~PF_VAHID;
 }
 
 // ---------------------------------------------------------------------------
@@ -856,7 +857,9 @@ fn close_func(ls: *llex.LexState) !void {
 
 fn setvararg(fs: *FuncState) void {
     fs.f.isVarArg = true;
-    fs.f.flag |= PF_VAHID;
+    if ((fs.f.flag & PF_VATAB) == 0) {
+        fs.f.flag |= PF_VAHID;
+    }
     _ = lcode.luaK_codeABC(fs, .VARARGPREP, 0, 0, 0);
 }
 
@@ -898,6 +901,7 @@ fn parlist(ls: *llex.LexState) !void {
                     try llex.luaX_next(ls);
                     if (ls.t.token == llex.TK_NAME) {
                         _ = try new_varkind(ls, try str_checkname(ls), RDKVAVAR);
+                        needvatab(f);
                     } else {
                         _ = try new_localvarliteral(ls, "(vararg table)");
                     }

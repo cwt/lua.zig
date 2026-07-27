@@ -597,8 +597,11 @@ pub fn luaT_adjustvarargs(L: *lua.lua_State, ci: *lua.CallInfo, cl: *lua.lua_LCl
     const nfixparams: usize = p.numParams;
     const nextra = totalargs - @as(i32, @intCast(nfixparams));
     if ((p.flag & PF_VATAB) != 0) {
-        const t = try createVarargTable(L, ci.func + nfixparams + 1, @intCast(nextra));
+        const actual_nextra: usize = if (nextra > 0) @intCast(nextra) else 0;
+        const t = try createVarargTable(L, ci.func + nfixparams + 1, actual_nextra);
         L.stack[ci.func + nfixparams + 1] = lua.TValue{ .table = t };
+        L.top = ci.top;
+        lua.luaC_condGC(L);
     } else {
         try buildhiddenargs(L, ci, totalargs, nfixparams, nextra, p.maxStackSize);
     }
@@ -614,18 +617,32 @@ fn buildhiddenargs(L: *lua.lua_State, ci: *lua.CallInfo, totalargs: i32, nfixpar
     // of the (relocated) function's registers above the current top.
     const need = L.top + @as(usize, @intCast(maxstacksize)) + 1;
     if (need > L.stack.len) {
-        const old_len = L.stack.len;
-        const new_len = @max(L.stack.len * 2, need);
-        L.stack = try L.allocator.realloc(L.stack, new_len);
-        @memset(L.stack[old_len..], .{ .nil = {} });
-        L.stack_last = L.stack.len - 1;
+        if (lua.lua_checkstack(L, @intCast(need - L.top)) == 0) return error.OutOfMemory;
     }
-    L.stack[L.top] = L.stack[ci.func];
+    const old_func_idx = ci.func;
+    const new_func_idx = L.top;
+    L.stack[new_func_idx] = L.stack[old_func_idx];
     L.top += 1;
+    var curr_f = L.openupval;
+    while (curr_f) |uv| {
+        if (uv.v == &L.stack[old_func_idx]) {
+            uv.v = &L.stack[new_func_idx];
+        }
+        curr_f = uv.next;
+    }
     var i: usize = 1;
     while (i <= nfixparams) : (i += 1) {
-        L.stack[L.top] = L.stack[ci.func + i];
-        L.stack[ci.func + i] = .{ .nil = {} };
+        const old_idx = ci.func + i;
+        const new_idx = L.top;
+        L.stack[new_idx] = L.stack[old_idx];
+        L.stack[old_idx] = .{ .nil = {} };
+        var curr = L.openupval;
+        while (curr) |uv| {
+            if (uv.v == &L.stack[old_idx]) {
+                uv.v = &L.stack[new_idx];
+            }
+            curr = uv.next;
+        }
         L.top += 1;
     }
     ci.func += @as(usize, @intCast(totalargs)) + 1;
