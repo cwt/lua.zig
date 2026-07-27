@@ -4315,9 +4315,9 @@ test "H.10 GC completeness (stop, restart, isrunning, collect, step, GCPARAM get
     // Step (runs full collection synchronously in our port)
     try std.testing.expectEqual(@as(i32, 1), lua.lua_gc(&L, lua.LUA_GCSTEP, 0, 0));
 
-    // GCCOUNT / GCCOUNTB (return 0 for now)
-    try std.testing.expectEqual(@as(i32, 0), lua.lua_gc(&L, lua.LUA_GCCOUNT, 0, 0));
-    try std.testing.expectEqual(@as(i32, 0), lua.lua_gc(&L, lua.LUA_GCCOUNTB, 0, 0));
+    // GCCOUNT / GCCOUNTB (returns memory usage in KB / remainder bytes)
+    try std.testing.expect(lua.lua_gc(&L, lua.LUA_GCCOUNT, 0, 0) > 0);
+    try std.testing.expect(lua.lua_gc(&L, lua.LUA_GCCOUNTB, 0, 0) >= 0);
 
     // GCGEN / GCINC (acknowledge, return 0)
     try std.testing.expectEqual(@as(i32, 0), lua.lua_gc(&L, lua.LUA_GCGEN, 0, 0));
