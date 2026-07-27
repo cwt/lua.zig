@@ -16,7 +16,9 @@ timestamp: 2026-07-18T13:58:00Z
 - **GC Memory Tracking (`g.totalbytes`)** (`src/lua.zig`):
   - Added `totalbytes: usize` tracking to `global_State`.
   - Updated `registerGC` and `freeGCObject` to accurately accumulate and deduct bytes for tables, strings, closures, userdata, protos, and upvalues.
-  - Updated `lua_gc` (`LUA_GCCOUNT`, `LUA_GCCOUNTB`) to report actual memory usage, fixing `collectgarbage("count")` assertions in test suite (`sort.lua`).
+- **`lua_checkstack` bounds capping (OOM prevention)** (`src/lua.zig`):
+  - Capped `lua_checkstack` to `LUAI_MAXSTACK` (1,000,000 slots) and handled non-positive `n <= 0` gracefully.
+  - Fixed an un-guarded `@intCast(n)` integer wrapping issue on negative `n` values that was allocating multi-gigabyte stack buffers and triggering Linux OOM kernel kills during recursive test runs.
 
 ## 2026-07-20 — Feature: Unroll mechanism & continuation support for TBC yielding
 
