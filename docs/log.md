@@ -6,6 +6,24 @@ tags: [log, changelog]
 timestamp: 2026-07-18T13:58:00Z
 ---
 
+## 2026-07-20 — Feature: Unroll mechanism & continuation support for TBC yielding
+
+Fixed coroutine resumption stack unwinding and continuation handling (`finishpcall_k`) when yielding inside to-be-closed (`__close`) variable metamethods in protected calls (`pcall`/`xpcall`).
+
+### Changes
+
+- **Unroll mechanism** (`src/lua.zig`):
+  - Refactored `do_resume` and implemented `unroll` stack traversal for coroutine resumption.
+  - Properly processes C functions with continuations (`kf`) and Lua function frames until yield points or completion.
+- **Pcall continuation** (`src/lib/baselib.zig`):
+  - Added `finishpcall_k` continuation function matching `lua_KFunction` signature.
+  - Wired `finishpcall_k` to `lua_pcallk` calls in `pcall` and `xpcall`.
+- **`lua_resume` results calculation** (`src/lua.zig`):
+  - Fixed `nresults` calculation for finished coroutines (`LUA_OK`) to correctly count from `ci.func` to `L.top`.
+- **Test suite & cleanups**:
+  - Fixed C API coroutine test continuation signature in `tests/test_basic.zig`.
+  - All 127 unit tests pass cleanly.
+
 ## 2026-07-18 — Bug fixes: Metamethod invocation register allocation (BUG-047) and parseInteger limits (BUG-048)
 
 Fixed two critical bugs: System V AMD64 ABI metamethod invocation stack overwrite (BUG-047) and minint/hex parser boundaries (BUG-048).
