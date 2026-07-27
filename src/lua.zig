@@ -422,7 +422,7 @@ pub fn findupval(L: *lua_State, idx: usize) !*UpVal {
     return uv;
 }
 
-fn close_one_slot(L: *lua_State, abs: usize, err_val: ?TValue) ?TValue {
+fn close_one_slot(L: *lua_State, abs: usize, err_val: ?TValue) anyerror!?TValue {
     const v = L.stack[abs];
     if (v == .nil) return null;
     if (v == .boolean and v.boolean == false) return null;
@@ -433,7 +433,6 @@ fn close_one_slot(L: *lua_State, abs: usize, err_val: ?TValue) ?TValue {
     };
     const tm = if (mt) |m| ltm.luaT_gettm(m, .CLOSE, G(L).tmname[@intFromEnum(ltm.TMS.CLOSE)].?) else null;
     if (tm == null) {
-        if (err_val == null) return null; // skip non-closable when no error
         const msg = "attempt to call a nil value (metamethod 'close')";
         const old_top = L.top;
         const ts = lstring.luaS_new(L, msg) catch {
@@ -452,6 +451,7 @@ fn close_one_slot(L: *lua_State, abs: usize, err_val: ?TValue) ?TValue {
     const old_top = L.top;
     if (err_val) |err| {
         ltm.luaT_callTM2(L, tm.?, &v, &err) catch |e| {
+            if (e == error.Yield) return e;
             const saved_err = if (L.top > old_top) L.stack[L.top - 1] else TValue{ .nil = {} };
             L.top = old_top;
             if (e == error.NotAFunction) {
@@ -480,6 +480,7 @@ fn close_one_slot(L: *lua_State, abs: usize, err_val: ?TValue) ?TValue {
         };
     } else {
         ltm.luaT_callTM1(L, tm.?, &v) catch |e| {
+            if (e == error.Yield) return e;
             const saved_err = if (L.top > old_top) L.stack[L.top - 1] else TValue{ .nil = {} };
             L.top = old_top;
             if (e == error.NotAFunction) {
@@ -511,6 +512,7 @@ fn close_one_slot(L: *lua_State, abs: usize, err_val: ?TValue) ?TValue {
 }
 
 pub fn closeupvals(L: *lua_State, limit: usize, err_val: ?TValue) !void {
+
     var curr = L.openupval;
     while (curr) |uv| {
         const uv_idx = uv.v - L.stack.ptr;
@@ -544,7 +546,7 @@ pub fn closeupvals(L: *lua_State, limit: usize, err_val: ?TValue) !void {
             const gc_safe_top = @max(L.top, abs + 1);
             const old_top = L.top;
             L.top = gc_safe_top;
-            if (close_one_slot(L, abs, current_err)) |new_err| {
+            if (try close_one_slot(L, abs, current_err)) |new_err| {
                 L.top = old_top;
                 if (needs_err_push) {
                     L.stack[err_idx] = new_err;
@@ -562,7 +564,6 @@ pub fn closeupvals(L: *lua_State, limit: usize, err_val: ?TValue) !void {
             break;
         }
     }
-
     if (has_err) {
         const final_err = L.stack[err_idx];
         L.top = err_idx + 1;
@@ -570,10 +571,71 @@ pub fn closeupvals(L: *lua_State, limit: usize, err_val: ?TValue) !void {
         return error.RuntimeError;
     }
 }
+pub fn luaD_hook(L: *lua_State, event: i32, line: i32, ftransfer: i32, ntransfer: i32) void {
+    const hook = L.hook;
+    if (hook != null and L.allowhook != 0) {
+        const old_top = L.top;
+        const ci = L.ci.?;
+        const old_ci_top = ci.top;
+        var ar = lua_Debug{
+            .event = event,
+            .name = null,
+            .namewhat = null,
+            .what = null,
+            .source = null,
+            .srclen = 0,
+            .currentline = line,
+            .linedefined = 0,
+            .lastlinedefined = 0,
+            .nups = 0,
+            .nparams = 0,
+            .isvararg = false,
+            .extraargs = 0,
+            .istailcall = false,
+            .ftransfer = ftransfer,
+            .ntransfer = ntransfer,
+            .short_src = std.mem.zeroes([LUA_IDSIZE]u8),
+            .i_ci = ci,
+        };
+        L.transferinfo = .{
+            .ftransfer = ftransfer,
+            .ntransfer = ntransfer,
+        };
+        const val = L.stack[ci.func];
+        if (val == .function and val.function.?.* == .lua) {
+            if (L.top < ci.top) {
+                L.top = ci.top;
+            }
+        }
+        _ = lua_checkstack(L, 20);
+        if (ci.top < L.top + 20) {
+            ci.top = L.top + 20;
+        }
+        L.allowhook = 0;
+        hook.?(L, &ar);
+        L.allowhook = 1;
+        ci.top = old_ci_top;
+        L.top = old_top;
+    }
+}
 
 pub fn poscall(L: *lua_State, ci: *CallInfo, first_result_idx: usize, n: usize) !void {
     L.top = first_result_idx + n;
     try closeupvals(L, ci.base, null);
+
+    if (L.hookmask & llimits.LUA_MASKRET != 0) {
+        var delta: i32 = 0;
+        const val = L.stack[ci.func];
+        if (val == .function and val.function.?.* == .lua) {
+            const proto = val.function.?.lua.p;
+            if (proto.flag & PF_VAHID != 0) {
+                delta = ci.nextraargs + @as(i32, @intCast(proto.numParams)) + 1;
+            }
+        }
+        const firstres = first_result_idx;
+        const ftransfer = @as(i32, @intCast(firstres)) - (@as(i32, @intCast(ci.func)) + delta);
+        luaD_hook(L, LUA_HOOKRET, -1, ftransfer, @as(i32, @intCast(n)));
+    }
     const func_idx = ci.func;
     const nresults = ci.nresults;
     if (nresults >= 0) {
@@ -630,6 +692,7 @@ fn freeAllCallInfos(L: *lua_State) void {
     }
     L.ci_free = null;
     L.ci = &L.base_ci;
+    L.base_ci.next = null;
 }
 
 // Proto flag bits (mirror lua/ldo.h PF_*). A Lua function is vararg when its
@@ -657,8 +720,9 @@ const PF_VATAB: u8 = 2; // function has a vararg table
         .c => L.top + 20,
         .lua => |lc| func_idx + 1 + lc.p.maxStackSize,
     };
-    if (needed > llimits.LUAI_MAXSTACK) {
-        if (L.top > llimits.LUAI_MAXSTACK) {
+    const limit = if (L.stack.len > llimits.LUAI_MAXSTACK) L.stack.len else llimits.LUAI_MAXSTACK;
+    if (needed > limit) {
+        if (limit > llimits.LUAI_MAXSTACK) {
             return error.StackError;
         }
         _ = lua_checkstack(L, @intCast(llimits.ERRORSTACKSIZE - L.top));
@@ -732,7 +796,8 @@ const PF_VATAB: u8 = 2; // function has a vararg table
              const is_vararg = (proto.flag & (PF_VAHID | PF_VATAB)) != 0;
              if (frame_top >= L.stack.len) {
                 const old_len = L.stack.len;
-                const new_len = @max(L.stack.len * 2, frame_top + 10);
+                var new_len = @max(L.stack.len * 2, frame_top + 10);
+                if (new_len > limit) new_len = limit;
                 const old_ptr = L.stack.ptr;
                 const old_base = @intFromPtr(old_ptr);
                 const old_end = old_base + old_len * @sizeOf(TValue);
@@ -816,6 +881,10 @@ pub const CallInfo = struct {
     // lua.freeCallInfo). Kept separate from `next`/`previous` so the active
     // call-chain links remain intact for the debug API (lua_getinfo, etc.).
     freenext: ?*CallInfo = null,
+    // Saved number of return values when OP_RETURN's closeupvals yields.
+    // Mirrors C reference ci->u2.nres / CIST_CLSRET.
+    nres_saved: i32 = 0,
+    clsret: bool = false,
 };
 
 pub const GCColor = enum(u2) {
@@ -1858,7 +1927,7 @@ pub fn lua_newthread(L: *lua_State) !*lua_State {
         .tt = 0,
         .marked = 0,
         .gch = 0,
-        .allowhook = 0,
+        .allowhook = 1,
         .status = 0,
         .top = 1,
         .l_G = g,
@@ -1892,10 +1961,40 @@ pub fn lua_newthread(L: *lua_State) !*lua_State {
 
 pub fn lua_closethread(L: *lua_State, from: ?*lua_State) i32 {
     _ = from;
+    const old_status = L.status;
+    const err_val: ?TValue = if (old_status != 0 and old_status != LUA_YIELD and L.top > 0)
+        L.stack[L.top - 1]
+    else
+        null;
+
     freeAllCallInfos(L);
-    L.status = 0;
-    L.top = 0;
-    return LUA_OK;
+
+    // Close all upvalues and TBC variables on the thread stack.
+    // Index 1 corresponds to stack[1], since stack[0] is the thread function.
+
+    closeupvals(L, 1, err_val) catch {};
+
+    if (old_status != 0 and old_status != LUA_YIELD) {
+        if (L.top > 1) {
+            L.stack[1] = L.stack[L.top - 1];
+            L.top = 2;
+        } else {
+            L.top = 1;
+        }
+        L.status = old_status;
+        return old_status;
+    } else {
+        if (L.top > 1) {
+            L.stack[1] = L.stack[L.top - 1];
+            L.top = 2;
+            L.status = LUA_ERRRUN;
+            return LUA_ERRRUN;
+        } else {
+            L.top = 1;
+            L.status = 0;
+            return LUA_OK;
+        }
+    }
 }
 
 /// Deprecated alias for `lua_closethread(L, null)`.
@@ -2129,7 +2228,6 @@ fn getobjname(p: *const lua_Proto, lastpc: i32, reg: i32, name: *?[]const u8) ?[
 
 fn funcnamefromcode(L: *lua_State, p: *const lua_Proto, pc: i32, name: *?[]const u8) ?[]const u8 {
     if (pc < 0 or pc >= p.code.len) {
-        std.debug.print("OUT OF BOUNDS PC in funcnamefromcode: pc={} len={} source={?s} numParams={} maxStackSize={}\n", .{ pc, p.code.len, if (p.source) |ts| ts.s else null, p.numParams, p.maxStackSize });
         return null;
     }
     const i = p.code[@intCast(pc)];
@@ -2949,7 +3047,7 @@ pub fn lua_call(L: *lua_State, nargs: i32, nresults: i32) !void {
     try lua_callk(L, nargs, nresults, 0, null);
 }
 
-pub fn lua_pcallk(L: *lua_State, nargs: i32, nresults: i32, errfunc: i32, ctx: lua_KContext, k: ?lua_KFunction) i32 {
+pub fn lua_pcallk(L: *lua_State, nargs: i32, nresults: i32, errfunc: i32, ctx: lua_KContext, k: ?lua_KFunction) anyerror!i32 {
     if (k != null and lua_isyieldable(L) != 0) {
         if (L.ci) |ci| {
             ci.k = k;
@@ -2977,7 +3075,7 @@ pub fn lua_pcallk(L: *lua_State, nargs: i32, nresults: i32, errfunc: i32, ctx: l
     var err_occurred = false;
     const new_ci = precall(L, func_idx, nresults) catch |err| b: {
         if (err == error.Yield) {
-            return LUA_YIELD;
+            return err;
         }
         err_occurred = true;
         if (err == error.NotAFunction) {
@@ -3027,7 +3125,7 @@ pub fn lua_pcallk(L: *lua_State, nargs: i32, nresults: i32, errfunc: i32, ctx: l
             } else {
                 lvm.run(L, ci) catch |err| {
                     if (err == error.Yield) {
-                        return LUA_YIELD;
+                        return err;
                     }
                     err_occurred = true;
                     if (err == error.StackOverflow) {
@@ -3039,6 +3137,7 @@ pub fn lua_pcallk(L: *lua_State, nargs: i32, nresults: i32, errfunc: i32, ctx: l
                             L.stack[L.top] = TValue{ .nil = {} };
                             L.top += 1;
                         }
+                        _ = luaG_errormsg(L) catch {};
                     }
 
                 };
@@ -3080,18 +3179,16 @@ pub fn lua_pcallk(L: *lua_State, nargs: i32, nresults: i32, errfunc: i32, ctx: l
         L.stack[L.top] = err_obj;
         L.top += 1;
 
-        // Dispatch to the error handler (mirrors luaD_rawrunprotected +
-        // resume_err in the C reference after luaD_pcall has restored the
-        // stack).
-        _ = luaG_errormsg(L) catch {};
-
-        // Now L.top - 1 holds the final error value (the handler's return
-        // value, or the original message if L.errfunc was 0 / error in
-        // handler).
+        // The error handler was already invoked by lua_error → luaG_errormsg
+        // during error propagation (mirroring the C reference where
+        // luaG_errormsg calls luaD_throw/longjmp before luaD_pcall resumes).
+        // Do NOT call luaG_errormsg again here; the error object at
+        // L.top - 1 is the handler's return value (or the original message).
         const final_err_obj = if (L.top > err_push_pos)
             L.stack[L.top - 1]
         else
             TValue{ .nil = {} };
+
         closeupvals(L, func_idx, final_err_obj) catch {};
         const final_err_after = if (L.top > func_idx) L.stack[L.top - 1] else TValue{ .nil = {} };
 
@@ -3106,7 +3203,9 @@ pub fn lua_pcallk(L: *lua_State, nargs: i32, nresults: i32, errfunc: i32, ctx: l
 }
 
 pub inline fn lua_pcall(L: *lua_State, nargs: i32, nresults: i32, errfunc: i32) i32 {
-    return lua_pcallk(L, nargs, nresults, errfunc, 0, null);
+    return lua_pcallk(L, nargs, nresults, errfunc, 0, null) catch |e| {
+        return if (e == error.Yield) LUA_YIELD else LUA_ERRRUN;
+    };
 }
 
 /// Push a runtime-error message onto the stack and return `error.RuntimeError`
@@ -3122,7 +3221,7 @@ pub fn luaG_runerror(L: *lua_State, msg: []const u8) !void {
         L.stack[L.top] = TValue{ .nil = {} };
         L.top += 1;
     }
-    return error.RuntimeError;
+    return lua_error(L);
 }
 
 /// Value-equality test used by `varinfo` to locate the operand register.
@@ -3289,6 +3388,32 @@ fn resume_error(_: *lua_State, _: []const u8, _: i32) i32 {
     return LUA_ERRRUN;
 }
 
+fn unroll(L: *lua_State) !void {
+    while (L.ci) |ci| {
+        if (ci == &L.base_ci) break;
+        const val = L.stack[ci.func];
+        if (val == .function and val.function.?.* == .lua) {
+            try lvm.run(L, ci);
+        } else if (val == .function and val.function.?.* == .c) {
+            if (ci.k) |kf| {
+                const prev = ci.previous;
+                const nres = try kf(L, LUA_YIELD, ci.ctx);
+                const u_nres = @as(usize, @intCast(nres));
+                try poscall(L, ci, L.top - u_nres, u_nres);
+                L.ci = prev;
+                freeCallInfo(L, ci);
+            } else {
+                const prev = ci.previous;
+                try poscall(L, ci, L.top, 0);
+                L.ci = prev;
+                freeCallInfo(L, ci);
+            }
+        } else {
+            return error.RuntimeError;
+        }
+    }
+}
+
 fn do_resume(L: *lua_State, narg: i32) !void {
     const n = @as(usize, @intCast(narg));
     const firstArg = L.top - n;
@@ -3308,26 +3433,21 @@ fn do_resume(L: *lua_State, narg: i32) !void {
                 L.ci = prev;
                 freeCallInfo(L, ci);
             } else {
-                // Check if the yielded frame is a Lua function. If so, resume
-                // lvm.run on the existing CallInfo — savedpc already points past
-                // the yield. Re-precalling would lose savedpc and restart from 0.
                 const val = L.stack[ci.func];
                 if (val == .function and val.function.?.* == .lua) {
                     L.ci = ci;
                     try lvm.run(L, ci);
                 } else {
                     const prev = ci.previous;
-                    const func_idx = ci.func;
+                    try poscall(L, ci, firstArg, n);
                     L.ci = prev;
                     freeCallInfo(L, ci);
-                    if (try precall(L, func_idx, LUA_MULTRET)) |new_ci| {
-                        try lvm.run(L, new_ci);
-                    }
                 }
             }
         } else {
             return error.RuntimeError;
         }
+        try unroll(L);
     }
 }
 
@@ -3344,15 +3464,42 @@ pub fn lua_resume(L: *lua_State, from: ?*lua_State, narg: i32, nresults: ?*i32) 
 
     do_resume(L, narg) catch |e| {
         if (e == error.Yield) {} else {
-            L.status = 0;
+            const status = switch (e) {
+                error.OutOfMemory => b: {
+                    if (lstring.luaS_new(L, "not enough memory")) |ts| {
+                        L.stack[L.top] = TValue{ .string = ts };
+                        L.top += 1;
+                    } else |_| {
+                        L.stack[L.top] = TValue{ .nil = {} };
+                        L.top += 1;
+                    }
+                    break :b LUA_ERRMEM;
+                },
+                error.StackOverflow, error.StackError => b: {
+                    if (lstring.luaS_new(L, "stack overflow")) |ts| {
+                        L.stack[L.top] = TValue{ .string = ts };
+                        L.top += 1;
+                    } else |_| {
+                        L.stack[L.top] = TValue{ .nil = {} };
+                        L.top += 1;
+                    }
+                    break :b LUA_ERRRUN;
+                },
+                else => LUA_ERRRUN,
+            };
+            L.status = @intCast(status);
         }
     };
 
     if (nresults) |nr| {
         if (L.status == LUA_YIELD) {
             nr.* = if (L.ci) |ci| ci.nyield else 0;
-        } else if (L.ci) |ci| {
-            nr.* = @as(i32, @intCast(L.top)) - @as(i32, @intCast(ci.func + 1));
+        } else if (L.status == LUA_OK) {
+            if (L.ci) |ci| {
+                nr.* = @as(i32, @intCast(L.top)) - @as(i32, @intCast(ci.func));
+            } else {
+                nr.* = 0;
+            }
         } else {
             nr.* = 0;
         }
@@ -3363,7 +3510,7 @@ pub fn lua_resume(L: *lua_State, from: ?*lua_State, narg: i32, nresults: ?*i32) 
     // CallInfos would otherwise linger in the freelist until the thread is
     // explicitly closed, which the caller may never do.
     freeAllCallInfos(L);
-    return LUA_OK;
+    return L.status;
 }
 
 pub fn lua_status(L: *lua_State) i32 {
@@ -4257,7 +4404,7 @@ pub fn lua_closeslot(L: *lua_State, idx: i32) void {
             }
         }
     }
-    _ = close_one_slot(L, abs, null);
+    _ = close_one_slot(L, abs, null) catch null;
 }
 
 pub fn luaL_newstate_io(L: *lua_State, gpa: std.mem.Allocator, io: std.Io) !void {
@@ -4307,7 +4454,7 @@ pub fn luaL_newstate_io(L: *lua_State, gpa: std.mem.Allocator, io: std.Io) !void
         .tt = 0,
         .marked = 0,
         .gch = 0,
-        .allowhook = 0,
+        .allowhook = 1,
         .status = 0,
         .top = 0,
         .l_G = g,
@@ -4384,7 +4531,9 @@ pub fn luaL_dostring(L: *lua_State, s: []const u8, name: []const u8) !i32 {
     if (status != LUA_OK) {
         return status;
     }
-    return lua_pcallk(L, 0, LUA_MULTRET, 0, 0, null);
+    return lua_pcallk(L, 0, LUA_MULTRET, 0, 0, null) catch |e| {
+        return if (e == error.Yield) LUA_YIELD else LUA_ERRRUN;
+    };
 }
 
 pub fn luaL_dostringReader(L: *lua_State, data: ?*anyopaque, size: ?*usize) ?[]const u8 {

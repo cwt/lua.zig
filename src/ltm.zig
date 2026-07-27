@@ -117,6 +117,7 @@ pub fn luaT_callTM1(L: *lua.lua_State, f: lua.TValue, p1: *const lua.TValue) !vo
     L.stack[old_top + 1] = p1.*;
     L.top = old_top + 2;
     luaD_call(L, old_top, 0) catch |e| {
+        if (e == error.Yield) return e;
         var curr = L.ci;
         while (curr) |c| {
             if (c == old_ci) break;
@@ -145,6 +146,7 @@ pub fn luaT_callTM2(L: *lua.lua_State, f: lua.TValue, p1: *const lua.TValue, p2:
     L.stack[old_top + 2] = p2.*;
     L.top = old_top + 3;
     luaD_call(L, old_top, 0) catch |e| {
+        if (e == error.Yield) return e;
         var curr = L.ci;
         while (curr) |c| {
             if (c == old_ci) break;
@@ -435,7 +437,9 @@ pub inline fn luaV_gettable(L: *lua.lua_State, t: lua.TValue, key: lua.TValue, r
             // Not a table — try __index metamethod on this type
             const tm = luaT_gettmbyobj(L, current, .INDEX);
             if (tm == .nil) {
-                return error.RuntimeError; // no __index, type error
+                var buf8: [128]u8 = undefined;
+                const formatted = std.fmt.bufPrint(&buf8, "attempt to index a {s} value", .{lua.lua_typename(current.typ())}) catch "attempt to index a value";
+                try lua.luaG_runerror(L, formatted);
             }
             if (tm == .function) {
                 _ = try luaT_callTMres(L, tm, &current, &key, res);

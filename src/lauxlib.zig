@@ -283,7 +283,9 @@ pub fn luaL_tolstring(L: *lua.lua_State, idx: i32, len: ?*usize) ?[]const u8 {
             return lua.lua_tolstring(L, -1, len);
         },
         else => {
-            // For tables, functions, etc. push a pointer string
+            if ((luaL_callmeta(L, idx, "__tostring") catch 0) != 0) {
+                return lua.lua_tolstring(L, -1, len);
+            }
             var buf: [128]u8 = undefined;
             const ptr = lua.lua_topointer(L, idx);
             const tname = lua.lua_typename(actual_type);
@@ -616,7 +618,9 @@ pub fn luaL_requiref(L: *lua.lua_State, modname: []const u8, openf: lua.lua_CFun
 pub fn luaL_dofile(L: *lua.lua_State, filename: ?[]const u8) i32 {
     const status = luaL_loadfilex(L, filename, "t");
     if (status != lua.LUA_OK) return status;
-    return lua.lua_pcallk(L, 0, lua.LUA_MULTRET, 0, 0, null);
+    return lua.lua_pcallk(L, 0, lua.LUA_MULTRET, 0, 0, null) catch |e| {
+        return if (e == error.Yield) lua.LUA_YIELD else lua.LUA_ERRRUN;
+    };
 }
 
 /// Generate a random seed for hashing.

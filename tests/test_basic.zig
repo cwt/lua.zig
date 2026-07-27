@@ -395,7 +395,7 @@ test "VM execution" {
     try std.testing.expectEqual(@as(i32, lua.LUA_OK), status);
 
     // Perform a protected call (0 arguments, 1 result expected)
-    const pcall_status = lua.lua_pcallk(&L, 0, 1, 0, 0, null);
+    const pcall_status = lua.lua_pcall(&L, 0, 1, 0);
     try std.testing.expectEqual(@as(i32, lua.LUA_OK), pcall_status);
 
     // The top of the stack should contain the returned number 52
@@ -427,7 +427,7 @@ test "BUG-036: VM vararg execution (VARARGPREP/VARARG)" {
 
     // Chunk: local function f(a,b,...) return ... end; return f(1,2,3,4,5)
     // f drops a=1,b=2 and returns varargs 3,4,5; with 1 result we expect 3.
-    const pcall_status = lua.lua_pcallk(&L, 0, 1, 0, 0, null);
+    const pcall_status = lua.lua_pcall(&L, 0, 1, 0);
     try std.testing.expectEqual(@as(i32, lua.LUA_OK), pcall_status);
     try std.testing.expectEqual(@as(i32, 1), lua.lua_gettop(&L));
     try std.testing.expectEqual(@as(i32, lua.LUA_TNUMBER), lua.lua_type(&L, -1));
@@ -739,7 +739,7 @@ test "BUG-FIX #3: string metatable __unm arithmetic (LUA_OPUNM)" {
     var reader_state = StringReaderState{ .code = "return -('3')", .read_done = false };
     const status = lua.lua_load(&L, stringReader, &reader_state, "=test", "t");
     try std.testing.expectEqual(@as(i32, lua.LUA_OK), status);
-    const rc = lua.lua_pcallk(&L, 0, 1, 0, 0, null);
+    const rc = lua.lua_pcall(&L, 0, 1, 0);
     try std.testing.expectEqual(@as(i32, lua.LUA_OK), rc);
     const v = lua.lua_tonumber(&L, -1) orelse return error.TestFailed;
     try std.testing.expectEqual(@as(f64, -3.0), v);
@@ -767,7 +767,7 @@ test "VM execution of arithmetic metamethod" {
 
     // Perform a protected call on the loaded chunk (0 arguments, 1 result expected)
     // This executes the chunk which returns the closure function.
-    const load_pcall = lua.lua_pcallk(&L, 0, 1, 0, 0, null);
+    const load_pcall = lua.lua_pcall(&L, 0, 1, 0);
     try std.testing.expectEqual(@as(i32, lua.LUA_OK), load_pcall);
 
     // Create table t1
@@ -804,7 +804,7 @@ test "VM execution of arithmetic metamethod" {
     try std.testing.expectEqual(@as(i32, 3), lua.lua_gettop(&L));
 
     // Call the closure function with t1 and t2
-    const pcall_status = lua.lua_pcallk(&L, 2, 1, 0, 0, null);
+    const pcall_status = lua.lua_pcall(&L, 2, 1, 0);
     try std.testing.expectEqual(@as(i32, lua.LUA_OK), pcall_status);
 
     // The top of the stack should contain the returned number 999.0
@@ -918,7 +918,7 @@ test "error propagation and pcall" {
     lua.lua_pushcfunction(&L, ErrorFn.run);
 
     // Call it protected
-    const status = lua.lua_pcallk(&L, 0, 0, 0, 0, null);
+    const status = lua.lua_pcall(&L, 0, 0, 0);
     try std.testing.expectEqual(@as(i32, lua.LUA_ERRRUN), status);
 
     // The top of the stack should contain the error object "my custom error"
@@ -955,7 +955,7 @@ test "pcall with errfunc error handler" {
     lua.lua_pushcfunction(&L, ErrorFn.run);
 
     // Call it protected with the error handler at handler_idx
-    const status = lua.lua_pcallk(&L, 0, 0, handler_idx, 0, null);
+    const status = lua.lua_pcall(&L, 0, 0, handler_idx);
     try std.testing.expectEqual(@as(i32, lua.LUA_ERRRUN), status);
 
     // The top of the stack should contain the handled error object "custom error handled"
@@ -1090,7 +1090,7 @@ test "baselib: type() function" {
         }
     }.f;
     lua.lua_pushcfunction(&L, typefn);
-    const status = lua.lua_pcallk(&L, 0, 0, 0, 0, null);
+    const status = lua.lua_pcall(&L, 0, 0, 0);
     try std.testing.expectEqual(lua.LUA_OK, status);
 }
 
@@ -1233,7 +1233,7 @@ test "utf8: utf8 library" {
             return 1;
         }
     }.cf);
-    const status = lua.lua_pcallk(&L, 0, 0, 0, 0, null);
+    const status = lua.lua_pcall(&L, 0, 0, 0);
     try std.testing.expectEqual(lua.LUA_ERRRUN, status);
 }
 
@@ -1284,7 +1284,7 @@ test "baselib: rawequal(), rawlen(), rawget(), rawset()" {
         }
     }.f;
     lua.lua_pushcfunction(&L, testfn);
-    const status = lua.lua_pcallk(&L, 0, 0, 0, 0, null);
+    const status = lua.lua_pcall(&L, 0, 0, 0);
     try std.testing.expectEqual(lua.LUA_OK, status);
 }
 
@@ -1323,7 +1323,7 @@ test "baselib: setmetatable() and getmetatable()" {
         }
     }.f;
     lua.lua_pushcfunction(&L, testfn);
-    const status = lua.lua_pcallk(&L, 0, 0, 0, 0, null);
+    const status = lua.lua_pcall(&L, 0, 0, 0);
     try std.testing.expectEqual(lua.LUA_OK, status);
 }
 
@@ -1370,7 +1370,7 @@ test "baselib: tonumber() and tostring()" {
         }
     }.f;
     lua.lua_pushcfunction(&L, testfn);
-    const status = lua.lua_pcallk(&L, 0, 0, 0, 0, null);
+    const status = lua.lua_pcall(&L, 0, 0, 0);
     try std.testing.expectEqual(lua.LUA_OK, status);
 }
 
@@ -1457,7 +1457,7 @@ test "mathlib: constants and basic functions" {
         }
     }.f;
     lua.lua_pushcfunction(&L, testfn);
-    const status = lua.lua_pcallk(&L, 0, 0, 0, 0, null);
+    const status = lua.lua_pcall(&L, 0, 0, 0);
     try std.testing.expectEqual(lua.LUA_OK, status);
 }
 
@@ -1551,7 +1551,7 @@ test "mathlib: min, max, type, ult, tointeger" {
         }
     }.f;
     lua.lua_pushcfunction(&L, testfn);
-    const status = lua.lua_pcallk(&L, 0, 0, 0, 0, null);
+    const status = lua.lua_pcall(&L, 0, 0, 0);
     try std.testing.expectEqual(lua.LUA_OK, status);
 }
 
@@ -1604,7 +1604,7 @@ test "mathlib: random and randomseed" {
         }
     }.f;
     lua.lua_pushcfunction(&L, testfn);
-    const status = lua.lua_pcallk(&L, 0, 0, 0, 0, null);
+    const status = lua.lua_pcall(&L, 0, 0, 0);
     try std.testing.expectEqual(lua.LUA_OK, status);
 }
 
@@ -1645,7 +1645,7 @@ test "baselib: select()" {
         }
     }.f;
     lua.lua_pushcfunction(&L, testfn);
-    const status = lua.lua_pcallk(&L, 0, 0, 0, 0, null);
+    const status = lua.lua_pcall(&L, 0, 0, 0);
     try std.testing.expectEqual(lua.LUA_OK, status);
 }
 
@@ -1709,7 +1709,7 @@ test "bit32: bitwise library" {
         }
     }.f;
     lua.lua_pushcfunction(&L, testfn);
-    const status = lua.lua_pcallk(&L, 0, 0, 0, 0, null);
+    const status = lua.lua_pcall(&L, 0, 0, 0);
     try std.testing.expectEqual(lua.LUA_OK, status);
 }
 
@@ -1906,7 +1906,7 @@ test "string library: comprehensive verification" {
         }
     }.f;
     lua.lua_pushcfunction(&L, testfn);
-    const status = lua.lua_pcallk(&L, 0, 0, 0, 0, null);
+    const status = lua.lua_pcall(&L, 0, 0, 0);
     if (status != lua.LUA_OK) {
         const err_msg = lua.lua_tostring(&L, -1) orelse "no error message";
         std.debug.print("Lua error bytes:", .{});
@@ -1983,7 +1983,7 @@ test "string library: byte/char/len/sub/reverse/case/rep/match/gmatch/pack cover
             // ----- string.char out of range raises an error -----
             try setup(Ls, "char");
             _ = lua.lua_pushinteger(Ls, 256);
-            const char_status = lua.lua_pcallk(Ls, 1, 1, 0, 0, null);
+            const char_status = lua.lua_pcall(Ls, 1, 1, 0);
             try std.testing.expect(char_status != lua.LUA_OK);
 
             // ----- string.sub -----
@@ -2363,17 +2363,17 @@ test "coroutine infrastructure: newthread/pushthread/status/isyieldable/closethr
     lua.lua_pop(&L, 1);
 }
 
-var yield_resume_call_count: i32 = 0;
-
-fn yield_resume_cfunc(L2: *lua.lua_State) anyerror!i32 {
-    yield_resume_call_count += 1;
-    if (yield_resume_call_count == 1) {
-        _ = lua.lua_pushstring(L2, "hello");
-        _ = lua.lua_pushstring(L2, "world");
-        return lua.lua_yield(L2, 2);
-    }
+fn yield_resume_k(L2: *lua.lua_State, status: i32, ctx: lua.lua_KContext) anyerror!i32 {
+    _ = status;
+    _ = ctx;
     _ = lua.lua_pushstring(L2, "done");
     return 1;
+}
+
+fn yield_resume_cfunc(L2: *lua.lua_State) anyerror!i32 {
+    _ = lua.lua_pushstring(L2, "hello");
+    _ = lua.lua_pushstring(L2, "world");
+    return lua.lua_yieldk(L2, 2, 0, yield_resume_k);
 }
 
 test "coroutine yield/resume via C API" {
@@ -2381,8 +2381,6 @@ test "coroutine yield/resume via C API" {
     var L: lua.lua_State = undefined;
     try lua.luaL_newstate(&L, gpa);
     defer lua.lua_close(&L);
-
-    yield_resume_call_count = 0;
 
     const co = try lua.lua_newthread(&L);
     lua.lua_pushcfunction(&L, yield_resume_cfunc);
@@ -3897,7 +3895,7 @@ test "H.5 luaL_loadstring loads a Lua chunk" {
     const status = lauxlib.luaL_loadstring(&L, "return 42");
     try std.testing.expectEqual(@as(i32, lua.LUA_OK), status);
 
-    const call_status = lua.lua_pcallk(&L, 0, lua.LUA_MULTRET, 0, 0, null);
+    const call_status = lua.lua_pcall(&L, 0, lua.LUA_MULTRET, 0);
     try std.testing.expectEqual(@as(i32, lua.LUA_OK), call_status);
 
     const val = lua.lua_tointeger(&L, -1) orelse 0;
@@ -3916,7 +3914,7 @@ test "H.5 luaL_loadbufferx loads a Lua chunk from a buffer" {
     const status = lauxlib.luaL_loadbufferx(&L, chunk, "=(buffer)", "t");
     try std.testing.expectEqual(@as(i32, lua.LUA_OK), status);
 
-    const call_status = lua.lua_pcallk(&L, 0, lua.LUA_MULTRET, 0, 0, null);
+    const call_status = lua.lua_pcall(&L, 0, lua.LUA_MULTRET, 0);
     try std.testing.expectEqual(@as(i32, lua.LUA_OK), call_status);
 
     const s = lua.lua_tostring(&L, -1) orelse "";
@@ -4004,7 +4002,7 @@ test "H.5 luaL_loadfilex loads and runs a real file" {
     const status = lauxlib.luaL_loadfilex(&L, tmp_path, "t");
     try std.testing.expectEqual(@as(i32, lua.LUA_OK), status);
 
-    const call_status = lua.lua_pcallk(&L, 0, lua.LUA_MULTRET, 0, 0, null);
+    const call_status = lua.lua_pcall(&L, 0, lua.LUA_MULTRET, 0);
     try std.testing.expectEqual(@as(i32, lua.LUA_OK), call_status);
 
     const val = lua.lua_tointeger(&L, -1) orelse 0;
@@ -4556,4 +4554,5 @@ test "BUG-047 repeated string arithmetic print doesn't crash" {
     const status = try lua.luaL_dostring(&L, "print('2'+1); print('2'+1)", "=test");
     try std.testing.expectEqual(@as(i32, lua.LUA_OK), status);
 }
+
 

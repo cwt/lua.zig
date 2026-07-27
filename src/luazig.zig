@@ -111,7 +111,9 @@ fn pcallWithHandler(L: *lua.lua_State, nargs: i32) i32 {
     // Move the handler just below the [args..., func] block on top.
     lua.lua_insert(L, -(nargs + 2));
     const hidx: i32 = lua.lua_gettop(L) - (nargs + 1);
-    const status = lua.lua_pcallk(L, nargs, lua.LUA_MULTRET, hidx, 0, null);
+    const status = lua.lua_pcallk(L, nargs, lua.LUA_MULTRET, hidx, 0, null) catch |e| {
+        return if (e == error.Yield) lua.LUA_YIELD else lua.LUA_ERRRUN;
+    };
     lua.lua_remove(L, hidx);
     return status;
 }

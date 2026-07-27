@@ -273,6 +273,7 @@ fn skipFilePreamble(content: []const u8) []const u8 {
 fn loadfile(L: *lua.lua_State) anyerror!i32 {
     const filename = try lauxlib.luaL_checklstring(L, 1, null);
     const mode = try lauxlib.luaL_optlstring(L, 2, "bt", null) orelse "bt";
+    const env_idx: i32 = if (lua.lua_isnone(L, 3) != 0) 0 else 3;
 
     const io = L.l_G.?.io;
     const contents = std.Io.Dir.cwd().readFileAlloc(io, filename, L.allocator, .unlimited) catch |err| {
@@ -286,8 +287,8 @@ fn loadfile(L: *lua.lua_State) anyerror!i32 {
     var slice_data = skipFilePreamble(contents);
     const status = lua.lua_load(L, sliceReader, @as(?*anyopaque, @ptrCast(&slice_data)), filename, mode);
     if (status == lua.LUA_OK) {
-        if (lua.lua_gettop(L) >= 3 and lua.lua_type(L, 3) != lua.LUA_TNIL) {
-            lua.lua_pushvalue(L, 3);
+        if (env_idx != 0 and lua.lua_type(L, env_idx) != lua.LUA_TNIL) {
+            lua.lua_pushvalue(L, env_idx);
             _ = lua.lua_setupvalue(L, -2, 1);
         }
         return 1;
@@ -302,12 +303,13 @@ fn load(L: *lua.lua_State) anyerror!i32 {
     const chunk = try lauxlib.luaL_checklstring(L, 1, null);
     const chunkname = try lauxlib.luaL_optlstring(L, 2, "=(load)", null) orelse "=(load)";
     const mode = try lauxlib.luaL_optlstring(L, 3, "bt", null) orelse "bt";
+    const env_idx: i32 = if (lua.lua_isnone(L, 4) != 0) 0 else 4;
 
     var slice_data = chunk;
     const status = lua.lua_load(L, sliceReader, @as(?*anyopaque, @ptrCast(&slice_data)), chunkname, mode);
     if (status == lua.LUA_OK) {
-        if (lua.lua_gettop(L) >= 4 and lua.lua_type(L, 4) != lua.LUA_TNIL) {
-            lua.lua_pushvalue(L, 4);
+        if (env_idx != 0 and lua.lua_type(L, env_idx) != lua.LUA_TNIL) {
+            lua.lua_pushvalue(L, env_idx);
             _ = lua.lua_setupvalue(L, -2, 1);
         }
         return 1;
@@ -349,8 +351,14 @@ fn pcall(L: *lua.lua_State) anyerror!i32 {
     try lauxlib.luaL_checkany(L, 1);
     lua.lua_pushboolean(L, 1); // first result if no errors
     lua.lua_insert(L, 1); // put it in place
-    const status = lua.lua_pcallk(L, lua.lua_gettop(L) - 2, lua.LUA_MULTRET, 0, 0, null);
+    const status = try lua.lua_pcallk(L, lua.lua_gettop(L) - 2, lua.LUA_MULTRET, 0, 0, finishpcall_k);
     return finishpcall(L, status, 0);
+}
+
+/// Continuation function for pcall/xpcall matching lua_KFunction signature.
+/// Called by unroll when a coroutine resumes after a yield inside pcall.
+fn finishpcall_k(L: *lua.lua_State, status: i32, ctx: lua.lua_KContext) anyerror!i32 {
+    return finishpcall(L, status, @as(usize, @intCast(ctx)));
 }
 
 fn finishpcall(L: *lua.lua_State, status: i32, extra: usize) i32 {
@@ -359,7 +367,7 @@ fn finishpcall(L: *lua.lua_State, status: i32, extra: usize) i32 {
         lua.lua_pushvalue(L, -2); // error message
         return 2; // return false, msg
     } else {
-        return @as(i32, @intCast(lua.lua_gettop(L))) - @as(i32, @intCast(extra));
+        return @as(i32, @intCast(lua.lua_gettop(L))) + 1 - @as(i32, @intCast(extra));
     }
 }
 
@@ -585,6 +593,6 @@ fn xpcall(L: *lua.lua_State) anyerror!i32 {
     lua.lua_pushboolean(L, 1);
     lua.lua_pushvalue(L, 1);
     lua.lua_rotate(L, 3, 2);
-    const status = lua.lua_pcallk(L, n - 2, lua.LUA_MULTRET, 2, 0, null);
+    const status = try lua.lua_pcallk(L, n - 2, lua.LUA_MULTRET, 2, 2, finishpcall_k);
     return finishpcall(L, status, 2);
 }

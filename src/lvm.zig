@@ -1299,6 +1299,7 @@ pub fn run(L: *lua.lua_State, active_ci: *lua.CallInfo) anyerror!void {
             },
             .TBC => {
                 const ra_idx = ci.base + @as(usize, @intCast(GETARG_A(instruction)));
+                try lua.checkclosemth(L, ra_idx);
                 const v = L.stack[ra_idx];
                 if (v != .nil and (v != .boolean or v.boolean != false)) {
                     try L.tbclist.append(L.allocator, ra_idx);
@@ -1406,6 +1407,9 @@ pub fn run(L: *lua.lua_State, active_ci: *lua.CallInfo) anyerror!void {
                 } else {
                     b = @intCast(L.top - ra_idx);
                 }
+                if (GETARG_k(instruction) != 0) {
+                    try lua.closeupvals(L, ci.base, null);
+                }
                 const val = L.stack[ra_idx];
                 if (val != .function) return error.NotAFunction;
                 const cl_call = val.function.?;
@@ -1455,7 +1459,6 @@ pub fn run(L: *lua.lua_State, active_ci: *lua.CallInfo) anyerror!void {
                         }
                     },
                     .lua => |lc| {
-                        try lua.closeupvals(L, ci.base, null);
                         const count = @as(usize, @intCast(b));
                         // Correct 'ci.func' for PF_VAHID functions: buildhiddenargs
                         // relocated the frame, so restore it before reusing the ci.
