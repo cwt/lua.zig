@@ -16,9 +16,12 @@ timestamp: 2026-07-18T13:58:00Z
 - **GC Memory Tracking (`g.totalbytes`)** (`src/lua.zig`):
   - Added `totalbytes: usize` tracking to `global_State`.
   - Updated `registerGC` and `freeGCObject` to accurately accumulate and deduct bytes for tables, strings, closures, userdata, protos, and upvalues.
-- **`lua_checkstack` bounds capping (OOM prevention)** (`src/lua.zig`):
-  - Capped `lua_checkstack` to `LUAI_MAXSTACK` (1,000,000 slots) and handled non-positive `n <= 0` gracefully.
-  - Fixed an un-guarded `@intCast(n)` integer wrapping issue on negative `n` values that was allocating multi-gigabyte stack buffers and triggering Linux OOM kernel kills during recursive test runs.
+- **`table.sort` stack memory leak fix (`set2`)** (`src/lib/tablib.zig`):
+  - Fixed `set2` in quicksort to pop values directly from the stack instead of re-pushing them with `lua_geti`. This eliminated a massive stack accumulation bug that was leaking millions of stack slots per sort call.
+- **`table.create` overflow limit** (`src/lib/tablib.zig`):
+  - Added a maximum size cap (`1 << 26` elements) in `tcreate`, returning the standard `"table overflow"` error when `table.create(0, 2147483647)` is called instead of attempting a 68 GB allocation.
+- **`table.unpack` bounds calculation** (`src/lib/tablib.zig`):
+  - Fixed signed 64-bit integer subtraction overflow in `tunpack` when checking range diffs (`e - i`), ensuring `too many results to unpack` is cleanly returned.
 
 ## 2026-07-20 — Feature: Unroll mechanism & continuation support for TBC yielding
 
