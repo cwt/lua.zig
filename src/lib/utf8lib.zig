@@ -174,10 +174,11 @@ fn codepoint(L: *lua.lua_State) !i32 {
 // ===================================================================
 
 fn pushutfchar(L: *lua.lua_State, arg: i32) !void {
-    const code = @as(u32, @intCast(try lauxlib.luaL_checkinteger(L, arg)));
+    const code_i = try lauxlib.luaL_checkinteger(L, arg);
+    const code = @as(u64, @bitCast(code_i));
     try lauxlib.luaL_argcheck(L, code <= MAXUTF, arg, "value out of range");
     var buf: [6]u8 = undefined;
-    const written = encode_utf8(code, &buf);
+    const written = encode_utf8(@as(u32, @intCast(code)), &buf);
     _ = lua.lua_pushlstring(L, buf[0..written], written);
 }
 
@@ -190,10 +191,11 @@ fn char_(L: *lua.lua_State) !i32 {
         defer list.deinit(L.allocator);
         var i: i32 = 1;
         while (i <= n) : (i += 1) {
-            const code = @as(u32, @intCast(try lauxlib.luaL_checkinteger(L, i)));
+            const code_i = try lauxlib.luaL_checkinteger(L, i);
+            const code = @as(u64, @bitCast(code_i));
             try lauxlib.luaL_argcheck(L, code <= MAXUTF, i, "value out of range");
             var buf: [6]u8 = undefined;
-            const written = encode_utf8(code, &buf);
+            const written = encode_utf8(@as(u32, @intCast(code)), &buf);
             try list.appendSlice(L.allocator, buf[0..written]);
         }
         _ = lua.lua_pushlstring(L, list.items, list.items.len);
@@ -249,15 +251,13 @@ fn offset(L: *lua.lua_State) !i32 {
     }
     lua.lua_pushinteger(L, posi_b + 1);
     // Multi-byte character? Push its final position too.
-    if ((s[@as(usize, @intCast(posi_b))] & 0x80) != 0) {
+    if (posi_b < @as(i64, @intCast(slen)) and (s[@as(usize, @intCast(posi_b))] & 0x80) != 0) {
         if (iscont_at(s, @as(usize, @intCast(posi_b)))) {
             return lauxlib.luaL_error(L, "initial position is a continuation byte");
         }
-        var k = posi_b + 1;
-        while (k < @as(i64, @intCast(slen)) and iscont_at(s, @as(usize, @intCast(k)))) {
-            k += 1;
+        while (posi_b + 1 < @as(i64, @intCast(slen)) and iscont_at(s, @as(usize, @intCast(posi_b + 1)))) {
+            posi_b += 1;
         }
-        posi_b = k;
     }
     lua.lua_pushinteger(L, posi_b + 1);
     return 2;

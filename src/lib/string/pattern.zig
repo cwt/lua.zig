@@ -690,6 +690,7 @@ pub fn str_gsub(L: *lua.lua_State) anyerror!i32 {
         if (anchor) break;
     }
     if (!changed) {
+        b.buf.deinit(L.allocator);
         lua.lua_pushvalue(L, 1);
     } else {
         try lauxlib.luaL_addlstring(L, &b, ms.src[src_idx..ms.src_end]);
