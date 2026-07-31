@@ -31,6 +31,8 @@ const DumpState = struct {
     data: ?*anyopaque,
     status: i32,
     written: usize,
+    strings: std.array_hash_map.String(usize) = .empty,
+    nstr: usize = 0,
 
     fn dumpBlock(self: *DumpState, b: []const u8) void {
         if (self.status != lua.LUA_OK) return;
@@ -91,15 +93,25 @@ const DumpState = struct {
 
     fn dumpString(self: *DumpState, ts: ?*lua.lua_TString) void {
         if (ts == null) {
-            // Null string: size 0 followed by back-reference index 0.
-            self.dumpSize(0);
+            self.dumpVarint(0);
             self.dumpVarint(0);
             return;
         }
         const s = ts.?.s;
-        self.dumpSize(s.len + 1);
-        self.dumpBlock(s);
-        self.dumpByte(0);
+        const gop = self.strings.getOrPut(self.L.allocator, s) catch {
+            self.status = lua.LUA_ERRMEM;
+            return;
+        };
+        if (gop.found_existing) {
+            self.dumpVarint(0);
+            self.dumpVarint(gop.value_ptr.*);
+        } else {
+            self.dumpSize(s.len + 1);
+            self.dumpBlock(s);
+            self.dumpByte(0);
+            self.nstr += 1;
+            gop.value_ptr.* = self.nstr;
+        }
     }
 
     fn dumpAlign(self: *DumpState, alignment: usize) void {
@@ -237,6 +249,7 @@ pub fn lua_dump(L: *lua.lua_State, writer: lua.lua_Writer, data: ?*anyopaque, st
         .status = lua.LUA_OK,
         .written = 0,
     };
+    defer D.strings.deinit(L.allocator);
 
     D.dumpHeader();
     D.dumpByte(@as(u8, @intCast(f.upvalues.len)));

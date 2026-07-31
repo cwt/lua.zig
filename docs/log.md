@@ -6,6 +6,23 @@ tags: [log, changelog]
 timestamp: 2026-07-18T13:58:00Z
 ---
 
+## 2026-07-31 — Feature & Fix: Upstream Conformance for `goto.lua` and `nextvar.lua` (100% PASS)
+
+- **`goto.lua` Test Suite Fully Resolved (100% PASS)**:
+  - **Syntax Error Propagation**: Updated `leaveblock` in `src/lparser.zig` to return `!void` and propagate errors via `try`, eliminating swallowed error blocks (`catch {}`).
+  - **Error Formatting**: Updated label and variable error messages (`buildvar`, `buildglobal`, `undefgoto`) to match Lua 5.5 reference format.
+  - **`LUA_COMPAT_GLOBAL` Support**: Implemented statement-level lookahead in `lparser.zig` and keyword reservation handling in `llex.zig` for `"global"`.
+  - **`OP_ERRNNIL` Dispatch**: Ported `luaG_errnnil` into `src/lua.zig` to report `"global '{s}' already defined"`.
+- **`nextvar.lua` Test Suite Fully Resolved (100% PASS)**:
+  - **`lua_next` Error Propagation**: Made `lua_next` return `anyerror!i32` and propagate `error.InvalidKeyToNext` via `luaG_runerror` rather than swallowing errors with `catch {}`.
+  - **C Closure Equality**: Updated `lua_rawequal` and `luaT_equalobj` to compare C closures with 0 upvalues by function pointer (`cl1.c.f == cl2.c.f`).
+  - **Table Hash Resizing & Active Key Sizing**: Updated `growNode` in `src/ltable.zig` to size hash tables based on active keys (`val != nil`) rather than unconditionally doubling capacity, preventing exponential memory growth and hash chain destruction.
+  - **Removed `removeFromHash`**: Replaced destructive `removeFromHash` (which cleared keys and broke hash collision chains) with setting `val = .nil`, matching C reference `lua/ltable.c`.
+  - **Standard Files in `io` Module**: Registered `io.stdin`, `io.stdout`, and `io.stderr` in the `io` module table (`openio` in `src/lib/iolib.zig`).
+  - **`pairs` 4-Result & Continuation Support**: Updated `pairs` and `ipairs` in `src/lib/baselib.zig` to return 4 values and use `lua_callk` with `pairscont` so to-be-closed (`tbc`) 4th return values and yields inside `__pairs` function properly.
+  - **To-Be-Closed Handling in `TFORPREP` and `TFORLOOP`**: Updated `TFORPREP` to call `checkclosemth` and append to `tbclist`, and `TFORLOOP` to invoke `closeupvals` when the iterator returns `nil`.
+- **Test Gate**: All **127 basic unit tests** pass with zero memory leaks. `goto.lua` and `nextvar.lua` both exit cleanly with code 0.
+
 ## 2026-07-27 — Feature & Fix: Vararg Table Conformance & Stack/GC Safety (100% PASS on `vararg.lua`)
 
 - **Stack Growth & Headroom Safety** (`src/lua.zig`):

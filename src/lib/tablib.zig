@@ -34,7 +34,7 @@ fn checktab(L: *lua.lua_State, arg: i32, what: i32) !void {
 
 fn aux_getn(L: *lua.lua_State, n: i32, w: i32) !i64 {
     try checktab(L, n, w | TAB_L);
-    return @as(i64, @intCast(try lauxlib.luaL_len(L, n)));
+    return try lauxlib.luaL_len(L, n);
 }
 
 fn tcreate(L: *lua.lua_State) anyerror!i32 {
@@ -51,12 +51,12 @@ fn tcreate(L: *lua.lua_State) anyerror!i32 {
 }
 
 fn tinsert(L: *lua.lua_State) anyerror!i32 {
-    const e = (try aux_getn(L, 1, TAB_RW)) + 1;
+    const e = (try aux_getn(L, 1, TAB_RW)) +% 1;
     const pos: i64 = switch (lua.lua_gettop(L)) {
         2 => e,
         3 => blk: {
             const p = try lauxlib.luaL_checkinteger(L, 2);
-            try lauxlib.luaL_argcheck(L, @as(u64, @intCast(p)) - 1 < @as(u64, @intCast(e)), 2, "position out of bounds");
+            try lauxlib.luaL_argcheck(L, 1 <= p and p <= e, 2, "position out of bounds");
             var i = e;
             while (i > p) : (i -= 1) {
                 _ = try lua.lua_geti(L, 1, i - 1);
@@ -74,7 +74,7 @@ fn tremove(L: *lua.lua_State) anyerror!i32 {
     const size = try aux_getn(L, 1, TAB_RW);
     const pos = lauxlib.luaL_optinteger(L, 2, size);
     if (pos != size) {
-        try lauxlib.luaL_argcheck(L, @as(u64, @intCast(pos)) - 1 <= @as(u64, @intCast(size)), 2, "position out of bounds");
+        try lauxlib.luaL_argcheck(L, 1 <= pos and pos <= size + 1, 2, "position out of bounds");
     }
     _ = try lua.lua_geti(L, 1, pos);
     var p = pos;
@@ -218,13 +218,13 @@ fn partition(L: *lua.lua_State, lo: u32, up_: u32) !u32 {
             lua.lua_pop(L, 1);
         }
         while (true) {
+            j -= 1;
             _ = try lua.lua_geti(L, 1, j);
             if (!(try sort_comp(L, -3, -1))) break;
             if (j < i) {
                 return lauxlib.luaL_error(L, "invalid order function for sorting");
             }
             lua.lua_pop(L, 1);
-            j -= 1;
         }
         if (j < i) {
             lua.lua_pop(L, 1);

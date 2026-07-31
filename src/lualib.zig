@@ -114,6 +114,7 @@ const loadlib = @import("lib/loadlib.zig");
 
 pub fn openloadlib(L: *lua.lua_State) !void {
     try loadlib.openloadlib(L);
+    try registerLoaded(L, "package");
 }
 
 // ===================================================================

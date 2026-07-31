@@ -476,7 +476,10 @@ fn addliteral(L: *lua.lua_State, b: *lauxlib.luaL_Buffer, arg: i32) !void {
 
 pub fn str_format(L: *lua.lua_State) anyerror!i32 {
     var len: usize = 0;
-    const strfrmt = try lauxlib.luaL_checklstring(L, 1, &len);
+    const raw_strfrmt = try lauxlib.luaL_checklstring(L, 1, &len);
+    const strfrmt = try L.allocator.dupe(u8, raw_strfrmt);
+    defer L.allocator.free(strfrmt);
+
     var pos: usize = 0;
     var b = lauxlib.luaL_Buffer{};
     lauxlib.luaL_buffinit(L, &b);

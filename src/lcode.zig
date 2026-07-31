@@ -142,14 +142,15 @@ pub fn luaK_jump(fs: *FuncState) i32 {
     return codesJ(fs, .JMP, NO_JUMP, 0);
 }
 
-pub fn luaK_ret(fs: *FuncState, first: i32, nret: i32) void {
+pub fn luaK_ret(fs: *FuncState, first: i32, nret: i32) !void {
     const op: lvm.OpCode = switch (nret) {
         0 => .RETURN0,
         1 => .RETURN1,
         else => .RETURN,
     };
-    lparser.luaY_checklimit(fs, nret + 1, lvm.MAXARG_B, "returns");
-    _ = luaK_codeABC(fs, op, first, nret + 1, 0);
+    try lparser.luaY_checklimit(fs, nret + 1, lvm.MAXARG_B, "returns");
+    const b = @min(nret + 1, lvm.MAXARG_B);
+    _ = luaK_codeABC(fs, op, first, b, 0);
 }
 
 fn condjump(fs: *FuncState, op: lvm.OpCode, a: i32, b: i32, c: i32, k: i32) i32 {
@@ -223,11 +224,11 @@ fn savelineinfo(fs: *FuncState, line: i32) !void {
     if (@abs(linedif) >= lvm.LIMLINEDIFF or fs.iwthabs >= lvm.MAXIWTHABS) {
         try fs.abslineinfo.append(fs.ls.allocator, .{ .pc = @intCast(pc), .line = line });
         fs.nabslineinfo += 1;
-        fs.lineinfo.items[pc] = @intCast(lvm.ABSLINEINFO);
+        fs.lineinfo.items[pc] = @truncate(lvm.ABSLINEINFO);
         fs.previousline = line;
         fs.iwthabs = 1;
     } else {
-        fs.lineinfo.items[pc] = @intCast(linedif);
+        fs.lineinfo.items[pc] = @truncate(linedif);
         fs.previousline = line;
         fs.iwthabs += 1;
     }
@@ -305,8 +306,8 @@ fn luaK_codek(fs: *FuncState, reg: i32, k: i32) i32 {
 pub fn luaK_checkstack(fs: *FuncState, n: i32) void {
     const newstack = fs.freereg + n;
     if (newstack > fs.f.maxStackSize) {
-        lparser.luaY_checklimit(fs, newstack, lvm.MAX_FSTACK, "registers");
-        fs.f.maxStackSize = @intCast(newstack);
+        _ = lparser.luaY_checklimit(fs, newstack, lvm.MAX_FSTACK, "registers") catch {};
+        fs.f.maxStackSize = @truncate(@as(usize, @intCast(newstack)));
     }
 }
 
@@ -429,12 +430,13 @@ fn const2exp(v: *lua.TValue, e: *expdesc) void {
 
 pub fn luaK_setreturns(fs: *FuncState, e: *expdesc, nresults: i32) void {
     const pc = &fs.code.items[@as(usize, @intCast(e.u.info))];
-    lparser.luaY_checklimit(fs, nresults + 1, lvm.MAXARG_C, "multiple results");
+    _ = lparser.luaY_checklimit(fs, nresults + 1, lvm.MAXARG_C, "multiple results") catch {};
+    const c = @min(nresults + 1, lvm.MAXARG_C);
     if (e.k == .VCALL) {
-        lvm.SETARG_C(pc, nresults + 1);
+        lvm.SETARG_C(pc, c);
     } else {
         std.debug.assert(e.k == .VVARARG);
-        lvm.SETARG_C(pc, nresults + 1);
+        lvm.SETARG_C(pc, c);
         lvm.SETARG_A(pc, fs.freereg);
         luaK_reserveregs(fs, 1);
     }

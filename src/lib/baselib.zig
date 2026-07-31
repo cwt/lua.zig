@@ -120,7 +120,7 @@ pub fn openbaselib(L: *lua.lua_State) !void {
 // Helper reader for slice loading
 // ===================================================================
 
-fn sliceReader(L: *lua.lua_State, dt: ?*anyopaque, size: ?*usize) ?[]const u8 {
+fn sliceReader(L: *lua.lua_State, dt: ?*anyopaque, size: ?*usize) anyerror!?[]const u8 {
     _ = L;
     const slice_ptr = @as(?*[]const u8, @ptrCast(@alignCast(dt))) orelse return null;
     if (slice_ptr.*.len == 0) {
@@ -212,8 +212,8 @@ fn dofile(L: *lua.lua_State) anyerror!i32 {
 }
 
 fn error_fn(L: *lua.lua_State) anyerror!i32 {
-    lua.lua_settop(L, 1);
     const level: i32 = @intCast(lauxlib.luaL_optinteger(L, 2, 1));
+    lua.lua_settop(L, 1);
     if (lua.lua_type(L, 1) == lua.LUA_TSTRING and level > 0) {
         lauxlib.luaL_where(L, level);
         lua.lua_pushvalue(L, 1);
@@ -233,7 +233,7 @@ fn getmetatable(L: *lua.lua_State) anyerror!i32 {
 }
 
 fn ipairsaux(L: *lua.lua_State) anyerror!i32 {
-    const i = (try lauxlib.luaL_checkinteger(L, 2)) + 1;
+    const i = (try lauxlib.luaL_checkinteger(L, 2)) +% 1;
     lua.lua_pushinteger(L, i);
     return if (try lua.lua_geti(L, 1, i) == lua.LUA_TNIL) 1 else 2;
 }
@@ -243,7 +243,8 @@ fn ipairs(L: *lua.lua_State) anyerror!i32 {
     lua.lua_pushcfunction(L, ipairsaux);
     lua.lua_pushvalue(L, 1);
     lua.lua_pushinteger(L, 0);
-    return 3;
+    lua.lua_pushnil(L);
+    return 4;
 }
 
 // ===================================================================
@@ -289,7 +290,9 @@ fn loadfile(L: *lua.lua_State) anyerror!i32 {
     if (status == lua.LUA_OK) {
         if (env_idx != 0 and lua.lua_type(L, env_idx) != lua.LUA_TNIL) {
             lua.lua_pushvalue(L, env_idx);
-            _ = lua.lua_setupvalue(L, -2, 1);
+            if (lua.lua_setupvalue(L, -2, 1) == null) {
+                lua.lua_pop(L, 1);
+            }
         }
         return 1;
     } else {
@@ -299,39 +302,83 @@ fn loadfile(L: *lua.lua_State) anyerror!i32 {
     }
 }
 
+fn genericReader(L: *lua.lua_State, ud: ?*anyopaque, size: ?*usize) anyerror!?[]const u8 {
+    const firstcall_ptr: *bool = @ptrCast(@alignCast(ud.?));
+    if (firstcall_ptr.*) {
+        firstcall_ptr.* = false;
+    } else {
+        lua.lua_pop(L, 1);
+    }
+    lua.lua_pushvalue(L, 1);
+    try lua.lua_call(L, 0, 1);
+    if (lua.lua_isnil(L, -1) != 0) {
+        if (size) |s| s.* = 0;
+        return null;
+    }
+    var len: usize = 0;
+    const str_ptr = lua.lua_tolstring(L, -1, &len);
+    if (str_ptr == null) {
+        if (size) |s| s.* = 0;
+        try lua.luaG_runerror(L, "reader function must return a string");
+        return null;
+    }
+    if (size) |s| s.* = len;
+    return str_ptr.?[0..len];
+}
+
 fn load(L: *lua.lua_State) anyerror!i32 {
-    const chunk = try lauxlib.luaL_checklstring(L, 1, null);
-    const chunkname = try lauxlib.luaL_optlstring(L, 2, "=(load)", null) orelse "=(load)";
     const mode = try lauxlib.luaL_optlstring(L, 3, "bt", null) orelse "bt";
     const env_idx: i32 = if (lua.lua_isnone(L, 4) != 0) 0 else 4;
+    var status: i32 = 0;
 
-    var slice_data = chunk;
-    const status = lua.lua_load(L, sliceReader, @as(?*anyopaque, @ptrCast(&slice_data)), chunkname, mode);
+    if (lua.lua_isstring(L, 1) != 0) {
+        var chunk_len: usize = 0;
+        const chunk_ptr = lua.lua_tolstring(L, 1, &chunk_len).?;
+        const chunk = chunk_ptr[0..chunk_len];
+        const chunkname = try lauxlib.luaL_optlstring(L, 2, chunk, null) orelse chunk;
+        var slice_data = chunk;
+        status = lua.lua_load(L, sliceReader, @as(?*anyopaque, @ptrCast(&slice_data)), chunkname, mode);
+    } else {
+        try lauxlib.luaL_checktype(L, 1, lua.LUA_TFUNCTION);
+        const chunkname = try lauxlib.luaL_optlstring(L, 2, "=(load)", null) orelse "=(load)";
+        var firstcall: bool = true;
+        status = lua.lua_load(L, genericReader, @as(?*anyopaque, @ptrCast(&firstcall)), chunkname, mode);
+    }
+
     if (status == lua.LUA_OK) {
         if (env_idx != 0 and lua.lua_type(L, env_idx) != lua.LUA_TNIL) {
             lua.lua_pushvalue(L, env_idx);
-            _ = lua.lua_setupvalue(L, -2, 1);
+            if (lua.lua_setupvalue(L, -2, 1) == null) {
+                lua.lua_pop(L, 1);
+            }
         }
         return 1;
     } else {
-        lua.lua_pushnil(L);
-        lua.lua_insert(L, -2);
+        const err_val = L.stack[L.top - 1];
+        const base = if (L.ci) |ci| ci.base else 0;
+        _ = lua.lua_checkstack(L, 2);
+        L.stack[base] = .{ .nil = {} };
+        L.stack[base + 1] = err_val;
+        L.top = base + 2;
         return 2;
     }
 }
 
 fn next_fn(L: *lua.lua_State) anyerror!i32 {
-    try lauxlib.luaL_checkany(L, 1);
-    if (lua.lua_istable(L, 1) == 0) {
-        _ = lua.lua_pushstring(L, "table expected");
-        return lua.lua_error(L);
-    }
+    try lauxlib.luaL_checktype(L, 1, lua.LUA_TTABLE);
     lua.lua_settop(L, 2);
-    if (lua.lua_next(L, 1) != 0) {
+    if ((try lua.lua_next(L, 1)) != 0) {
         return 2;
     }
     lua.lua_pushnil(L);
     return 1;
+}
+
+fn pairscont(L: *lua.lua_State, status: i32, ctx: usize) anyerror!i32 {
+    _ = status;
+    _ = ctx;
+    _ = L;
+    return 4;
 }
 
 fn pairs(L: *lua.lua_State) anyerror!i32 {
@@ -340,11 +387,12 @@ fn pairs(L: *lua.lua_State) anyerror!i32 {
         lua.lua_pushcfunction(L, next_fn);
         lua.lua_pushvalue(L, 1);
         lua.lua_pushnil(L);
+        lua.lua_pushnil(L);
     } else {
         lua.lua_pushvalue(L, 1);
-        try lua.lua_call(L, 1, 3);
+        try lua.lua_callk(L, 1, 4, 0, pairscont);
     }
-    return 3;
+    return 4;
 }
 
 fn pcall(L: *lua.lua_State) anyerror!i32 {
@@ -364,7 +412,7 @@ fn finishpcall_k(L: *lua.lua_State, status: i32, ctx: lua.lua_KContext) anyerror
 fn finishpcall(L: *lua.lua_State, status: i32, extra: usize) i32 {
     if (status != lua.LUA_OK and status != lua.LUA_YIELD) {
         lua.lua_pushboolean(L, 0); // first result (false)
-        lua.lua_pushvalue(L, -2); // error message
+        lua.lua_insert(L, -2); // insert false prior to error message
         return 2; // return false, msg
     } else {
         return @as(i32, @intCast(lua.lua_gettop(L))) + 1 - @as(i32, @intCast(extra));

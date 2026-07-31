@@ -193,7 +193,7 @@ test "table next traversal visits all entries" {
 
     lua.lua_pushnil(&L);
     var count: usize = 0;
-    while (lua.lua_next(&L, -2) != 0) {
+    while ((try lua.lua_next(&L, -2)) != 0) {
         count += 1;
         lua.lua_pop(&L, 1);
     }
@@ -221,7 +221,7 @@ const StringReaderState = struct {
     read_done: bool,
 };
 
-fn stringReader(L: *lua.lua_State, data: ?*anyopaque, size: ?*usize) ?[]const u8 {
+fn stringReader(L: *lua.lua_State, data: ?*anyopaque, size: ?*usize) anyerror!?[]const u8 {
     _ = L;
     const state: *StringReaderState = @ptrCast(@alignCast(data.?));
     if (state.read_done) {
@@ -3077,7 +3077,7 @@ fn lexerStringReader(
     _: *lua.lua_State,
     data: ?*anyopaque,
     size: ?*usize,
-) ?[]const u8 {
+) anyerror!?[]const u8 {
     const st = @as(*LexerReaderData, @ptrCast(@alignCast(data orelse return null)));
     if (st.pos >= st.src.len) {
         size.?.* = 0;
@@ -3104,7 +3104,7 @@ test "lex basic tokens and numbers" {
     const source = try newSource(&L, "test");
 
     var ls: lua.llex.LexState = undefined;
-    try lua.llex.luaX_setinput(&L, &ls, lexerStringReader, &rd, source, &[_]u8{});
+    try lua.llex.luaX_setinput(&L, &ls, lexerStringReader, &rd, source, &[_]u8{}, false);
     defer ls.buff.deinit(ls.allocator);
 
     try lua.llex.luaX_next(&ls);
@@ -3154,7 +3154,7 @@ test "lex integer and hex/float forms" {
     const source = try newSource(&L, "t2");
 
     var ls: lua.llex.LexState = undefined;
-    try lua.llex.luaX_setinput(&L, &ls, lexerStringReader, &rd, source, &[_]u8{});
+    try lua.llex.luaX_setinput(&L, &ls, lexerStringReader, &rd, source, &[_]u8{}, false);
     defer ls.buff.deinit(ls.allocator);
 
     const expect_int = struct {
@@ -3201,7 +3201,7 @@ test "lex long string, escapes, and comments" {
     const source = try newSource(&L, "t3");
 
     var ls: lua.llex.LexState = undefined;
-    try lua.llex.luaX_setinput(&L, &ls, lexerStringReader, &rd, source, &[_]u8{});
+    try lua.llex.luaX_setinput(&L, &ls, lexerStringReader, &rd, source, &[_]u8{}, false);
     defer ls.buff.deinit(ls.allocator);
 
     try lua.llex.luaX_next(&ls); // s
@@ -3242,7 +3242,7 @@ test "lex error on unfinished string" {
     const source = try newSource(&L, "t4");
 
     var ls: lua.llex.LexState = undefined;
-    try lua.llex.luaX_setinput(&L, &ls, lexerStringReader, &rd, source, &[_]u8{});
+    try lua.llex.luaX_setinput(&L, &ls, lexerStringReader, &rd, source, &[_]u8{}, false);
     defer ls.buff.deinit(ls.allocator);
 
     // x
@@ -3265,7 +3265,7 @@ test "lex reserved words and operators" {
     const source = try newSource(&L, "t5");
 
     var ls: lua.llex.LexState = undefined;
-    try lua.llex.luaX_setinput(&L, &ls, lexerStringReader, &rd, source, &[_]u8{});
+    try lua.llex.luaX_setinput(&L, &ls, lexerStringReader, &rd, source, &[_]u8{}, false);
     defer ls.buff.deinit(ls.allocator);
 
     try lua.llex.luaX_next(&ls);
@@ -3419,7 +3419,7 @@ test "H.1 luaL_len returns integer length via __len" {
         lua.lua_rawseti(&L, -2, @as(i64, @intCast(i)));
     }
     const len = try lua.luaL_len(&L, -1);
-    try std.testing.expectEqual(@as(usize, 4), len);
+    try std.testing.expectEqual(@as(i64, 4), len);
 
     // __len metamethod path
     lua.lua_createtable(&L, 0, 0);
@@ -3428,7 +3428,7 @@ test "H.1 luaL_len returns integer length via __len" {
     try lua.lua_setfield(&L, -2, "__len");
     _ = lua.lua_setmetatable(&L, -2);
     const len2 = try lua.luaL_len(&L, -1);
-    try std.testing.expectEqual(@as(usize, 7), len2);
+    try std.testing.expectEqual(@as(i64, 7), len2);
 }
 
 test "H.1 luaL_where pushes a source location string" {

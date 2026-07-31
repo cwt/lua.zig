@@ -40,6 +40,7 @@ fn lsys_load(L: *lua.lua_State, path: []const u8, seeglb: bool) anyerror!?*std.D
     errdefer L.allocator.destroy(lib);
 
     lib.* = std.DynLib.open(path_z) catch |err| {
+        L.allocator.destroy(lib);
         const msg = std.fmt.allocPrint(L.allocator, "cannot open library: {}", .{err}) catch {
             pushliteral(L, "cannot open library");
             return null;
@@ -219,7 +220,7 @@ const FileReaderState = struct {
     pos: usize,
 };
 
-fn fileReader(L: *lua.lua_State, data: ?*anyopaque, size: ?*usize) ?[]const u8 {
+fn fileReader(L: *lua.lua_State, data: ?*anyopaque, size: ?*usize) anyerror!?[]const u8 {
     _ = L;
     const state: *FileReaderState = @ptrCast(@alignCast(data.?));
     if (state.pos >= state.data.len) {

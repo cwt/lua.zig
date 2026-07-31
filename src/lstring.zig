@@ -35,16 +35,17 @@ pub fn luaS_new(
     const g = L.l_G orelse return error.NoGlobalState;
 
     // 1. Check the API string cache first (content-addressed reuse).
-    const bucket = @intFromPtr(s.ptr) % llimits.STRCACHE_N;
+    const hash = luaS_hash(s, g.seed);
+    const bucket = hash % llimits.STRCACHE_N;
     const cache = &g.strcache[bucket];
     var j: usize = 0;
     while (j < llimits.STRCACHE_M) : (j += 1) {
         if (cache[j]) |ts| {
-            if (std.mem.eql(u8, s, ts.s)) {
+            if (ts.len == s.len and std.mem.eql(u8, s, ts.s)) {
+                ts.marked = true;
                 return ts; // cache hit: reuse same object
             }
         }
-        j += 1;
     }
 
     // 2. Normal route: intern short strings, create long strings fresh.

@@ -26,7 +26,7 @@ pub fn luaL_setn(L: *lua.lua_State) !void {
 pub fn luaL_checktype(L: *lua.lua_State, idx: i32, t: i32) !void {
     const actual = lua.lua_type(L, idx);
     if (actual != t) {
-        return error.WrongType;
+        return luaL_typeerror(L, idx, lua.lua_typename(t));
     }
 }
 
@@ -57,17 +57,17 @@ pub fn luaL_typename(L: *lua.lua_State, idx: i32) ![]const u8 {
     };
 }
 
-pub fn luaL_len(L: *lua.lua_State, idx: i32) !usize {
+pub fn luaL_len(L: *lua.lua_State, idx: i32) !i64 {
     try lua.lua_len(L, idx);
-    const isnum = lua.lua_isinteger(L, -1);
-    const iv = lua.lua_tointegerx(L, -1, null);
-    if (iv == null or (iv.? == 0 and isnum == 0)) {
+    var isnum: i32 = 0;
+    const iv = lua.lua_tointegerx(L, -1, &isnum);
+    if (isnum == 0 or iv == null) {
         lua.lua_pop(L, 1);
-        return error.LuaTypeError;
+        return luaL_error(L, "object length is not an integer");
     }
     const l = iv.?;
     lua.lua_pop(L, 1);
-    return @as(usize, @intCast(l));
+    return l;
 }
 
 pub fn luaL_checkinteger(L: *lua.lua_State, idx: i32) !i64 {
@@ -511,7 +511,7 @@ const LoadS = struct {
     done: bool = false,
 };
 
-fn getS(L: *lua.lua_State, ud: ?*anyopaque, size: ?*usize) ?[]const u8 {
+fn getS(L: *lua.lua_State, ud: ?*anyopaque, size: ?*usize) anyerror!?[]const u8 {
     _ = L;
     const ls = @as(?*LoadS, @ptrCast(@alignCast(ud))) orelse return null;
     if (ls.done) return null;

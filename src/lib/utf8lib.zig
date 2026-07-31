@@ -60,7 +60,8 @@ fn utf8_decode(s: []const u8, val: ?*u32, strict: bool) ?usize {
             res = (res << 6) | (@as(u32, cc & 0x3F));
             c <<= 1;
         }
-        res |= (@as(u32, c & 0x7F) << @as(u5, @intCast(count * 5)));
+        if (count >= limits.len) return null;
+        res |= (@as(u32, c & 0x7F) << @as(u5, @truncate(count * 5)));
         if (res > MAXUTF or res < limits[count]) return null;
         if (strict) {
             if (res > MAXUNICODE or (0xD800 <= res and res <= 0xDFFF)) return null;

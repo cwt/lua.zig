@@ -68,7 +68,9 @@ inline fn keyEquals(a: TValue, b: TValue) bool {
     if (a == .function and b == .function) return a.function == b.function;
     if (a == .userdata and b == .userdata) return a.userdata == b.userdata;
     if (a == .thread and b == .thread) return a.thread == b.thread;
-    return true;
+    if (a == .proto and b == .proto) return a.proto == b.proto;
+    if (a == .nil and b == .nil) return true;
+    return false;
 }
 
 fn hashBits(x: u64) usize {
@@ -100,6 +102,7 @@ inline fn hashKey(key: TValue, len: usize) usize {
         .function => |p| if (p) |q| @intFromPtr(q) else 0,
         .table => |p| if (p) |q| @intFromPtr(q) else 0,
         .thread => |p| if (p) |q| @intFromPtr(q) else 0,
+        .proto => |p| if (p) |q| @intFromPtr(q) else 0,
         else => 0,
     };
     return h & mask;
@@ -121,84 +124,43 @@ fn computeHashSize(nrec: usize) usize {
 /// Find a free node scanning backward from `lastfree`.
 fn getFreePos(t: *Table) ?usize {
     if (t.node.items.len == 0) return null;
-    var i = t.lastfree;
-    while (i > 0) {
-        i -= 1;
-        if (t.node.items[i].key == .nil) return i;
+    while (t.lastfree > 0) {
+        t.lastfree -= 1;
+        if (t.node.items[t.lastfree].key == .nil) return t.lastfree;
     }
     return null;
 }
 
 /// Insert (key, val) into a node list. Assumes there is room; returns false
 /// if no free slot exists.
-fn insertInto(list: []Node, key: TValue, val: TValue) bool {
-    const len = list.len;
-    if (len == 0) return false;
-    const mp = hashKey(key, len);
-    var n = mp;
-    while (true) {
-        if (list[n].key == .nil) {
-            list[n] = .{ .key = key, .val = val, .next = -1 };
-            return true;
-        }
-        if (keyEquals(list[n].key, key)) {
-            list[n].val = val;
-            return true;
-        }
-        if (list[n].next == -1) break;
-        n = @intCast(list[n].next);
+/// Grow the hash part to accommodate more entries, re-inserting everything via setHash.
+fn countActiveHashKeys(t: *Table) usize {
+    var count: usize = 0;
+    for (t.node.items) |nd| {
+        if (nd.key != .nil and nd.val != .nil) count += 1;
     }
-    // search a free slot from the end
-    var f = len;
-    while (f > 0) {
-        f -= 1;
-        if (list[f].key == .nil) {
-            list[f] = .{ .key = key, .val = val, .next = list[mp].next };
-            list[mp].next = @intCast(f);
-            return true;
-        }
-    }
-    return false;
+    return count;
 }
 
-/// Grow the hash part to accommodate more entries, re-inserting everything.
-fn growNode(t: *Table) !void {
-    const newlen: usize = if (t.node.items.len == 0) LIMFORLAST else t.node.items.len * 2;
+fn growNode(t: *Table) anyerror!void {
+    const active_count = countActiveHashKeys(t) + 1;
+    var newlen = ceilPow2(active_count);
+    if (newlen < 4) newlen = 4;
+    var old_node = t.node;
     var newlist = std.ArrayList(Node).empty;
-    try newlist.ensureTotalCapacity(t.allocator, newlen);
-    newlist.items.len = newlen;
-    @memset(newlist.items, Node{ .key = TValue{ .nil = {} }, .val = TValue{ .nil = {} }, .next = -1 });
-    for (t.node.items) |nd| {
-        if (nd.key != .nil and nd.val != .nil) {
-            _ = insertInto(newlist.items, nd.key, nd.val);
-        }
-    }
-    t.node.deinit(t.allocator);
+    try newlist.ensureTotalCapacityPrecise(t.allocator, newlen);
+    newlist.appendNTimesAssumeCapacity(.{ .key = .{ .nil = {} }, .val = .{ .nil = {} }, .next = -1 }, newlen);
     t.node = newlist;
     t.lastfree = newlen;
+    for (old_node.items) |nd| {
+        if (nd.key != .nil and nd.val != .nil) {
+            try setHash(t, nd.key, nd.val);
+        }
+    }
+    old_node.deinit(t.allocator);
 }
 
-/// Remove `key` from the hash part (if present), unlinking it from its chain.
-fn removeFromHash(t: *Table, key: TValue) void {
-    const len = t.node.items.len;
-    if (len == 0) return;
-    const mp = hashKey(key, len);
-    var prev: ?usize = null;
-    var n = mp;
-    while (true) {
-        if (t.node.items[n].key == .nil) return;
-        if (keyEquals(t.node.items[n].key, key)) {
-            if (prev) |p| {
-                t.node.items[p].next = t.node.items[n].next;
-            }
-            t.node.items[n] = .{ .key = TValue{ .nil = {} }, .val = TValue{ .nil = {} }, .next = -1 };
-            return;
-        }
-        if (t.node.items[n].next == -1) return;
-        prev = n;
-        n = @intCast(t.node.items[n].next);
-    }
-}
+
 
 /// Find the node index holding `key` in the hash part, if any.
 fn findNodeIndex(t: *Table, key: TValue) ?usize {
@@ -274,8 +236,9 @@ inline fn getHash(t: *Table, key: TValue) TValue {
     while (true) {
         if (t.node.items[n].key == .nil) return TValue{ .nil = {} };
         if (keyEquals(t.node.items[n].key, key)) return t.node.items[n].val;
-        if (t.node.items[n].next == -1) return TValue{ .nil = {} };
-        n = @intCast(t.node.items[n].next);
+        const next_idx = t.node.items[n].next;
+        if (next_idx < 0 or next_idx >= len) return TValue{ .nil = {} };
+        n = @intCast(next_idx);
     }
 }
 
@@ -310,8 +273,9 @@ inline fn getStr(t: *Table, key: *const TString) TValue {
                 if (std.mem.eql(u8, ks.s, key.s)) return t.node.items[n].val;
             }
         }
-        if (t.node.items[n].next == -1) return TValue{ .nil = {} };
-        n = @intCast(t.node.items[n].next);
+        const next_idx = t.node.items[n].next;
+        if (next_idx < 0 or next_idx >= len) return TValue{ .nil = {} };
+        n = @intCast(next_idx);
     }
 }
 
@@ -333,7 +297,7 @@ pub fn setInt(t: *Table, k: i64, val: TValue) !void {
                 return;
             }
         }
-        removeFromHash(t, TValue{ .integer = k });
+        try setHash(t, TValue{ .integer = k }, val);
         return;
     }
     if (k >= 1) {
@@ -355,34 +319,55 @@ pub fn setInt(t: *Table, k: i64, val: TValue) !void {
     try setHash(t, TValue{ .integer = k }, val);
 }
 
-fn setHash(t: *Table, key: TValue, val: TValue) !void {
-    // update if present
+fn setHash(t: *Table, key: TValue, val: TValue) anyerror!void {
     const len = t.node.items.len;
-    if (len > 0) {
-        const mp = hashKey(key, len);
-        var n = mp;
-        while (true) {
-            if (t.node.items[n].key == .nil) break;
-            if (keyEquals(t.node.items[n].key, key)) {
-                t.node.items[n].val = val;
-                return;
-            }
-            if (t.node.items[n].next == -1) break;
-            n = @intCast(t.node.items[n].next);
-        }
+    if (len == 0) {
+        if (val == .nil) return; // assigning nil to non-existent key in empty hash is no-op
+        try growNode(t);
+        return setHash(t, key, val);
     }
+
+    const mp = hashKey(key, len);
+    var n = mp;
+    while (true) {
+        if (t.node.items[n].key == .nil) break;
+        if (keyEquals(t.node.items[n].key, key)) {
+            t.node.items[n].val = val;
+            return;
+        }
+        const next_idx = t.node.items[n].next;
+        if (next_idx < 0 or next_idx >= len) break;
+        n = @intCast(next_idx);
+    }
+
     if (val == .nil) {
-        removeFromHash(t, key);
         return;
     }
+
+    if (t.node.items[mp].key == .nil) {
+        t.node.items[mp] = .{ .key = key, .val = val, .next = -1 };
+        return;
+    }
+
     const f = getFreePos(t) orelse {
         try growNode(t);
         return setHash(t, key, val);
     };
-    const newlen = t.node.items.len;
-    const mp = hashKey(key, newlen);
-    if (t.node.items[mp].key == .nil) {
-        t.node.items[mp] = .{ .key = key, .val = val, .next = -1 };
+
+    const othermp = hashKey(t.node.items[mp].key, len);
+    if (othermp != mp) {
+        var prev = othermp;
+        while (t.node.items[prev].next != -1 and @as(usize, @intCast(t.node.items[prev].next)) != mp) {
+            prev = @intCast(t.node.items[prev].next);
+        }
+        if (t.node.items[prev].next != -1 and @as(usize, @intCast(t.node.items[prev].next)) == mp) {
+            t.node.items[prev].next = @intCast(f);
+            t.node.items[f] = t.node.items[mp];
+            t.node.items[mp] = .{ .key = key, .val = val, .next = -1 };
+        } else {
+            t.node.items[f] = .{ .key = key, .val = val, .next = t.node.items[mp].next };
+            t.node.items[mp].next = @intCast(f);
+        }
     } else {
         t.node.items[f] = .{ .key = key, .val = val, .next = t.node.items[mp].next };
         t.node.items[mp].next = @intCast(f);
@@ -413,7 +398,7 @@ fn scanHashFrom(t: *Table, start: usize) ?KV {
 
 /// Next key/value pair for traversal. `key == nil` starts the iteration.
 /// Order: array part by ascending index, then hash part by node order.
-pub fn next(t: *Table, key: TValue) ?KV {
+pub fn next(t: *Table, key: TValue) anyerror!?KV {
     if (key == .nil) {
         var i: usize = 1;
         while (i <= t.array.items.len) : (i += 1) {
@@ -436,10 +421,10 @@ pub fn next(t: *Table, key: TValue) ?KV {
                 return scanHashFrom(t, 0);
             }
         }
-        const start = findNodeIndex(t, key) orelse return null;
+        const start = findNodeIndex(t, key) orelse return error.InvalidKeyToNext;
         return scanHashFrom(t, start + 1);
     }
-    const start = findNodeIndex(t, key) orelse return null;
+    const start = findNodeIndex(t, key) orelse return error.InvalidKeyToNext;
     return scanHashFrom(t, start + 1);
 }
 

@@ -13,6 +13,8 @@ const lvm = @import("lvm.zig");
 const lcode = @import("lcode.zig");
 const llex = @import("llex.zig");
 const lstring = @import("lstring.zig");
+const ltable = @import("ltable.zig");
+const luaconf = @import("luaconf.zig");
 
 pub const NO_JUMP: i32 = -1;
 
@@ -327,9 +329,11 @@ fn getinstruction(fs: *FuncState, e: *expdesc) *lvm.Instruction {
 // Limit / stack helpers (called by lcode.zig)
 // ---------------------------------------------------------------------------
 
-pub fn luaY_checklimit(fs: *FuncState, v: i32, l: i32, what: []const u8) void {
+pub fn luaY_checklimit(fs: *FuncState, v: i32, l: i32, what: []const u8) !void {
     if (v > l) {
-        _ = llex.luaX_syntaxerror(fs.ls, what) catch {};
+        var buf: [128]u8 = undefined;
+        const msg = std.fmt.bufPrint(&buf, "too many {s} (limit is {d})", .{ what, l }) catch "limit exceeded";
+        return llex.luaX_syntaxerror(fs.ls, msg);
     }
 }
 
@@ -409,7 +413,7 @@ fn adjustlocalvars(ls: *llex.LexState, nvars: i32) !void {
         const vd = getlocalvardesc(fs, vidx);
         vd.ridx = @intCast(reg + i);
         vd.pidx = try registerlocalvar(ls, fs, vd.name);
-        luaY_checklimit(fs, reg + i + 1, MAXVARS, "local variables");
+        try luaY_checklimit(fs, reg + i + 1, MAXVARS, "local variables");
     }
 }
 
@@ -432,7 +436,7 @@ fn searchupvalue(fs: *FuncState, n: *lua.lua_TString) i32 {
 }
 
 fn allocupvalue(fs: *FuncState) !*lua.Upvaldesc {
-    luaY_checklimit(fs, fs.nups + 1, MAXUPVAL, "upvalues");
+    try luaY_checklimit(fs, fs.nups + 1, MAXUPVAL, "upvalues");
     try fs.upvalues.append(fs.ls.L.allocator, .{ .name = null, .instack = 0, .idx = 0, .kind = 0 });
     fs.nups += 1;
     return &fs.upvalues.items[fs.upvalues.items.len - 1];
@@ -521,7 +525,9 @@ fn buildglobal(ls: *llex.LexState, varname: *lua.lua_TString, vp: *expdesc) !voi
     init_exp(vp, .VGLOBAL, -1);
     try singlevaraux(fs, envn(ls), vp, true);
     if (vp.k == .VGLOBAL) {
-        try lcode.luaK_semerror(ls, "_ENV is global");
+        var buf: [256]u8 = undefined;
+        const msg = std.fmt.bufPrint(&buf, "_ENV is global when accessing variable '{s}'", .{varname.s}) catch "_ENV is global";
+        try lcode.luaK_semerror(ls, msg);
     }
     lcode.luaK_exp2anyregup(fs, vp);
     codestring(&key, varname);
@@ -543,7 +549,9 @@ fn buildvar(ls: *llex.LexState, varname: *lua.lua_TString, vp: *expdesc) !void {
     if (vp.k == .VGLOBAL) {
         const info = vp.u.info;
         if (info == -2) {
-            try lcode.luaK_semerror(ls, "variable not declared");
+            var buf: [256]u8 = undefined;
+            const msg = std.fmt.bufPrint(&buf, "variable '{s}' not declared", .{varname.s}) catch "variable not declared";
+            try lcode.luaK_semerror(ls, msg);
         }
         try buildglobal(ls, varname, vp);
         if (info != -1) {
@@ -626,8 +634,8 @@ fn enterblock(fs: *FuncState, bl: *BlockCnt, isloop: u8) void {
     fs.bl = bl;
 }
 
-fn leaveblock(fs: *FuncState) void {
-    const bl = fs.bl orelse return;
+fn leaveblock(fs: *FuncState) !void {
+    const bl = fs.bl.?;
     const ls = fs.ls;
     const stklevel = reglevel(fs, bl.nactvar);
     if (bl.previous != null and bl.upval != 0) {
@@ -636,12 +644,12 @@ fn leaveblock(fs: *FuncState) void {
     fs.freereg = stklevel;
     removevars(fs, bl.nactvar);
     if (bl.isloop == 2) {
-        createlabel(ls, ls.brkn.?, 0, false) catch {};
+        try createlabel(ls, ls.brkn.?, 0, false);
     }
-    solvegotos(fs, bl) catch {};
+    try solvegotos(fs, bl);
     if (bl.previous == null) {
         if (bl.firstgoto < ls.dyd.gt.items.len) {
-            undefgoto(ls, &ls.dyd.gt.items[@intCast(bl.firstgoto)]) catch {};
+            try undefgoto(ls, &ls.dyd.gt.items[@intCast(bl.firstgoto)]);
         }
     }
     fs.bl = bl.previous;
@@ -652,7 +660,7 @@ fn block(ls: *llex.LexState) anyerror!void {
     var bl: BlockCnt = .{};
     enterblock(fs, &bl, 0);
     try statlist(ls);
-    leaveblock(fs);
+    try leaveblock(fs);
 }
 
 fn statlist(ls: *llex.LexState) !void {
@@ -699,8 +707,12 @@ fn newgotoentry(ls: *llex.LexState, name: *lua.lua_TString, line: i32) !i32 {
 }
 
 fn jumpscopeerror(ls: *llex.LexState, gt: *llex.Labeldesc) !void {
-    _ = getlocalvardesc(ls.fs.?, gt.nactvar).name;
-    try lcode.luaK_semerror(ls, "<goto> jumps into the scope of a local variable");
+    const tsname = getlocalvardesc(ls.fs.?, gt.nactvar).name;
+    const varname = if (tsname) |ts| ts.s else "*";
+    const gtname = if (gt.name) |gn| gn.s else "";
+    var buf: [256]u8 = undefined;
+    const msg = std.fmt.bufPrint(&buf, "<goto {s}> at line {d} jumps into the scope of '{s}'", .{ gtname, gt.line, varname }) catch "<goto> jumps into the scope of a local variable";
+    try lcode.luaK_semerror(ls, msg);
 }
 
 fn closegoto(ls: *llex.LexState, g: i32, label: *llex.Labeldesc, bup: u8) !void {
@@ -751,12 +763,19 @@ fn createlabel(ls: *llex.LexState, name: *lua.lua_TString, line: i32, last: bool
 
 fn undefgoto(ls: *llex.LexState, gt: *llex.Labeldesc) !void {
     std.debug.assert(!eqstr(gt.name, ls.brkn));
-    try lcode.luaK_semerror(ls, "no visible label for <goto>");
+    const gtname = if (gt.name) |gn| gn.s else "";
+    var buf: [256]u8 = undefined;
+    const msg = std.fmt.bufPrint(&buf, "no visible label '{s}' for <goto> at line {d}", .{ gtname, gt.line }) catch "no visible label for <goto>";
+    try lcode.luaK_semerror(ls, msg);
 }
 
 fn checkrepeated(ls: *llex.LexState, name: *lua.lua_TString) !void {
     const lb = findlabel(ls, name, ls.fs.?.firstlabel);
-    if (lb != null) try lcode.luaK_semerror(ls, "label already defined");
+    if (lb) |l| {
+        var buf: [256]u8 = undefined;
+        const msg = std.fmt.bufPrint(&buf, "label '{s}' already defined on line {d}", .{ name.s, l.line }) catch "label already defined";
+        try lcode.luaK_semerror(ls, msg);
+    }
 }
 
 fn labelstat(ls: *llex.LexState, name: *lua.lua_TString, line: i32) !void {
@@ -794,6 +813,9 @@ fn addprototype(ls: *llex.LexState) !*lua.lua_Proto {
     const fs = ls.fs.?;
     const f = try lua.createProto(ls.L.allocator);
     try lua.registerGC(ls.L, f);
+    if (ls.anchor_tab) |tab| {
+        try ltable.set(tab, .{ .proto = f }, .{ .boolean = true });
+    }
     try fs.p.append(ls.L.allocator, f);
     return f;
 }
@@ -835,8 +857,8 @@ fn open_func(ls: *llex.LexState, fs: *FuncState, bl: *BlockCnt) !void {
 fn close_func(ls: *llex.LexState) !void {
     const fs = ls.fs orelse return;
     const f = fs.f;
-    lcode.luaK_ret(fs, luaY_nvarstack(fs), 0);
-    leaveblock(fs);
+    try lcode.luaK_ret(fs, luaY_nvarstack(fs), 0);
+    try leaveblock(fs);
     std.debug.assert(fs.bl == null);
     lcode.luaK_finish(fs);
     // Transfer ownership of the generated arrays to the prototype. The
@@ -952,7 +974,7 @@ fn constructor(ls: *llex.LexState, t: *expdesc) !void {
         if (ls.t.token == '}') break;
         if (cc.v.k != .VVOID) closelistfield(fs, &cc);
         try field(ls, &cc);
-        luaY_checklimit(fs, cc.tostore + cc.na + cc.nh, MAX_CNST, "items in a constructor");
+        try luaY_checklimit(fs, cc.tostore + cc.na + cc.nh, MAX_CNST, "items in a constructor");
         if (!(try testnext(ls, ',')) and !(try testnext(ls, ';'))) break;
     }
     try check_match(ls, '}', '{', line);
@@ -1387,7 +1409,7 @@ fn retstat(ls: *llex.LexState) !void {
             }
         }
     }
-    lcode.luaK_ret(fs, first, nret);
+    try lcode.luaK_ret(fs, first, nret);
     _ = try testnext(ls, ';');
 }
 
@@ -1497,7 +1519,7 @@ fn whilestat(ls: *llex.LexState, line: i32) !void {
     try block(ls);
     luaK_jumpto(fs, whileinit);
     try check_match(ls, llex.TK_END, llex.TK_WHILE, line);
-    leaveblock(fs);
+    try leaveblock(fs);
     lcode.luaK_patchtohere(fs, condexit);
 }
 
@@ -1512,7 +1534,7 @@ fn repeatstat(ls: *llex.LexState, line: i32) !void {
     try statlist(ls);
     try check_match(ls, llex.TK_UNTIL, llex.TK_REPEAT, line);
     var condexit = try cond(ls);
-    leaveblock(fs);
+    try leaveblock(fs);
     if (bl2.upval != 0) {
         const exit = lcode.luaK_jump(fs);
         lcode.luaK_patchtohere(fs, condexit);
@@ -1521,7 +1543,7 @@ fn repeatstat(ls: *llex.LexState, line: i32) !void {
         lcode.luaK_patchtohere(fs, exit);
     }
     lcode.luaK_patchlist(fs, condexit, repeat_init);
-    leaveblock(fs);
+    try leaveblock(fs);
 }
 
 fn exp1(ls: *llex.LexState) !void {
@@ -1553,7 +1575,7 @@ fn forbody(ls: *llex.LexState, base: i32, line: i32, nvars: i32, isgen: i32) !vo
     try adjustlocalvars(ls, nvars);
     lcode.luaK_reserveregs(fs, nvars);
     try block(ls);
-    leaveblock(fs);
+    try leaveblock(fs);
     try fixforjump(fs, prep, lcode.luaK_getlabel(fs), 0);
     if (isgen != 0) {
         _ = lcode.luaK_codeABC(fs, .TFORCALL, base, 0, nvars);
@@ -1619,7 +1641,7 @@ fn forstat(ls: *llex.LexState, line: i32) !void {
         else => return llex.luaX_syntaxerror(ls, "'=' or 'in' expected"),
     }
     try check_match(ls, llex.TK_END, llex.TK_FOR, line);
-    leaveblock(fs);
+    try leaveblock(fs);
 }
 
 fn localfunc(ls: *llex.LexState) !void {
@@ -1765,6 +1787,18 @@ fn statement(ls: *llex.LexState) anyerror!void {
             try llex.luaX_next(ls);
             try gotostat(ls, line);
         },
+        llex.TK_NAME => {
+            if (luaconf.LUA_COMPAT_GLOBAL and eqstr(ls.t.seminfo.ts, ls.glbn)) {
+                const lk = try llex.luaX_lookahead(ls);
+                if (lk == '<' or lk == llex.TK_NAME or lk == '*' or lk == llex.TK_FUNCTION) {
+                    try globalstatfunc(ls, line);
+                } else {
+                    try exprstat(ls);
+                }
+            } else {
+                try exprstat(ls);
+            }
+        },
         else => try exprstat(ls),
     }
     const fs = ls.fs orelse return;
@@ -1806,9 +1840,12 @@ fn cleanupFuncState(fs: *FuncState, allocator: std.mem.Allocator) void {
 pub fn luaY_parser(L: *lua.lua_State, ls: *llex.LexState) !*lua.lua_Proto {
     var fs: FuncState = .{ .ls = ls, .f = try lua.createProto(L.allocator) };
     fs.f.source = ls.source;
+    try lua.registerGC(L, fs.f);
+    if (ls.anchor_tab) |tab| {
+        try ltable.set(tab, .{ .proto = fs.f }, .{ .boolean = true });
+    }
     errdefer {
         cleanupFuncState(&fs, L.allocator);
-        lua.destroyProto(L.allocator, fs.f);
     }
     try mainfunc(ls, &fs);
     return fs.f;
@@ -1820,10 +1857,30 @@ pub fn luaD_protectedparser(
     dt: ?*anyopaque,
     chunkname: []const u8,
     first_slice: []const u8,
+    is_eof: bool,
 ) !*lua.lua_Proto {
+    const anchor_tab = try ltable.createTable(L.allocator, 0, 8);
+    try lua.registerGC(L, anchor_tab);
+    if (L.l_G) |g| {
+        if (g.registry.table) |reg| {
+            try ltable.set(reg, .{ .lightud = @ptrCast(anchor_tab) }, .{ .table = anchor_tab });
+        }
+    }
+    defer {
+        if (L.l_G) |g| {
+            if (g.registry.table) |reg| {
+                ltable.set(reg, .{ .lightud = @ptrCast(anchor_tab) }, .{ .nil = {} }) catch {};
+            }
+        }
+    }
     var ls: llex.LexState = undefined;
     const source = try lstring.luaS_new(L, chunkname);
-    try llex.luaX_setinput(L, &ls, reader, dt, source, first_slice);
+    try ltable.set(anchor_tab, .{ .string = source }, .{ .boolean = true });
+    try llex.luaX_setinput(L, &ls, reader, dt, source, first_slice, is_eof);
+    ls.anchor_tab = anchor_tab;
+    if (ls.brkn) |brk| try ltable.set(anchor_tab, .{ .string = brk }, .{ .boolean = true });
+    if (ls.envn) |env| try ltable.set(anchor_tab, .{ .string = env }, .{ .boolean = true });
+    if (ls.glbn) |glb| try ltable.set(anchor_tab, .{ .string = glb }, .{ .boolean = true });
     errdefer {
         ls.buff.deinit(L.allocator);
         ls.dyd.deinit(L.allocator);
@@ -1838,7 +1895,6 @@ pub fn luaD_protectedparser(
         }
         return err;
     };
-    try lua.registerGC(L, f);
     ls.buff.deinit(L.allocator);
     ls.dyd.deinit(L.allocator);
     return f;

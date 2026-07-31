@@ -157,7 +157,7 @@ fn printValue(L: *lua.lua_State, io: std.Io, index: i32, depth: usize) !void {
         try stdoutWrite(io, "{");
         lua.lua_pushnil(L);
         var first = true;
-        while (lua.lua_next(L, abs) != 0) {
+        while ((try lua.lua_next(L, abs)) != 0) {
             if (!first) try stdoutWrite(io, ", ");
             first = false;
             try printValue(L, io, -2, depth + 1); // key

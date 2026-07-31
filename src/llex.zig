@@ -21,6 +21,7 @@ const libm = @import("libm.zig");
 const lua = @import("lua.zig");
 const lstring = @import("lstring.zig");
 const lparser = @import("lparser.zig");
+const luaconf = @import("luaconf.zig");
 
 const Allocator = std.mem.Allocator;
 
@@ -161,6 +162,7 @@ const quoted_reserved = [_][]const u8{
 };
 
 fn isReserved(name: []const u8) ?i32 {
+    if (luaconf.LUA_COMPAT_GLOBAL and std.mem.eql(u8, name, "global")) return null;
     for (reserved_words) |r| {
         if (std.mem.eql(u8, r.name, name)) return r.tok;
     }
@@ -218,6 +220,8 @@ pub const LexState = struct {
     // the parser (unlike ls.buff which may be cleared during unwind).
     errmsg: ?[]const u8 = null,
     errmsg_buf: [512]u8 = undefined,
+    anchor_tab: ?*lua.lua_Table = null,
+    glbn: ?*lua.lua_TString = null,
 };
 
 // ---------------------------------------------------------------------------
@@ -254,22 +258,20 @@ fn hexval(c: i32) u64 {
 // ---------------------------------------------------------------------------
 // Character stream (mirrors the C `ZIO`)
 // ---------------------------------------------------------------------------
-fn readByte(ls: *LexState) ?u8 {
+fn readByte(ls: *LexState) !?u8 {
     if (ls.chunk_off >= ls.chunk.len) {
         if (ls.eof) return null;
         var size: usize = 0;
-        const slice = ls.reader(ls.L, ls.data, &size);
-        if (slice) |s| {
-            if (s.len == 0 or size == 0) {
-                ls.eof = true;
-                return null;
-            }
-            ls.chunk = s;
-            ls.chunk_off = 0;
-        } else {
+        const slice = (try ls.reader(ls.L, ls.data, &size)) orelse {
+            ls.eof = true;
+            return null;
+        };
+        if (slice.len == 0 or size == 0) {
             ls.eof = true;
             return null;
         }
+        ls.chunk = slice;
+        ls.chunk_off = 0;
     }
     const b = ls.chunk[ls.chunk_off];
     ls.chunk_off += 1;
@@ -277,7 +279,7 @@ fn readByte(ls: *LexState) ?u8 {
 }
 
 fn next(ls: *LexState) void {
-    const b = readByte(ls);
+    const b = readByte(ls) catch null;
     ls.current = if (b) |v| @as(i32, v) else EOZ;
 }
 
@@ -542,7 +544,11 @@ pub fn luaX_syntaxerror(ls: *LexState, msg: []const u8) LexError {
 // ---------------------------------------------------------------------------
 pub fn luaX_newstring(ls: *LexState, str: []const u8) !*lua.lua_TString {
     const L = ls.L;
-    return try lstring.luaS_new(L, str);
+    const ts = try lstring.luaS_new(L, str);
+    if (ls.anchor_tab) |tab| {
+        try @import("ltable.zig").set(tab, .{ .string = ts }, .{ .boolean = true });
+    }
+    return ts;
 }
 
 // ---------------------------------------------------------------------------
@@ -563,26 +569,29 @@ pub fn luaX_setinput(
     data: ?*anyopaque,
     source: *lua.lua_TString,
     first_slice: []const u8,
+    is_eof: bool,
 ) !void {
     ls.allocator = L.allocator;
     ls.L = L;
     ls.reader = reader;
     ls.data = data;
     ls.source = source;
+    ls.anchor_tab = null;
     ls.dyd = .{ .actvar = .empty, .gt = .empty, .label = .empty };
     ls.level = 0;
-    ls.brkn = try lstring.luaS_new(L, "_break");
-    ls.envn = try lstring.luaS_new(L, "_ENV");
+    ls.brkn = try luaX_newstring(ls, "_break");
+    ls.envn = try luaX_newstring(ls, "_ENV");
+    ls.glbn = try luaX_newstring(ls, "global");
     ls.t = .{};
     ls.lookahead = .{ .token = TK_EOS };
     ls.linenumber = 1;
     ls.lastline = 1;
     ls.chunk = first_slice;
     ls.chunk_off = 0;
-    ls.eof = false;
+    ls.eof = is_eof;
     ls.fs = null;
     ls.buff = std.ArrayList(u8).empty;
-    ls.current = if (readByte(ls)) |b| @as(i32, b) else EOZ;
+    ls.current = if (try readByte(ls)) |b| @as(i32, b) else EOZ;
 }
 
 pub fn luaX_next(ls: *LexState) !void {
@@ -714,7 +723,7 @@ fn readdecesc(ls: *LexState) !u64 {
     }
     try esccheck(ls, r <= 0xFF, "decimal escape too large");
     var k: usize = 0;
-    while (k < i) : (k += 1) _ = ls.buff.pop();
+    while (k <= i) : (k += 1) _ = ls.buff.pop();
     return r;
 }
 
@@ -785,7 +794,7 @@ fn read_string(ls: *LexState, del: i32, seminfo: *SemInfo) !void {
                     else => {
                         try esccheck(ls, lisdigit(ls.current), "invalid escape sequence");
                         const c = try readdecesc(ls);
-                        try only_save(ls, @intCast(c));
+                        try save(ls, @intCast(c));
                     },
                 }
             },

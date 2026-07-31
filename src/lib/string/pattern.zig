@@ -35,8 +35,12 @@ pub fn posrelatI(pos: i64, len: usize) usize {
 }
 
 pub fn getendpos(L: *lua.lua_State, arg: i32, def: i64, len: usize) usize {
-    const end_val = lauxlib.luaL_optinteger(L, arg, def);
-    return posrelatI(end_val, len);
+    const pos = lauxlib.luaL_optinteger(L, arg, def);
+    const slen = @as(i64, @intCast(len));
+    if (pos > slen) return len;
+    if (pos >= 0) return @as(usize, @intCast(pos));
+    if (pos < -slen) return 0;
+    return @as(usize, @intCast(slen + pos + 1));
 }
 
 fn match_class(c: u8, cl: u8) bool {
@@ -489,8 +493,8 @@ fn str_find_aux(L: *lua.lua_State, find: bool) anyerror!i32 {
     if (find and (lua.lua_toboolean(L, 4) != 0 or nospecials(p, lp))) {
         const s2_offset = lmemfind(s[init..], ls - init, p, lp);
         if (s2_offset) |off| {
-            lua.lua_pushinteger(L, @as(i64, @intCast(off + 1)));
-            lua.lua_pushinteger(L, @as(i64, @intCast(off + lp)));
+            lua.lua_pushinteger(L, @as(i64, @intCast(init + off + 1)));
+            lua.lua_pushinteger(L, @as(i64, @intCast(init + off + lp)));
             return 2;
         }
     } else {

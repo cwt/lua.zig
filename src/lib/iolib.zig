@@ -588,12 +588,25 @@ fn f_lines(L_: *L) !i32 {
     return 0;
 }
 
-fn createstdfile(L_: *L, fd: i32, k: []const u8, cf: ?lua.lua_CFunction) !void {
+fn io_noclose(L_: *L) anyerror!i32 {
+    const p = try tostream(L_, 1);
+    p.closef = io_noclose;
+    _ = lua.lua_pushstring(L_, "cannot close standard file");
+    return 1;
+}
+
+fn createstdfile(L_: *L, fd: i32, k: ?[]const u8, fname: ?[]const u8, cf: ?lua.lua_CFunction) !void {
     const p = lua.lua_newuserdatauv(L_, @sizeOf(LStream), 0) orelse unreachable;
     const stream = @as(*LStream, @ptrCast(@alignCast(p)));
     stream.* = LStream{ .fd = fd, .closef = cf, .buf = null, .buf_len = 0, .buf_mode = 0, .unget = null };
     try lauxlib.luaL_setmetatable(L_, LUA_FILEHANDLE);
-    lua.lua_rawsetp(L_, lua.LUA_REGISTRYINDEX, @constCast(@ptrCast(k.ptr)));
+    if (k) |key| {
+        lua.lua_pushvalue(L_, -1);
+        lua.lua_rawsetp(L_, lua.LUA_REGISTRYINDEX, @constCast(@ptrCast(key.ptr)));
+    }
+    if (fname) |name| {
+        try lua.lua_setfield(L_, -2, name);
+    }
 }
 
 const iolib_reg = [_]luaL_Reg{
@@ -636,6 +649,7 @@ pub fn openio(L_: *L) !void {
     try lua.lua_setfield(L_, -2, "__index");
     lua.lua_pop(L_, 1); // remove FILE* metatable from the stack
     try lauxlib.luaL_newlib(L_, &iolib_reg);
-    try createstdfile(L_, 0, IO_INPUT, null);
-    try createstdfile(L_, 1, IO_OUTPUT, null);
+    try createstdfile(L_, 0, IO_INPUT, "stdin", io_noclose);
+    try createstdfile(L_, 1, IO_OUTPUT, "stdout", io_noclose);
+    try createstdfile(L_, 2, null, "stderr", io_noclose);
 }

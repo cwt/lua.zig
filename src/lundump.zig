@@ -6,6 +6,7 @@ const std = @import("std");
 const lua = @import("lua.zig");
 const lvm = @import("lvm.zig");
 const lstring = @import("lstring.zig");
+const ltable = @import("ltable.zig");
 
 const LUAC_DATA = "\x19\x93\r\n\x1a\n";
 const LUAC_INT = -@as(i64, 0x5678);
@@ -43,14 +44,10 @@ const Zio = struct {
             if (self.offset >= self.buffer.len) {
                 var size: usize = 0;
                 // The reader returns the next block of the input stream
-                const res = self.reader(self.L, self.data, &size);
-                if (res) |slice| {
-                    if (slice.len == 0 or size == 0) return error.TruncatedChunk;
-                    self.buffer = slice;
-                    self.offset = 0;
-                } else {
-                    return error.TruncatedChunk;
-                }
+                const res = (try self.reader(self.L, self.data, &size)) orelse return error.TruncatedChunk;
+                if (res.len == 0 or size == 0) return error.TruncatedChunk;
+                self.buffer = res;
+                self.offset = 0;
             }
             const avail = self.buffer.len - self.offset;
             const to_copy = @min(avail, dest.len - bytes_read);
@@ -67,6 +64,7 @@ const LoadState = struct {
     name: []const u8,
     offset: usize,
     strings: std.ArrayList(*lua.lua_TString),
+    anchor_tab: *lua.lua_Table,
     allocator: std.mem.Allocator,
 
     fn loadBlock(self: *LoadState, dest: []u8) !void {
@@ -142,6 +140,7 @@ const LoadState = struct {
         try self.loadBlock(buf);
 
         const ts = try lstring.luaS_new(self.L, buf[0..len]);
+        try ltable.set(self.anchor_tab, .{ .string = ts }, .{ .boolean = true });
 
         try self.strings.append(self.allocator, ts);
         return ts;
@@ -152,16 +151,15 @@ const LoadState = struct {
         if (n < 0) return error.BadFormat;
         try self.loadAlign(4);
         const code = try self.allocator.alloc(lvm.Instruction, @intCast(n));
-        errdefer self.allocator.free(code);
+        f.code = code; // Assign immediately; GC owns this via allgc
         try self.loadBlock(std.mem.sliceAsBytes(code));
-        f.code = code;
     }
 
     fn loadConstants(self: *LoadState, f: *lua.lua_Proto) !void {
         const n = try self.loadInt();
         if (n < 0) return error.BadFormat;
         const k = try self.allocator.alloc(lua.TValue, @intCast(n));
-        errdefer self.allocator.free(k);
+        f.k = k; // Assign immediately; GC owns this via allgc
 
         for (k) |*val| {
             val.* = .{ .nil = {} };
@@ -194,18 +192,15 @@ const LoadState = struct {
                 else => return error.InvalidConstantTag,
             }
         }
-        f.k = k;
     }
 
     fn loadProtos(self: *LoadState, f: *lua.lua_Proto) anyerror!void {
         const n = try self.loadInt();
         if (n < 0) return error.BadFormat;
         const sub_protos = try self.allocator.alloc(*lua.lua_Proto, @intCast(n));
-        var loaded: usize = 0;
-        errdefer {
-            self.allocator.free(sub_protos);
-        }
+        f.p = sub_protos; // Assign immediately; GC owns this via allgc
 
+        var loaded: usize = 0;
         while (loaded < @as(usize, @intCast(n))) : (loaded += 1) {
             const sub = try lua.createProto(self.allocator);
             sub.is_sub = true;
@@ -213,14 +208,13 @@ const LoadState = struct {
             sub_protos[loaded] = sub;
             try self.loadFunction(sub);
         }
-        f.p = sub_protos;
     }
 
     fn loadUpvalues(self: *LoadState, f: *lua.lua_Proto) !void {
         const n = try self.loadInt();
         if (n < 0) return error.BadFormat;
         const upvals = try self.allocator.alloc(lua.Upvaldesc, @intCast(n));
-        errdefer self.allocator.free(upvals);
+        f.upvalues = upvals; // Assign immediately; GC owns this via allgc
 
         for (upvals) |*up| {
             up.name = null;
@@ -234,7 +228,6 @@ const LoadState = struct {
             up.idx = try self.loadByte();
             up.kind = try self.loadByte();
         }
-        f.upvalues = upvals;
     }
 
     fn loadDebug(self: *LoadState, f: *lua.lua_Proto) !void {
@@ -242,9 +235,8 @@ const LoadState = struct {
         const n_lineinfo = try self.loadInt();
         if (n_lineinfo < 0) return error.BadFormat;
         const lineinfo = try self.allocator.alloc(i8, @intCast(n_lineinfo));
-        errdefer self.allocator.free(lineinfo);
+        f.lineinfo = lineinfo; // Assign immediately; GC owns this via allgc
         try self.loadBlock(std.mem.sliceAsBytes(lineinfo));
-        f.lineinfo = lineinfo;
 
         // 2. abslineinfo
         const n_abslineinfo = try self.loadInt();
@@ -252,9 +244,8 @@ const LoadState = struct {
         if (n_abslineinfo > 0) {
             try self.loadAlign(@alignOf(lua.AbsLineInfo));
             const abslineinfo = try self.allocator.alloc(lua.AbsLineInfo, @intCast(n_abslineinfo));
-            errdefer self.allocator.free(abslineinfo);
+            f.abslineinfo = abslineinfo; // Assign immediately
             try self.loadBlock(std.mem.sliceAsBytes(abslineinfo));
-            f.abslineinfo = abslineinfo;
         } else {
             f.abslineinfo = &.{};
         }
@@ -263,7 +254,7 @@ const LoadState = struct {
         const n_locvars = try self.loadInt();
         if (n_locvars < 0) return error.BadFormat;
         const locvars = try self.allocator.alloc(lua.LocVar, @intCast(n_locvars));
-        errdefer self.allocator.free(locvars);
+        f.locvars = locvars; // Assign immediately; GC owns this via allgc
         for (locvars) |*lv| {
             lv.varname = null;
             lv.startpc = 0;
@@ -274,7 +265,6 @@ const LoadState = struct {
             lv.startpc = try self.loadInt();
             lv.endpc = try self.loadInt();
         }
-        f.locvars = locvars;
 
         // 4. upval names
         const n_upvalnames = try self.loadInt();
@@ -345,12 +335,28 @@ const LoadState = struct {
 };
 
 pub fn loadBinaryChunk(L: *lua.lua_State, reader: lua.lua_Reader, dt: ?*anyopaque, first_slice: []const u8, name: []const u8) !*lua.lua_Proto {
+    const anchor_tab = try ltable.createTable(L.allocator, 0, 4);
+    try lua.registerGC(L, anchor_tab);
+    if (L.l_G) |g| {
+        if (g.registry.table) |reg| {
+            try ltable.set(reg, .{ .lightud = @ptrCast(anchor_tab) }, .{ .table = anchor_tab });
+        }
+    }
+    defer {
+        if (L.l_G) |g| {
+            if (g.registry.table) |reg| {
+                ltable.set(reg, .{ .lightud = @ptrCast(anchor_tab) }, .{ .nil = {} }) catch {};
+            }
+        }
+    }
+
     var S = LoadState{
         .L = L,
         .zio = Zio.init(L, reader, dt, first_slice),
         .name = name,
         .offset = 1, // first byte already read
         .strings = .empty,
+        .anchor_tab = anchor_tab,
         .allocator = L.allocator,
     };
     defer S.strings.deinit(L.allocator);
@@ -360,8 +366,9 @@ pub fn loadBinaryChunk(L: *lua.lua_State, reader: lua.lua_Reader, dt: ?*anyopaqu
     _ = cl_nupval; // nupval for the main closure, will be verified/used when closure is instantiated
 
     const proto = try lua.createProto(L.allocator);
-    errdefer lua.destroyProto(L.allocator, proto);
     try lua.registerGC(L, proto);
+
+    try ltable.set(anchor_tab, .{ .proto = proto }, .{ .boolean = true });
 
     try S.loadFunction(proto);
     return proto;

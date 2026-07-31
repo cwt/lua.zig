@@ -86,7 +86,9 @@ pub fn luaT_gettmbyobj(L: *lua.lua_State, o: lua.TValue, event: TMS) lua.TValue 
 }
 
 pub fn savestate(L: *lua.lua_State) void {
-    _ = L;
+    if (L.ci) |ci| {
+        L.top = ci.top;
+    }
 }
 
 pub fn luaD_call(L: *lua.lua_State, func_idx: usize, nresults: i32) !void {
@@ -96,6 +98,7 @@ pub fn luaD_call(L: *lua.lua_State, func_idx: usize, nresults: i32) !void {
 }
 
 pub fn luaT_callTM(L: *lua.lua_State, f: lua.TValue, p1: *const lua.TValue, p2: *const lua.TValue, p3: *const lua.TValue) !void {
+    const saved_top = L.top;
     savestate(L);
     if (lua.lua_checkstack(L, 4) == 0) return error.OutOfMemory;
     const old_top = L.top;
@@ -105,10 +108,11 @@ pub fn luaT_callTM(L: *lua.lua_State, f: lua.TValue, p1: *const lua.TValue, p2: 
     L.stack[old_top + 3] = p3.*;
     L.top = old_top + 4;
     try luaD_call(L, old_top, 0);
-    L.top = old_top;
+    L.top = saved_top;
 }
 
 pub fn luaT_callTM1(L: *lua.lua_State, f: lua.TValue, p1: *const lua.TValue) !void {
+    const saved_top = L.top;
     savestate(L);
     if (lua.lua_checkstack(L, 2) == 0) return error.OutOfMemory;
     const old_top = L.top;
@@ -131,12 +135,14 @@ pub fn luaT_callTM1(L: *lua.lua_State, f: lua.TValue, p1: *const lua.TValue) !vo
         if (old_ci) |prev| {
             prev.next = null;
         }
+        L.top = saved_top;
         return e;
     };
-    L.top = old_top;
+    L.top = saved_top;
 }
 
 pub fn luaT_callTM2(L: *lua.lua_State, f: lua.TValue, p1: *const lua.TValue, p2: *const lua.TValue) !void {
+    const saved_top = L.top;
     savestate(L);
     if (lua.lua_checkstack(L, 3) == 0) return error.OutOfMemory;
     const old_top = L.top;
@@ -160,12 +166,14 @@ pub fn luaT_callTM2(L: *lua.lua_State, f: lua.TValue, p1: *const lua.TValue, p2:
         if (old_ci) |prev| {
             prev.next = null;
         }
+        L.top = saved_top;
         return e;
     };
-    L.top = old_top;
+    L.top = saved_top;
 }
 
 pub fn luaT_callTMres(L: *lua.lua_State, f: lua.TValue, p1: *const lua.TValue, p2: *const lua.TValue, res: usize) !lua.TValue {
+    const saved_top = L.top;
     savestate(L);
     if (lua.lua_checkstack(L, 3) == 0) return error.OutOfMemory;
     const old_top = L.top;
@@ -173,12 +181,13 @@ pub fn luaT_callTMres(L: *lua.lua_State, f: lua.TValue, p1: *const lua.TValue, p
     L.stack[old_top + 1] = p1.*;
     L.stack[old_top + 2] = p2.*;
     L.top = old_top + 3;
-    luaD_call(L, old_top, 2) catch |e| {
+    luaD_call(L, old_top, 1) catch |e| {
+        L.top = saved_top;
         return e;
     };
     const result = L.stack[old_top];
     L.stack[res] = result;
-    L.top = old_top;
+    L.top = saved_top;
     return result;
 }
 
@@ -188,7 +197,21 @@ pub fn luaT_trybinTM(L: *lua.lua_State, p1: *const lua.TValue, p2: *const lua.TV
         tm = luaT_gettmbyobj(L, p2.*, event);
     }
     if (tm == .nil) {
-        return error.RuntimeError;
+        switch (event) {
+            .BAND, .BOR, .BXOR, .SHL, .SHR, .BNOT => {
+                if (p1.isNumberValue() and p2.isNumberValue()) {
+                    return lua.luaG_tointerror(L, p1.*);
+                } else {
+                    return lua.luaG_opinterror(L, p1.*, p2.*, "perform bitwise operation on");
+                }
+            },
+            .LEN => {
+                return lua.luaG_typeerror(L, p1.*, "get length of");
+            },
+            else => {
+                return lua.luaG_opinterror(L, p1.*, p2.*, "perform arithmetic on");
+            },
+        }
     }
     _ = try luaT_callTMres(L, tm, p1, p2, res);
 }
@@ -199,9 +222,8 @@ pub fn luaT_callorderTM(L: *lua.lua_State, p1: *const lua.TValue, p2: *const lua
         tm = luaT_gettmbyobj(L, p2.*, event);
     }
     if (tm == .nil) {
-        return error.RuntimeError;
+        try lua.luaG_ordererror(L, p1.*, p2.*);
     }
-    savestate(L);
     const res_val = try luaT_callTMres(L, tm, p1, p2, L.top);
     return switch (res_val) {
         .nil => false,
@@ -251,7 +273,19 @@ pub inline fn luaT_equalobj(L: *lua.lua_State, t1: lua.TValue, t2: lua.TValue) !
             if (s == null or t2s == null) break :blk false;
             break :blk lstring.luaS_eqstr(s.?, t2s.?);
         },
-        .function => |f| f == t2.function,
+        .function => |f| blk: {
+            if (f == t2.function) break :blk true;
+            if (f) |cl1| {
+                if (t2.function) |cl2| {
+                    if (cl1.* == .c and cl2.* == .c) {
+                        if (cl1.c.f == cl2.c.f and cl1.c.upvals.len == 0 and cl2.c.upvals.len == 0) {
+                            break :blk true;
+                        }
+                    }
+                }
+            }
+            break :blk false;
+        },
         .thread => |t| t == t2.thread,
         .upval => |u| u == t2.upval,
         .proto => |p| p == t2.proto,

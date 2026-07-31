@@ -519,6 +519,22 @@ pub fn SETARG_sJ(i: *Instruction, v: i32) void {
 // -------------------------------------------------------------------
 // Argument-limit constants (consistent with the encoding above)
 // -------------------------------------------------------------------
+pub inline fn getStack(L: *lua.lua_State, idx: usize) lua.TValue {
+    if (idx < L.stack.len) {
+        return L.stack[idx];
+    }
+    return .{ .nil = {} };
+}
+
+pub inline fn setStack(L: *lua.lua_State, idx: usize, val: lua.TValue) void {
+    if (idx >= L.stack.len) {
+        _ = lua.lua_checkstack(L, @intCast(idx + 1 - L.top));
+    }
+    if (idx < L.stack.len) {
+        L.stack[idx] = val;
+    }
+}
+
 pub const MAXARG_A = 0xFF;
 pub const MAXARG_B = 0xFF;
 pub const MAXARG_C = 0xFF;
@@ -1108,12 +1124,12 @@ pub fn run(L: *lua.lua_State, active_ci: *lua.CallInfo) anyerror!void {
             },
             .BAND => {
                 const ra = ci.base + @as(usize, @intCast(GETARG_A(instruction)));
-                const rb = L.stack[ci.base + @as(usize, @intCast(GETARG_B(instruction)))];
-                const rc = L.stack[ci.base + @as(usize, @intCast(GETARG_C(instruction)))];
+                const rb = getStack(L, ci.base + @as(usize, @intCast(GETARG_B(instruction))));
+                const rc = getStack(L, ci.base + @as(usize, @intCast(GETARG_C(instruction))));
                 if (rb.isNumberValue() and rc.isNumberValue()) {
                     const ib = rb.toIntegerExactOpt() orelse return lua.luaG_tointerror(L, rb);
                     const ic = rc.toIntegerExactOpt() orelse return lua.luaG_tointerror(L, rc);
-                    L.stack[ra] = .{ .integer = ib & ic };
+                    setStack(L, ra, .{ .integer = ib & ic });
                     ci.savedpc += 1;
                 } else {
                     try luaV_doarith(L, lua.LUA_OPBAND, ra, rb, rc);
@@ -1127,12 +1143,12 @@ pub fn run(L: *lua.lua_State, active_ci: *lua.CallInfo) anyerror!void {
                 const b_u = @as(usize, @intCast(b));
                 const c_u = @as(usize, @intCast(c));
                 const ra = ci.base + @as(usize, @intCast(a));
-                const rb = L.stack[ci.base + b_u];
-                const rc = L.stack[ci.base + c_u];
+                const rb = getStack(L, ci.base + b_u);
+                const rc = getStack(L, ci.base + c_u);
                 if (rb.isNumberValue() and rc.isNumberValue()) {
                     const ib = rb.toIntegerExactOpt() orelse return lua.luaG_tointerror(L, rb);
                     const ic = rc.toIntegerExactOpt() orelse return lua.luaG_tointerror(L, rc);
-                    L.stack[ra] = .{ .integer = ib | ic };
+                    setStack(L, ra, .{ .integer = ib | ic });
                     ci.savedpc += 1;
                 } else {
                     try luaV_doarith(L, lua.LUA_OPBOR, ra, rb, rc);
@@ -1141,12 +1157,12 @@ pub fn run(L: *lua.lua_State, active_ci: *lua.CallInfo) anyerror!void {
             },
             .BXOR => {
                 const ra = ci.base + @as(usize, @intCast(GETARG_A(instruction)));
-                const rb = L.stack[ci.base + @as(usize, @intCast(GETARG_B(instruction)))];
-                const rc = L.stack[ci.base + @as(usize, @intCast(GETARG_C(instruction)))];
+                const rb = getStack(L, ci.base + @as(usize, @intCast(GETARG_B(instruction))));
+                const rc = getStack(L, ci.base + @as(usize, @intCast(GETARG_C(instruction))));
                 if (rb.isNumberValue() and rc.isNumberValue()) {
                     const ib = rb.toIntegerExactOpt() orelse return lua.luaG_tointerror(L, rb);
                     const ic = rc.toIntegerExactOpt() orelse return lua.luaG_tointerror(L, rc);
-                    L.stack[ra] = .{ .integer = ib ^ ic };
+                    setStack(L, ra, .{ .integer = ib ^ ic });
                     ci.savedpc += 1;
                 } else {
                     try luaV_doarith(L, lua.LUA_OPBXOR, ra, rb, rc);
@@ -1155,12 +1171,12 @@ pub fn run(L: *lua.lua_State, active_ci: *lua.CallInfo) anyerror!void {
             },
             .SHL => {
                 const ra = ci.base + @as(usize, @intCast(GETARG_A(instruction)));
-                const rb = L.stack[ci.base + @as(usize, @intCast(GETARG_B(instruction)))];
-                const rc = L.stack[ci.base + @as(usize, @intCast(GETARG_C(instruction)))];
+                const rb = getStack(L, ci.base + @as(usize, @intCast(GETARG_B(instruction))));
+                const rc = getStack(L, ci.base + @as(usize, @intCast(GETARG_C(instruction))));
                 if (rb.isNumberValue() and rc.isNumberValue()) {
                     const ib = rb.toIntegerExactOpt() orelse return lua.luaG_tointerror(L, rb);
                     const ic = rc.toIntegerExactOpt() orelse return lua.luaG_tointerror(L, rc);
-                    L.stack[ra] = .{ .integer = lua.luaV_shift(ib, ic) };
+                    setStack(L, ra, .{ .integer = lua.luaV_shift(ib, ic) });
                     ci.savedpc += 1;
                 } else {
                     try luaV_doarith(L, lua.LUA_OPSHL, ra, rb, rc);
@@ -1169,12 +1185,12 @@ pub fn run(L: *lua.lua_State, active_ci: *lua.CallInfo) anyerror!void {
             },
             .SHR => {
                 const ra = ci.base + @as(usize, @intCast(GETARG_A(instruction)));
-                const rb = L.stack[ci.base + @as(usize, @intCast(GETARG_B(instruction)))];
-                const rc = L.stack[ci.base + @as(usize, @intCast(GETARG_C(instruction)))];
+                const rb = getStack(L, ci.base + @as(usize, @intCast(GETARG_B(instruction))));
+                const rc = getStack(L, ci.base + @as(usize, @intCast(GETARG_C(instruction))));
                 if (rb.isNumberValue() and rc.isNumberValue()) {
                     const ib = rb.toIntegerExactOpt() orelse return lua.luaG_tointerror(L, rb);
                     const ic = rc.toIntegerExactOpt() orelse return lua.luaG_tointerror(L, rc);
-                    L.stack[ra] = .{ .integer = lua.luaV_shift(ib, -%ic) };
+                    setStack(L, ra, .{ .integer = lua.luaV_shift(ib, -%ic) });
                     ci.savedpc += 1;
                 } else {
                     try luaV_doarith(L, lua.LUA_OPSHR, ra, rb, rc);
@@ -1410,8 +1426,28 @@ pub fn run(L: *lua.lua_State, active_ci: *lua.CallInfo) anyerror!void {
                 if (GETARG_k(instruction) != 0) {
                     try lua.closeupvals(L, ci.base, null);
                 }
-                const val = L.stack[ra_idx];
-                if (val != .function) return error.NotAFunction;
+                var val = L.stack[ra_idx];
+                var ccmt: usize = 0;
+                while (val != .function) {
+                    const tm = ltm.luaT_gettmbyobj(L, val, .CALL);
+                    if (tm == .nil) {
+                        try lua.luaG_callerror(L, val);
+                    }
+                    ccmt += 1;
+                    if (ccmt > 15) {
+                        try lua.luaG_runerror(L, "'__call' chain too long");
+                    }
+                    if (lua.lua_checkstack(L, 1) == 0) return error.StackOverflow;
+                    var p = L.top;
+                    while (p > ra_idx) : (p -= 1) {
+                        L.stack[p] = L.stack[p - 1];
+                    }
+                    L.top += 1;
+                    L.stack[ra_idx] = tm;
+                    b += 1;
+                    val = L.stack[ra_idx];
+                }
+                ci.nextraargs += @intCast(ccmt);
                 const cl_call = val.function.?;
                 switch (cl_call.*) {
                     .c => |cc| {
@@ -1612,7 +1648,9 @@ pub fn run(L: *lua.lua_State, active_ci: *lua.CallInfo) anyerror!void {
                 const temp = L.stack[ra_idx + 2];
                 L.stack[ra_idx + 2] = L.stack[ra_idx + 3];
                 L.stack[ra_idx + 3] = temp;
-                if (L.stack[ra_idx + 2] != .nil and (L.stack[ra_idx + 2] != .boolean or L.stack[ra_idx + 2].boolean)) {
+                const v = L.stack[ra_idx + 2];
+                if (v != .nil and (v != .boolean or v.boolean != false)) {
+                    try lua.checkclosemth(L, ra_idx + 2);
                     try L.tbclist.append(L.allocator, ra_idx + 2);
                 }
                 ci.savedpc = @intCast(@as(i64, @intCast(ci.savedpc)) + GETARG_Bx(instruction));
@@ -1635,6 +1673,8 @@ pub fn run(L: *lua.lua_State, active_ci: *lua.CallInfo) anyerror!void {
                 const ra_idx = ci.base + @as(usize, @intCast(GETARG_A(instruction)));
                 if (L.stack[ra_idx + 3] != .nil) {
                     ci.savedpc = @intCast(@as(i64, @intCast(ci.savedpc)) - GETARG_Bx(instruction));
+                } else {
+                    try lua.closeupvals(L, ra_idx + 2, null);
                 }
             },
             .SETLIST => {
@@ -1679,8 +1719,8 @@ pub fn run(L: *lua.lua_State, active_ci: *lua.CallInfo) anyerror!void {
             },
             .ERRNNIL => {
                 const ra_idx = ci.base + @as(usize, @intCast(GETARG_A(instruction)));
-                if (L.stack[ra_idx] != .nil) {
-                    return error.RuntimeError;
+                if (getStack(L, ra_idx) != .nil) {
+                    try lua.luaG_errnnil(L, proto, GETARG_Bx(instruction));
                 }
             },
             .VARARGPREP => {
