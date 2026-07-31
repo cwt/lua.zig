@@ -12,6 +12,7 @@ cd "$SCRIPT_DIR"
 VERBOSE=false
 TIMEOUT=30
 LUA_BIN="$SCRIPT_DIR/zig-out/bin/luazig"
+RUN_ALL=false
 
 # Parse options
 while [[ $# -gt 0 ]]; do
@@ -19,6 +20,7 @@ while [[ $# -gt 0 ]]; do
         --verbose) VERBOSE=true; shift ;;
         --timeout) TIMEOUT="$2"; shift 2 ;;
         --lua) LUA_BIN="$2"; shift 2 ;;
+        --all) RUN_ALL=true; shift ;;
         *) break ;;
     esac
 done
@@ -38,13 +40,24 @@ fi
 LUAZIG="$LUA_BIN"
 TEST_DIR="lua/testes"
 
-# Tests that are the harness / a standalone-interpreter driver. They are not
-# regular per-file tests:
-#   all.lua    - harness (runs the suite via dofile+string.dump roundtrip)
-#   main.lua   - standalone interpreter CLI tests (spawns `lua` subprocesses)
-#
-# Tests that UNCONDITIONALLY require the internal C test library `T`:
-#   api.lua code.lua coroutine.lua gc.lua strings.lua memerr.lua tracegc.lua
+cd "$TEST_DIR"
+
+# Make `lua` resolve to the selected interpreter so tests that spawn subprocesses exercise it.
+LUA_BIN_DIR="$(mktemp -d)"
+ln -sf "$LUAZIG" "$LUA_BIN_DIR/lua"
+cleanup() { rm -rf "$LUA_BIN_DIR"; }
+trap cleanup EXIT
+PATH="$LUA_BIN_DIR:$PATH"
+export PATH
+
+if $RUN_ALL; then
+    echo "Running all.lua harness..."
+    set +e
+    timeout "$TIMEOUT" "$LUAZIG" all.lua
+    rc=$?
+    set -e
+    exit $rc
+fi
 
 # Extra-slow/heavy tests
 HEAVY_TESTS="heavy.lua verybig.lua big.lua constructs.lua sort.lua cstack.lua"
@@ -52,18 +65,8 @@ HEAVY_TESTS="heavy.lua verybig.lua big.lua constructs.lua sort.lua cstack.lua"
 # Tests that unconditionally require the internal C test lib `T`.
 T_TESTS="api.lua code.lua coroutine.lua gc.lua strings.lua memerr.lua tracegc.lua"
 
-# Run from within lua/testes so that require("bwcoercion") / require("tracegc")
-# resolve via package.path's "./?.lua", and so dofile('main.lua') etc. work.
-cd "$TEST_DIR"
-
-# Make `lua` resolve to luazig so tests that spawn subprocesses exercise luazig
-# rather than the reference interpreter.
-LUA_BIN_DIR="$(mktemp -d)"
-ln -sf "$LUAZIG" "$LUA_BIN_DIR/lua"
-cleanup() { rm -rf "$LUA_BIN_DIR"; }
-trap cleanup EXIT
-PATH="$LUA_BIN_DIR:$PATH"
-export PATH
+# Tests that require the all.lua harness environment (coroutine wrapper, dynamic lib compilation, _port/_soft setup)
+STANDALONE_SKIP="attrib.lua big.lua files.lua"
 
 declare -A results
 declare -A details
@@ -81,6 +84,15 @@ for test_file in ./*.lua; do
     done
     if $skip_t; then
         results["$base"]="SKIP (needs T)"; continue
+    fi
+
+    # Skip tests that require all.lua harness environment
+    skip_standalone=false
+    for st in $STANDALONE_SKIP; do
+        [[ "$base.lua" == "$st" ]] && skip_standalone=true
+    done
+    if $skip_standalone; then
+        results["$base"]="SKIP (needs all.lua)"; continue
     fi
 
     # Use longer timeout for heavy tests
