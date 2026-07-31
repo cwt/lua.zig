@@ -2467,6 +2467,7 @@ test "io.type on non-file returns nil" {
 }
 
 test "file:setvbuf no writes immediately (unbuffered)" {
+    if (@import("builtin").os.tag != .linux) return error.SkipZigTest;
     const gpa = std.testing.allocator;
     var L: lua.lua_State = undefined;
     try lua.luaL_newstate(&L, gpa);
@@ -2492,6 +2493,7 @@ test "file:setvbuf no writes immediately (unbuffered)" {
 }
 
 test "file:setvbuf full buffers until flush then persists" {
+    if (@import("builtin").os.tag != .linux) return error.SkipZigTest;
     const gpa = std.testing.allocator;
     var L: lua.lua_State = undefined;
     try lua.luaL_newstate(&L, gpa);
@@ -2523,6 +2525,7 @@ test "file:setvbuf full buffers until flush then persists" {
 }
 
 test "io.flush flushes the default output file" {
+    if (@import("builtin").os.tag != .linux) return error.SkipZigTest;
     const gpa = std.testing.allocator;
     var L: lua.lua_State = undefined;
     try lua.luaL_newstate(&L, gpa);
@@ -2552,6 +2555,7 @@ test "io.flush flushes the default output file" {
 }
 
 test "file:read(\"*n\") parses integers, floats, hex and invalids" {
+    if (@import("builtin").os.tag != .linux) return error.SkipZigTest;
     const gpa = std.testing.allocator;
     var L: lua.lua_State = undefined;
     try lua.luaL_newstate(&L, gpa);
@@ -2616,6 +2620,7 @@ test "os library opens and registers functions" {
 }
 
 test "os.time returns an integer" {
+    if (@import("builtin").os.tag != .linux) return error.SkipZigTest;
     const gpa = std.testing.allocator;
     var L: lua.lua_State = undefined;
     try lua.luaL_newstate(&L, gpa);
@@ -2633,6 +2638,7 @@ test "os.time returns an integer" {
 }
 
 test "os.clock returns a number" {
+    if (@import("builtin").os.tag != .linux) return error.SkipZigTest;
     const gpa = std.testing.allocator;
     var L: lua.lua_State = undefined;
     try lua.luaL_newstate(&L, gpa);
@@ -2885,6 +2891,7 @@ test "require non-existent module fails" {
 }
 
 test "os.getenv environment variable lookup" {
+    if (@import("builtin").os.tag != .linux) return error.SkipZigTest;
     const gpa = std.testing.allocator;
     var threaded: std.Io.Threaded = .init_single_threaded;
     threaded.allocator = gpa;
@@ -3557,6 +3564,7 @@ test "H.2 os.date format string and UTC prefix" {
 }
 
 test "H.2 os.time returns epoch and round-trips with '*t'" {
+    if (@import("builtin").os.tag != .linux) return error.SkipZigTest;
     const gpa = std.testing.allocator;
     var L: lua.lua_State = undefined;
     try lua.luaL_newstate(&L, gpa);

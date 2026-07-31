@@ -156,14 +156,25 @@ fn io_popen(L_: *L) !i32 {
     return 2;
 }
 
+var tmpfile_counter: u64 = 0;
+
 fn io_tmpfile(L_: *L) !i32 {
-    var buf: [32]u8 = undefined;
-    const a = std.posix.openat(std.posix.AT.FDCWD, "/tmp", .{ .ACCMODE = .RDWR, .TMPFILE = true }, 0o600) catch {
+    var buf: [64]u8 = undefined;
+    const unique = @atomicRmw(u64, &tmpfile_counter, .Add, 1, .monotonic);
+    const path = std.fmt.bufPrint(&buf, "/tmp/luazig_{x:0>16}", .{unique}) catch {
         lua.lua_pushnil(L_);
         _ = lua.lua_pushstring(L_, "cannot create tmp file") orelse {};
         return 2;
     };
-    _ = &buf;
+    const a = std.posix.openatZ(std.posix.AT.FDCWD, buf[0..path.len :0].ptr, .{ .ACCMODE = .RDWR, .CREAT = true, .EXCL = true }, 0o600) catch {
+        lua.lua_pushnil(L_);
+        _ = lua.lua_pushstring(L_, "cannot create tmp file") orelse {};
+        return 2;
+    };
+    defer {
+        buf[path.len] = 0;
+        _ = std.c.unlink(buf[0..path.len :0]);
+    }
     const p = try newfile(L_);
     p.* = LStream{ .fd = a, .closef = io_fclose, .buf = null, .buf_len = 0, .buf_mode = 0, .unget = null };
     return 1;

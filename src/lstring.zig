@@ -1,5 +1,5 @@
 // $Id: lstring.zig
-// String interning for Lua.zig (Zig port of Lua 5.5.1)
+// String interning for Lua.zig (Zig port of Lua 5.5.0)
 // See Copyright Notice in lua.h
 //
 // Equal string contents share a single `lua_TString`, so table lookups can

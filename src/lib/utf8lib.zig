@@ -1,6 +1,6 @@
 //
 // ** $Id: utf8lib.zig $
-// ** UTF-8 library for Lua.zig (Zig port of Lua 5.5.1's lutf8lib.c)
+// ** UTF-8 library for Lua.zig (Zig port of Lua 5.5.0's lutf8lib.c)
 // ** See Copyright Notice in lua.h
 //
 

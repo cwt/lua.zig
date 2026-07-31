@@ -1,5 +1,5 @@
 // $Id: llex.zig $
-// Lexical Analyzer for Lua.zig (Zig port of Lua 5.5.1 llex.c / lzio.c)
+// Lexical Analyzer for Lua.zig (Zig port of Lua 5.5.0 llex.c / lzio.c)
 // See Copyright Notice in lua.zig
 //
 // This is Phase G.1 of the source-text compiler. It turns a character stream

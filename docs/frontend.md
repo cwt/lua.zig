@@ -10,7 +10,7 @@ timestamp: 2026-07-10T00:00:00Z
 
 The bytecode loader (**Option B: `lundump.zig`**) has been fully implemented.
 
-- **`src/lundump.zig`** (new): Implements `loadBinaryChunk` and the structural parser for precompiled Lua 5.5.1 bytecode chunks. Handles alignment, varints, strings (interned via `luaS_new`), instructions, constants, nested prototypes, upvalues, and debug info (lineinfo, abslineinfo, locvars).
+- **`src/lundump.zig`** (new): Implements `loadBinaryChunk` and the structural parser for precompiled Lua 5.5.0 bytecode chunks. Handles alignment, varints, strings (interned via `luaS_new`), instructions, constants, nested prototypes, upvalues, and debug info (lineinfo, abslineinfo, locvars).
 - **`src/lua.zig`**: `lua_load` is now updated to inspect the first character of the input stream. If it matches `\x1b` (LUA_SIGNATURE[0]), it routes the request to the binary loader in `lundump.zig`.
 
 *Note: Text compilation (Option A: lexer, parser, code generator) is not yet implemented.*

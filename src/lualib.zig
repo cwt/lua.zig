@@ -1,6 +1,6 @@
 //
 // ** $Id: lualib.zig $
-// ** Standard library functions for Lua.zig (Zig port of Lua 5.5.1)
+// ** Standard library functions for Lua.zig (Zig port of Lua 5.5.0)
 // ** See Copyright Notice in c_compat.zig
 //
 

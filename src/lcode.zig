@@ -1,5 +1,5 @@
 // $Id: lcode.zig $
-// Code generator for Lua.zig (Zig port of Lua 5.5.1 lcode.c)
+// Code generator for Lua.zig (Zig port of Lua 5.5.0 lcode.c)
 // See Copyright Notice in lua.zig
 
 const std = @import("std");

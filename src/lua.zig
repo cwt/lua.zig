@@ -144,7 +144,7 @@ pub const lua_ident: []const u8 = "$LuaVersion: " ++ LUA_COPYRIGHT ++ " $" ++ "$
 
 pub const LUA_VERSION_MAJOR_N: u8 = 5;
 pub const LUA_VERSION_MINOR_N: u8 = 5;
-pub const LUA_VERSION_RELEASE_N: u8 = 1;
+pub const LUA_VERSION_RELEASE_N: u8 = 0;
 
 pub const LUA_VERSION_MAJOR: []const u8 = std.fmt.comptimePrint("{d}", .{LUA_VERSION_MAJOR_N});
 pub const LUA_VERSION_MINOR: []const u8 = std.fmt.comptimePrint("{d}", .{LUA_VERSION_MINOR_N});

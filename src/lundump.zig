@@ -1,5 +1,5 @@
 // $Id: lundump.zig $
-// Load precompiled Lua chunks (Zig port of Lua 5.5.1)
+// Load precompiled Lua chunks (Zig port of Lua 5.5.0)
 // See Copyright Notice in lua.zig
 
 const std = @import("std");

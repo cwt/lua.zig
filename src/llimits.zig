@@ -1,5 +1,5 @@
 // $Id: llimits.zig
-// Limits and basic types for Lua.zig (Zig port of Lua 5.5.1)
+// Limits and basic types for Lua.zig (Zig port of Lua 5.5.0)
 // See Copyright Notice in c_compat.zig
 
 const std = @import("std");

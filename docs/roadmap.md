@@ -26,7 +26,7 @@ Work **top-down from the foundation**, validating each layer with tests before p
 - Single type model: one `lua_State`, one `lua_CFunction`, one `global_State`
 - Real stack: `stack: []TValue` slice, `lua_checkstack` with `gpa.realloc`
 - Correct instruction decode: proper bit shifts in GETARG/SETARG
-- Version constants: Lua 5.5.1
+- Version constants: Lua 5.5.0
 - juicy-main entry: `src/luazig.zig` with `std.process.Init`
 - Builds exe + lib + tests
 - 7 passing tests: type checks + stack round-trip
@@ -132,7 +132,7 @@ Wire `iolib`/`oslib` to `std.Io`/`init.io`. **67/67 tests pass, zero memory leak
 
 ## Phase G — Source-Text Compiler ✅ DONE (2026-07-13)
 
-All G.1–G.4 completed. Full Lua 5.5.1 lexer, recursive-descent parser, and code generator ported to Zig 0.16.0. `lua_load` now detects source vs bytecode and compiles text source via `luaD_protectedparser`. 73/73 tests pass, zero leaks.
+All G.1–G.4 completed. Full Lua 5.5.0 lexer, recursive-descent parser, and code generator ported to Zig 0.16.0. `lua_load` now detects source vs bytecode and compiles text source via `luaD_protectedparser`. 73/73 tests pass, zero leaks.
 
 ### Phase G.1 — Lexer (`src/llex.zig`) ✅ DONE
 ### Phase G.2 — Parser (`src/lparser.zig`) ✅ DONE
@@ -143,7 +143,7 @@ See `docs/frontend.md` for architecture decisions and `AGENTS.md` §Phase G for 
 
 ## Phase H — Drop-in replacement gap closure (IN PROGRESS)
 
-Phases A–G built a working, self-hosting Lua interpreter. Phase H closes the gap between "working" and "drop-in replacement for Lua 5.5.1". The gaps were identified by a systematic audit comparing `luazig` against `lua/lua.h`, `lua/lauxlib.h`, and the standard library C sources.
+Phases A–G built a working, self-hosting Lua interpreter. Phase H closes the gap between "working" and "drop-in replacement for Lua 5.5.0". The gaps were identified by a systematic audit comparing `luazig` against `lua/lua.h`, `lua/lauxlib.h`, and the standard library C sources.
 
 ### H.1 — C API stubs → implementations (DONE, Rev 61)
 Silent no-ops that produce wrong results:
@@ -226,7 +226,7 @@ Silent no-ops that produce wrong results:
 
 ### H.10 — GC completeness (LOW priority) ✅ DONE (2026-07-14)
 - All `lua_gc` options handled (STOP/RESTART/COLLECT/COUNT/COUNTB/STEP/ISRUNNING/GEN/INC/GCPARAM) ✅
-- GC constants fixed to Lua 5.5.1 (removed GCSETPAUSE/GCSETSTEPMUL, added GCISRUNNING=6/GCGEN=7/GCINC=8/GCPARAM=9) ✅
+- GC constants fixed to Lua 5.5.0 (removed GCSETPAUSE/GCSETSTEPMUL, added GCISRUNNING=6/GCGEN=7/GCINC=8/GCPARAM=9) ✅
 - LUA_GCPARAM get/set for all 6 sub-parameters (MINORMUL/MAJORMINOR/MINORMAJOR/PAUSE/STEPMUL/STEPSIZE) ✅
 - `lua_gc` signature extended with 4th `value` parameter ✅
 - `collectgarbage` baselib updated to Lua 5.5 option names ("param" with sub-options) ✅
@@ -237,7 +237,7 @@ Each H.x sub-phase must compile, pass all existing tests, and add focused tests 
 
 ## Post-Phase H — Test-suite compatibility (IN PROGRESS, 2026-07-14/15)
 
-Phase H closed the C-API gap. The remaining work is making the Lua 5.5.1 test
+Phase H closed the C-API gap. The remaining work is making the Lua 5.5.0 test
 suite (`lua/testes/`) pass. Current status: 2 PASS, 23 FAIL, 1 TIMEOUT,
 7 SKIP, 1 CHECK (34 total).
 

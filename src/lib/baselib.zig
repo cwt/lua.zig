@@ -1,6 +1,6 @@
 //
 // ** $Id: baselib.zig
-// ** Base library for Zua (Zig port of Lua 5.5.1)
+// ** Base library for Zua (Zig port of Lua 5.5.0)
 // ** See Copyright Notice in c_compat.zig
 //
 

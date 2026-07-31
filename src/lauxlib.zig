@@ -1,6 +1,6 @@
 //
 // ** $Id: lauxlib.zig
-// ** Auxiliary library for Lua.zig (Zig port of Lua 5.5.1)
+// ** Auxiliary library for Lua.zig (Zig port of Lua 5.5.0)
 // ** See Copyright Notice in c_compat.zig
 //
 

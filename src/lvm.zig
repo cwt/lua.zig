@@ -1,5 +1,5 @@
 // $Id: lvm.zig $
-// Virtual Machine for Lua.zig (Zig port of Lua 5.5.1)
+// Virtual Machine for Lua.zig (Zig port of Lua 5.5.0)
 // See Copyright Notice in c_compat.zig
 
 const std = @import("std");
@@ -405,7 +405,7 @@ pub const OpCode = enum {
 // ===================================================================
 // Instruction helpers
 //
-// Lua 5.5.1 instruction format (u32):
+// Lua 5.5.0 instruction format (u32):
 //   OPCODE: bits 0-6   (7 bits)
 //   A:      bits 24-31 (8 bits)
 //   B:      bits 16-23 (8 bits)

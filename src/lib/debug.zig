@@ -1,5 +1,5 @@
 // $Id: debug.zig
-// Debug library for Zua (Zig port of Lua 5.5.1)
+// Debug library for Zua (Zig port of Lua 5.5.0)
 // See Copyright Notice in c_compat.zig
 
 const std = @import("std");

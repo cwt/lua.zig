@@ -1,5 +1,5 @@
 // $Id: lparser.zig $
-// Parser for Lua.zig (Zig port of Lua 5.5.1 lparser.c)
+// Parser for Lua.zig (Zig port of Lua 5.5.0 lparser.c)
 // See Copyright Notice in lua.zig
 //
 // Recursive-descent parser that drives the code generator in lcode.zig.

@@ -1,7 +1,7 @@
 # lua.zig
 
 A from-scratch port of the [Lua](https://www.lua.org/) reference implementation
-(Lua 5.5.1) to **Zig 0.16.0**. It aims to be a faithful interpreter that follows
+(Lua 5.5.0) to **Zig 0.16.0**. It aims to be a faithful interpreter that follows
 Lua's reference *semantics* while adopting idiomatic Zig for the *structure*.
 
 > This is a **static** project summary. The living, machine-friendly knowledge
@@ -9,7 +9,7 @@ Lua's reference *semantics* while adopting idiomatic Zig for the *structure*.
 
 ## Status
 
-Phases A–G are complete. The working VM executes **both** precompiled Lua 5.5.1
+Phases A–G are complete. The working VM executes **both** precompiled Lua 5.5.0
 bytecode and Lua **source text** (a full lexer/parser/code generator, Phase G,
 feeds the same `lua_Proto` shape the loader builds, so the VM is untouched):
 tables, string interning, metamethod dispatch
@@ -51,7 +51,7 @@ zig build test   # run the unit tests (81 passing)
 src/        Zig sources (lua.zig core, lvm.zig, ltable.zig, ltm.zig, lundump.zig, llex.zig, lparser.zig, lcode.zig, ...)
 src/lib/    standard library implementations (baselib, mathlib, stringlib, ...)
 tests/      unit tests + sample bytecode
-lua/        Git subrepo: the authoritative Lua 5.5.1 C reference (usable as a compiler oracle)
+lua/        Git subrepo: the authoritative Lua 5.5.0 C reference (usable as a compiler oracle)
 docs/       OKF v0.1 knowledge bundle
 ```
 
@@ -70,7 +70,7 @@ luazig            # interactive REPL
 luazig script.lua # run a Lua source file
 ```
 
-The banner identifies the build as **Lua.Zig 5.5.1** and preserves the upstream
+The banner identifies the build as **Lua.Zig 5.5.0** and preserves the upstream
 Lua.org MIT copyright (`lua/lua.h`).
 
 See [`AGENTS.md`](AGENTS.md) for the full coding mandate.

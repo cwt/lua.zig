@@ -1,5 +1,5 @@
 // $Id: ltable.zig
-// Lua tables (hash) for Lua.zig (Zig port of Lua 5.5.1)
+// Lua tables (hash) for Lua.zig (Zig port of Lua 5.5.0)
 // See Copyright Notice in lua.h
 //
 // Tables keep elements in two parts: an array part and a hash part.

@@ -108,7 +108,7 @@ against §0.1 before reporting completion.
 ## 1. What this project is
 
 `luazig` is a from-scratch port of the Lua reference implementation (the C tree at
-`lua/`, which is **Lua 5.5.1** per `lua.h`) to **Zig 0.16.0**. The goal is a
+`lua/`, which is **Lua 5.5.0** per `lua.h`) to **Zig 0.16.0**. The goal is a
 working Lua interpreter that follows the reference semantics while adopting the
 Zig 0.16.0 idioms described in the `zig-0.16.0-development` skill
 (`std.process.Init` juicy main, explicit `std.Io`, unmanaged containers, no
@@ -139,7 +139,7 @@ are available as a Git subrepo.
   `luaL_newstate`. All stack ops use direct slice indexing — no `@ptrCast` abuse.
 - **Correct instruction decode (§4.3).** `GETARG_*`/`SETARG_*` use proper bit
   shifts and masks. No `i.ptr[...]` on `u32`.
-- **Version constants match the C reference (§4.4).** Set to Lua 5.5.1.
+- **Version constants match the C reference (§4.4).** Set to Lua 5.5.0.
 - **No violations of §0.1 rules 1–8** in the active codebase. `page_allocator`,
   `catch unreachable`, varargs, `@bitCast` for value conversion, and C strings
   have all been removed.
@@ -160,7 +160,7 @@ are available as a Git subrepo.
    `getfield`/`geti`/`rawget`/`rawgetp`, `lua_settable`/`setfield`/`seti`/
    `rawset`/`rawseti`/`rawsetp`, `lua_next`, `lua_rawlen`.
 - **Phase C complete — Bytecode loader.**
-   Precompiled Lua 5.5.1 bytecode loader in `src/lundump.zig`. Stream buffer `Zio`
+   Precompiled Lua 5.5.0 bytecode loader in `src/lundump.zig`. Stream buffer `Zio`
    implemented on top of `lua_Reader`. Recursively parses headers, varints, strings,
    instructions, constant pool, upvalues, sub-prototypes, and debug info. `lua_load`
    fully wired to detect binary chunk signature (`\x1b`) and load it onto the stack.
@@ -171,7 +171,7 @@ are available as a Git subrepo.
 - **Google OKF v0.1 knowledge bundle** lives in `docs/` and is kept current with
    every phase (architecture, log, glossary). See `docs/README.md`.
 - **`lua/` is a Git subrepo** tracked via `.hgsub` (`[git]git@github.com:lua/lua.git`),
-   providing the authoritative Lua 5.5.1 C reference for porting.
+   providing the authoritative Lua 5.5.0 C reference for porting.
 - **Repository initialized** with `.hgignore`, `.hgsub`, `LICENSE`, `AGENTS.md`.
 
 - **Phase E complete — Metamethods, Error handling, and GC.**
@@ -181,7 +181,7 @@ are available as a Git subrepo.
    All 10 libraries fully implemented and tested. The `debug` library (`src/lib/debug.zig`) adds 16 functions matching the C `dblib[]` table exactly: `getinfo`, `traceback`, `getupvalue`/`setupvalue`, `getlocal`/`setlocal`, `sethook`/`gethook`, `upvalueid`/`upvaluejoin`, `getregistry`, `getmetatable`/`setmetatable`, `getuservalue`/`setuservalue`, plus `debug`. Supporting infrastructure (`luaO_chunkid`, `luaG_getfuncline`, `luaF_getlocalname`, `lua_getinfo`, `lua_getlocal`, `lua_setlocal`, `lua_sethook`/gethook, `luaL_traceback`) fully ported. **92+ tests pass, zero memory leaks.**
 
 - **Phase D fix — VM vararg execution (BUG-036 FIXED, 2026-07-13).**
-   Ported `luaT_adjustvarargs`/`luaT_getvarargs`/`luaT_getvararg` into `src/ltm.zig` and wired `OP_VARARGPREP`/`OP_VARARG`/`OP_GETVARG` in `src/lvm.zig`. Vararg functions (`function f(a, ...) ... end`, `f(...)`, `select`, `{...}`) now execute correctly. Added `lua_Proto.flag` and `CallInfo.nextraargs`. The hidden-vararg frame is relocated by `buildhiddenargs` (matching the C reference) and restored on every return path: `.RETURN`, `.RETURN0`, `.RETURN1`, and `.TAILCALL` (`.lua`/`.c`) now correct `ci.func`/`ci.base`, and `luaK_finish` sets `SETARG_C(pc, numParams + 1)` on the `RETURN0`/`RETURN1` → `RETURN` conversion for `PF_VAHID` functions. Verified against the Lua 5.5.1 reference binary. **92+ tests pass.**
+   Ported `luaT_adjustvarargs`/`luaT_getvarargs`/`luaT_getvararg` into `src/ltm.zig` and wired `OP_VARARGPREP`/`OP_VARARG`/`OP_GETVARG` in `src/lvm.zig`. Vararg functions (`function f(a, ...) ... end`, `f(...)`, `select`, `{...}`) now execute correctly. Added `lua_Proto.flag` and `CallInfo.nextraargs`. The hidden-vararg frame is relocated by `buildhiddenargs` (matching the C reference) and restored on every return path: `.RETURN`, `.RETURN0`, `.RETURN1`, and `.TAILCALL` (`.lua`/`.c`) now correct `ci.func`/`ci.base`, and `luaK_finish` sets `SETARG_C(pc, numParams + 1)` on the `RETURN0`/`RETURN1` → `RETURN` conversion for `PF_VAHID` functions. Verified against the Lua 5.5.0 reference binary. **92+ tests pass.**
 
 - **Phase H.11 — Upstream test suite conformance (in progress, 2026-07-19).**
    Systematic debugging against `lua/testes/*.lua` upstream test files. The `locals.lua`
@@ -353,7 +353,7 @@ and string interning in `global_State.strt` (`std.array_hash_map.String`) in
 
 ### Phase G — Source-text compiler (lexer / parser / codegen)
 
-Phases A–F are **complete**: the port runs precompiled Lua 5.5.1 bytecode through the full VM with all 10 standard libraries. The one remaining core gap is that **text source cannot yet be compiled end-to-end** — the lexer is done, but the parser and code generator are not. `luaL_dostring`/`luaL_loadstring` already delegate to `lua_load`, which only detects the `\x1b` binary signature; the source path is partially built.
+Phases A–F are **complete**: the port runs precompiled Lua 5.5.0 bytecode through the full VM with all 10 standard libraries. The one remaining core gap is that **text source cannot yet be compiled end-to-end** — the lexer is done, but the parser and code generator are not. `luaL_dostring`/`luaL_loadstring` already delegate to `lua_load`, which only detects the `\x1b` binary signature; the source path is partially built.
 
 **Status:** G.1–G.4 ✅ DONE (2026-07-13).
 
@@ -363,7 +363,7 @@ Phases A–F are **complete**: the port runs precompiled Lua 5.5.1 bytecode thro
 18. **Parser** (`src/lparser.zig`) ✅ DONE: `FuncState`, `expdesc`, `luaY_parser`, `luaD_protectedparser` (the `lua_load` text branch). Recursive descent for blocks, `if`/`while`/`repeat`/`for`, `local`/`global`, functions, varargs. Replaced `luaD_throw`/`longjmp` with `!T` error returns.
 19. **Code generator** (`src/lcode.zig`) ✅ DONE: `expdesc`→instruction emission, register allocation (`luaK_dischargevars`, `luaK_storevar`), jump/patch lists (`luaK_concat`, `luaK_patchtohere`) for `and`/`or`/`goto`, upvalue handling. Produces the same `lua_Proto` shapes `lundump.zig` already builds, so the VM is **untouched**.
 20. Wire `lua_load` ✅ DONE: when the first byte is not `\x1b`, call `luaD_protectedparser` instead of `lundump`.
-21. **Verification** ✅ DONE: compile `"return 42"` → `Proto` identical (when dumped) to the Lua 5.5.1 reference `lua/` binary; round-trip a source string through `luaL_dostring`; test count is 73/73 passing.
+21. **Verification** ✅ DONE: compile `"return 42"` → `Proto` identical (when dumped) to the Lua 5.5.0 reference `lua/` binary; round-trip a source string through `luaL_dostring`; test count is 73/73 passing.
 
 **Effort**: ~4,700 lines of C (llex 604 / lparser 2202 / lcode 1970 / lzio 89 / ldo glue). Moderate, well-specified, testable against the in-repo `lua/` oracle. See `docs/frontend.md` for the architecture decision and `docs/roadmap.md` §Phase G for the layer-by-layer plan.
 
@@ -387,7 +387,7 @@ The current work is **Phase H.11 — Upstream test suite conformance**:
 
 ## Phase H — Drop-in replacement gap closure
 
-Phases A–G built a working, self-hosting Lua interpreter. Phase H closes the gap between "working" and "drop-in replacement for Lua 5.5.1". The gaps were identified by a systematic audit comparing `luazig` against `lua/lua.h`, `lua/lauxlib.h`, and the standard library C sources.
+Phases A–G built a working, self-hosting Lua interpreter. Phase H closes the gap between "working" and "drop-in replacement for Lua 5.5.0". The gaps were identified by a systematic audit comparing `luazig` against `lua/lua.h`, `lua/lauxlib.h`, and the standard library C sources.
 
 **Status:** H.1–H.10 complete (2026-07-14). H.11 (upstream test conformance) in progress.
 
@@ -534,7 +534,7 @@ The C `lua.h` defines macros that are convenient but not strictly necessary (cal
 
 ### H.8 — Deprecated compatibility aliases (LOW priority) ✅ DONE (2026-07-14)
 
-The Lua 5.5.1 `lua.h` retains these for backward compatibility:
+The Lua 5.5.0 `lua.h` retains these for backward compatibility:
 
 | Macro | Modern equivalent |
 |-------|-------------------|
@@ -567,13 +567,13 @@ The Lua 5.5.1 `lua.h` retains these for backward compatibility:
   - `LUA_GCCOUNT`/`COUNTB` return 0 (no allocator stats available) ✅
   - `LUA_GCGEN`/`GCINC` acknowledge mode switch (keep mark-and-sweep) ✅
 - `LUA_GCPARAM` get/set for all 6 parameters (`MINORMUL`/`MAJORMINOR`/`MINORMAJOR`/`PAUSE`/`STEPMUL`/`STEPSIZE`) stored in `global_State.gcparams[]` ✅
-- GC constants fixed to match Lua 5.5.1 (removed `LUA_GCSETPAUSE`/`LUA_GCSETSTEPMUL`, added `LUA_GCISRUNNING=6`/`GCGEN=7`/`GCINC=8`/`GCPARAM=9`) ✅
+- GC constants fixed to match Lua 5.5.0 (removed `LUA_GCSETPAUSE`/`LUA_GCSETSTEPMUL`, added `LUA_GCISRUNNING=6`/`GCGEN=7`/`GCINC=8`/`GCPARAM=9`) ✅
 - `lauxlib.luaL_checkoption` `def` parameter changed from `[]const u8` to `?[]const u8` for null-default support ✅
 - `lua_gc` signature extended: `pub fn lua_gc(L, what, arg, value)` — 4th param for `LUA_GCPARAM` set value (pass -1 for get) ✅
 
 ### Verification
 
-Each H.x sub-phase must compile, pass all existing tests, and add focused tests for the new functionality. After Phase H is complete, `luazig` should pass all Lua 5.5.1 `lua/testes/` test files without modification (modulo `os.execute` platform dependency and `os.date` localization).
+Each H.x sub-phase must compile, pass all existing tests, and add focused tests for the new functionality. After Phase H is complete, `luazig` should pass all Lua 5.5.0 `lua/testes/` test files without modification (modulo `os.execute` platform dependency and `os.date` localization).
 
 **§0.1 gate applies to all Phase H work.**
 

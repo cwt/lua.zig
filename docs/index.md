@@ -1,6 +1,6 @@
 ---
 type: bundle_root
-title: luazig — A Zig 0.16.0 Port of Lua 5.5.1
+title: luazig — A Zig 0.16.0 Port of Lua 5.5.0
 description: Development knowledge base for porting the Lua reference implementation (C) to idiomatic Zig 0.16.0, following strict rules against transliteration.
 tags: [lua, zig, port, okf]
 timestamp: 2026-07-10T00:00:00Z
@@ -50,7 +50,7 @@ timestamp: 2026-07-10T00:00:00Z
 | Entry | `src/luazig.zig` | `lua/lua.c` | ✅ juicy-main |
 
 ## External References
-- C reference sources: `lua/` (Lua 5.5.1)
+- C reference sources: `lua/` (Lua 5.5.0)
 - Lua test suite: `lua/testes/`
 - Zig 0.16.0 skill: `zig-0.16.0-development` (skill)
 - OKF specification: built into this skill bundle

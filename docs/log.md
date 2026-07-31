@@ -154,7 +154,7 @@ Phase H.
 
 ### Changes
 
-**GC constants fixed to Lua 5.5.1** (`src/lua.zig`):
+**GC constants fixed to Lua 5.5.0** (`src/lua.zig`):
 - Removed `LUA_GCSETPAUSE` (6) and `LUA_GCSETSTEPMUL` (7) (Lua 5.4 compat)
 - `LUA_GCISRUNNING` = 6, `LUA_GCGEN` = 7, `LUA_GCINC` = 8, `LUA_GCPARAM` = 9
 - Added parameter sub-constants `LUA_GCPMINORMUL` through `LUA_GCPSTEPSIZE`
@@ -562,7 +562,7 @@ underlying debug C-API infrastructure in `src/lua.zig`, completing Phase F.
 All functions use `lauxlib.*` for argument validation, correct `std.Io` for
 output, and `u32`/`i32` type discipline for hook masks. (Mirrors the C
 `dblib[]` table exactly; `debug.gethookmask`/`debug.gethookcount` are **not**
-exposed in Lua 5.5.1 — their values are the 2nd/3rd returns of
+exposed in Lua 5.5.0 — their values are the 2nd/3rd returns of
 `debug.gethook`.)
 
 | Function | Status |
@@ -761,7 +761,7 @@ Implemented the foundational data structures for tables and deduplicated strings
 
 ## 2026-07-10 — Phase C: Bytecode Loader (lundump)
 
-Implemented the binary bytecode loader (`lundump.zig`), allowing precompiled Lua 5.5.1 bytecode chunks to be parsed, loaded, and instanced as Lua closures on the stack.
+Implemented the binary bytecode loader (`lundump.zig`), allowing precompiled Lua 5.5.0 bytecode chunks to be parsed, loaded, and instanced as Lua closures on the stack.
 
 ### Changes
 
@@ -804,7 +804,7 @@ Implemented the binary bytecode loader (`lundump.zig`), allowing precompiled Lua
 
 - **`src/lvm.zig`**:
   - Implemented the full instruction execution loop in `run(L, active_ci)`.
-  - Re-implemented instruction decoding and encoding helper functions (`GETARG_A`, `GETARG_B`, `GETARG_C`, `GETARG_k`, `GETARG_vB`, `GETARG_vC`, `GETARG_Bx`, `GETARG_Ax`, `GETARG_sBx`, `GETARG_sJ`, etc.) to match the precise Lua 5.5.1 instruction layout and bit widths.
+  - Re-implemented instruction decoding and encoding helper functions (`GETARG_A`, `GETARG_B`, `GETARG_C`, `GETARG_k`, `GETARG_vB`, `GETARG_vC`, `GETARG_Bx`, `GETARG_Ax`, `GETARG_sBx`, `GETARG_sJ`, etc.) to match the precise Lua 5.5.0 instruction layout and bit widths.
   - Implemented execution bodies for core instructions, including stack manipulation (`MOVE`, `LOADI`, `LOADF`, `LOADK`, `LOADKX`, `LOADFALSE`, `LFALSESKIP`, `LOADTRUE`, `LOADNIL`), table creation/access (`NEWTABLE`, `GETTABLE`, `GETI`, `GETFIELD`, `SETTABLE`, `SETI`, `SETFIELD`, `SETLIST`), upvalues (`GETUPVAL`, `SETUPVAL`, `GETTABUP`, `SETTABUP`), comparisons with conditional jumping (`EQ`, `LT`, `LE`, `EQK`, `EQI`, `LTI`, `LEI`, `GTI`, `GEI`, `TEST`, `TESTSET`), arithmetic (`ADD`, `SUB`, `MUL`, `DIV`, `IDIV`, `MOD`, `POW`, `BAND`, `BOR`, `BXOR`, `UNM`, `BNOT`, `NOT`, `LEN`, `CONCAT`, `SHLI`, `SHRI`, `SHL`, `SHR`), closure generation (`CLOSURE`), method calls (`SELF`), jumps (`JMP`), calls and tailcalls (`CALL`, `TAILCALL`), loops (`FORPREP`, `FORLOOP`, `TFORPREP`, `TFORCALL`, `TFORLOOP`), and returns (`RETURN`, `RETURN0`, `RETURN1`).
   - Added support for conditional jumps, tail calls, and multi-value returns.
 - **`src/lua.zig`**:
@@ -881,7 +881,7 @@ Implemented the binary bytecode loader (`lundump.zig`), allowing precompiled Lua
 ### Changes
 
 - **`src/llimits.zig`**:
-  - Defined standard `LUA_OP*` constants for arithmetic, bitwise, and comparison operations, conforming to the Lua 5.5.1 specifications.
+  - Defined standard `LUA_OP*` constants for arithmetic, bitwise, and comparison operations, conforming to the Lua 5.5.0 specifications.
 - **`src/lua.zig`**:
   - Re-exported the new `LUA_OP*` constants from `llimits.zig`.
   - Rewrote `lua_arith` to use the official symbolic constants and corrected the unary/binary operand checks and arithmetic/bitwise mapping logic.
@@ -1125,7 +1125,7 @@ Implemented the binary bytecode loader (`lundump.zig`), allowing precompiled Lua
 
 ### Changes
 - **`src/llimits.zig`**: Added `LUA_MAXINTEGER` (`std.math.maxInt(i64)`) and
-  `LUA_MININTEGER` (`std.math.minInt(i64)`) exposing Lua 5.5.1 integer bounds.
+  `LUA_MININTEGER` (`std.math.minInt(i64)`) exposing Lua 5.5.0 integer bounds.
 - **`src/lua.zig`**: Re-exported the integer bounds. Added `.prng: std.Random.Xoshiro256`
   field to `global_State`, initialized in `luaL_newstate_io` with
   `std.Random.Xoshiro256.init(@intFromPtr(L))`. Rewrote `lua_tointegerx` to
@@ -1182,7 +1182,7 @@ Implemented the binary bytecode loader (`lundump.zig`), allowing precompiled Lua
   `lbitlib.c` (`band`, `bor`, `bxor`, `bnot`, `btest`, `lshift`, `rshift`,
   `arshift`, `lrotate`, `rrotate`, `extract`, `replace`) plus the `openbit32`
   registration that installs the `bit32` global table. Because `lbitlib.c` is
-  absent from this 5.5.1 tree, the authoritative reference is Lua 5.3.6
+  absent from this 5.5.0 tree, the authoritative reference is Lua 5.3.6
   (`lua-5.3.6/src/lbitlib.c`), fetched to verify semantics. Key semantics
   matched exactly:
   - All values are unsigned 32-bit (`LUA_NBITS = 32`), masked via `checkunsigned`.
@@ -1578,7 +1578,7 @@ Fixed the three-blocker chain that prevented `lua_resume`/`lua_yieldk` from work
   - Added `PF_VAHID`/`PF_VATAB`/`PF_FIXED` flag-bit constants (`lua/lobject.h`).
 - **`src/lvm.zig`**: Wired the opcodes — `VARARGPREP` → `luaT_adjustvarargs`, `VARARG` → `luaT_getvarargs` (decoding `C`→`wanted` and the `k` flag→`vatab`), `GETVARG` → `luaT_getvararg`.
 - **`src/lua.zig`**: Added `lua_Proto.flag: u8 = 0` (populated by the loader) and `CallInfo.nextraargs: i32 = 0`.
-- **`tests/test_vararg.luac`**: New precompiled chunk (`local function f(a,b,...) return ... end; return f(1,2,3,4,5)`), compiled with the Lua 5.5.1 reference binary.
+- **`tests/test_vararg.luac`**: New precompiled chunk (`local function f(a,b,...) return ... end; return f(1,2,3,4,5)`), compiled with the Lua 5.5.0 reference binary.
 - **`tests/test_basic.zig`**: New test "BUG-036: VM vararg execution" asserting the first returned vararg is `3`.
 
 ### Design note
@@ -1596,7 +1596,7 @@ The C reference relocates the call frame for hidden varargs (`buildhiddenargs`).
 
 ### Verification
 
-`zig build test --summary all` → **65/65 tests pass, zero memory leaks.** Result cross-checked against the Lua 5.5.1 reference binary (`./lua/lua`).
+`zig build test --summary all` → **65/65 tests pass, zero memory leaks.** Result cross-checked against the Lua 5.5.0 reference binary (`./lua/lua`).
 
 ## 2026-07-12 — `luaL_dostring` properly implemented (rev 44)
 
@@ -1604,7 +1604,7 @@ The C reference relocates the call frame for hidden varargs (`buildhiddenargs`).
 
 - **`src/lua.zig`**: Replaced the no-op stub (which returned `LUA_OK` unconditionally) with a correct implementation mirroring the C reference (`lauxlib.c` `luaL_dostring` = `luaL_loadstring` + `lua_pcall`): it loads the chunk from the source string via `lua_load` (using a small `luaL_dostringReader` that yields the slice once) and, on load success, runs it with `lua_pcallk(L, 0, LUA_MULTRET, 0, 0, null)`. The load/pcall status is propagated (so text input correctly returns `LUA_ERRSYNTAX`; binary chunks execute and leave their results on the stack).
 - **`src/luazig.zig`**: The CLI entry call now prints the (honest) load/run error to stderr instead of silently discarding it.
-- **`tests/test_dostring.luac`**: New precompiled chunk (`return 6*7`), compiled with the Lua 5.5.1 reference binary.
+- **`tests/test_dostring.luac`**: New precompiled chunk (`return 6*7`), compiled with the Lua 5.5.0 reference binary.
 - **`tests/test_basic.zig`**: Two new tests — `luaL_dostring loads and runs a chunk` (binary chunk → `LUA_OK`, result `42` on stack) and `luaL_dostring returns LUA_ERRSYNTAX for non-bytecode source`.
 
 ### §0.1 Self-Audit
@@ -1617,7 +1617,7 @@ The C reference relocates the call frame for hidden varargs (`buildhiddenargs`).
 
 ### Verification
 
-`zig build test --summary all` → **67/67 tests pass, zero memory leaks.** Behavior cross-checked against the Lua 5.5.1 reference binary.
+`zig build test --summary all` → **67/67 tests pass, zero memory leaks.** Behavior cross-checked against the Lua 5.5.0 reference binary.
 
 ### Related
 
@@ -1639,7 +1639,7 @@ This is a documentation-only changeset. No source/test changes; `zig build test`
 
 ### Changes
 
-- **`src/llex.zig`** (NEW, ~875 lines): Full Lua 5.5.1 lexer ported from `lua/llex.c` + number scanning from `lua/lobject.c`.
+- **`src/llex.zig`** (NEW, ~875 lines): Full Lua 5.5.0 lexer ported from `lua/llex.c` + number scanning from `lua/lobject.c`.
   - Token set (`TK_AND=257` … `TK_STRING=294`, `FIRST_RESERVED=257`), `LexState` with explicit `allocator: std.mem.Allocator` (Rule 1).
   - `luaX_setinput`, `luaX_next`, `luaX_lookahead`, `luaX_newstring` (interns via `lstring.luaS_new`), `luaX_init` (reserved-word table), `luaX_syntaxerror` (`LexError = error{SyntaxError}`, no longjmp — Rule 3), `token2str`.
   - Number scanning: `str2num` / `l_str2int` / `lua_strx2number` / `l_str2d`, with a `normalizeDecimal` pass so Zig's `std.fmt.parseFloat` accepts Lua's trailing-`.` forms (`1.`, `1.e2`). Hex floats (`0x1p4`) via `lua_strx2number`.
@@ -1659,7 +1659,7 @@ This is a documentation-only changeset. No source/test changes; `zig build test`
 
 ### Verification
 
-`zig build test --summary all` → **72/72 tests pass (was 67/67), zero memory leaks.** `zig build` produces the `luazig` executable. Lexer behavior cross-checked against the Lua 5.5.1 reference binary semantics for token classes, number forms, escapes, and long strings.
+`zig build test --summary all` → **72/72 tests pass (was 67/67), zero memory leaks.** `zig build` produces the `luazig` executable. Lexer behavior cross-checked against the Lua 5.5.0 reference binary semantics for token classes, number forms, escapes, and long strings.
 
 ### Related
 
@@ -1713,7 +1713,7 @@ on the wrong value. The C reference (`lua/lcode.c`) does **not** call
 
 ### `LUA_COMPAT_MATHLIB` removal
 
-**Reason:** Lua 5.5.1 conditionally provides `math.atan2`, `math.cosh`,
+**Reason:** Lua 5.5.0 conditionally provides `math.atan2`, `math.cosh`,
 `math.sinh`, `math.tanh`, `math.pow`, `math.log10` behind
 `#if defined(LUA_COMPAT_MATHLIB)`, which is **off by default** in the stock build.
 The port was including them unconditionally.
@@ -1737,7 +1737,7 @@ The port was including them unconditionally.
 
 ### Verification
 `zig build` and `zig build test` both pass: **72/72 tests**, zero memory leaks.
-Behavior cross-checked against the Lua 5.5.1 reference binary for logical
+Behavior cross-checked against the Lua 5.5.0 reference binary for logical
 operator evaluation and math library availability.
 
 ---
@@ -1745,7 +1745,7 @@ operator evaluation and math library availability.
 ## 2026-07-13 — Phase H documented: gap analysis for drop-in replacement
 
 Documented the comprehensive gulf between `luazig` and "drop-in replacement for
-Lua 5.5.1" as **Phase H** in AGENTS.md and docs/roadmap.md. Identified 10
+Lua 5.5.0" as **Phase H** in AGENTS.md and docs/roadmap.md. Identified 10
 workstreams (H.1–H.10) by systematic audit against `lua/lua.h`,
 `lua/lauxlib.h`, and standard library C sources.
 
@@ -1980,7 +1980,7 @@ per-opcode overhead.
   binary/arithmetic opcode (`ADD/SUB/MUL/MOD/DIV/IDIV/POW/BAND/BOR/BXOR/SHL/SHR`
   and the `K`/`I` immediate variants `MULK/MODK/ADDI/...`/`GEI`/`EQI`) emitted
   `if (GET_OPCODE(code[ci.savedpc]) == .MMBINX) ci.savedpc += 1;` to skip the
-  trailing metamethod guard. For valid Lua 5.5.1 bytecode a binary op is *always*
+  trailing metamethod guard. For valid Lua 5.5.0 bytecode a binary op is *always*
   followed by its `MMBIN`/`MMBINI`/`MMBINK` variant, and numbers never need a
   metamethod (running `MMBIN` with two numbers would itself error in C), so the
   guarded check is redundant for any correct program. The number path now does
@@ -2029,7 +2029,7 @@ local fast-paths without restructuring C-function dispatch.
 
 Closed the highest-priority correctness gap from AGENTS.md §8 H.1. Eight
 functions that previously silently did nothing / returned wrong results now
-behave per Lua 5.5.1 `lua.h` / `lauxlib.h`:
+behave per Lua 5.5.0 `lua.h` / `lauxlib.h`:
 
 - `luaL_newtable` → `lua_createtable(L, 0, 0)` (was empty body).
 - `luaL_len` → `lua_len` + integer check; returns `error.LuaTypeError` when the
@@ -2124,7 +2124,7 @@ table form of `os_time`. Also fixed a latent `io` lifetime bug that the new
 ### Verification
 5 new tests in `tests/test_basic.zig` (os.date `*t`, os.date format + UTC,
 os.time round-trip, os.execute success/failure, os.setlocale). `os.date`/`os.execute`
-output verified byte-for-byte against the Lua 5.5.1 reference binary. `zig build test`
+output verified byte-for-byte against the Lua 5.5.0 reference binary. `zig build test`
 → **86/86 pass** (was 81/81), clean Debug build.
 
 ## Rev 65 — Fix two seed-independent GC / VM correctness bugs (2026-07-14)
@@ -2282,7 +2282,7 @@ not used — no unmanaged containers added).
 ## 2026-07-14/15 — Test-suite compatibility fixes (GC rewrite, core API fixes, CLI runner)
 
 Massive bug-fix session targeting the `lua/testes/` suite. Most failures in the
-Lua 5.5.1 test suite were caused by seven categories of defects; the session
+Lua 5.5.0 test suite were caused by seven categories of defects; the session
 addressed all of them (exit codes, tracebacks, arg-validation, GC, vararg,
 stack safety, library registration, and a native io-write crash).
 
@@ -2562,7 +2562,7 @@ round-tripping and broke loading of reference-generated chunks.
   function sits at the top when `lua_dump` reads `top-1`; now returns the dump
   string and an error message on failure.
 - **`src/lundump.zig`** — two loader fixes required for the round-trip and for
-  binary compatibility with chunks produced by reference Lua 5.5.1:
+  binary compatibility with chunks produced by reference Lua 5.5.0:
   - `loadConstants`: integer constants (`LUA_VNUMINT`, tag 3) stored as
     `.integer` (were wrongly stored as `.number`/float).
   - `loadString`: reads `size` data bytes (the `len+1` count **including the
@@ -2577,7 +2577,7 @@ round-tripping and broke loading of reference-generated chunks.
   with and without `strip`.
 - **Cross-compat proven both directions**: luazig-dumped bytecode `loadfile`s and
   runs under reference `lua/lua`, and reference-dumped bytecode `loadfile`s and
-  runs under `luazig` (same numeric result), confirming exact 5.5.1 binary format
+  runs under `luazig` (same numeric result), confirming exact 5.5.0 binary format
   compatibility.
 
 ### §0.1 self-audit

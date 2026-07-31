@@ -1,5 +1,5 @@
 // $Id: ldump.zig $
-// Dump Lua chunks to precompiled bytecode (Zig port of Lua 5.5.1 ldump.c)
+// Dump Lua chunks to precompiled bytecode (Zig port of Lua 5.5.0 ldump.c)
 // See Copyright Notice in lua.zig
 
 const std = @import("std");
