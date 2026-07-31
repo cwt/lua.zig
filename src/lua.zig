@@ -960,6 +960,9 @@ pub const global_State = struct {
     /// GC control: if false, GC is stopped (LUA_GCSTOP). Allocations still
     /// happen but do not trigger collection.
     gc_running: bool = true,
+    /// Set to true while luaC_collectgarbage is executing; prevents re-entrant
+    /// GC cycles that would reset marks and corrupt the live set.
+    gc_in_progress: bool = false,
     /// GC parameters (get/set via LUA_GCPARAM). Initialised to defaults
     /// matching the C reference (lstate.c setgcparam calls).
     gcparams: [LUA_GCPN]u8 = [_]u8{ 10, 20, 50, 200, 200, 13 },
@@ -3729,7 +3732,8 @@ pub fn lua_warning(L: *lua_State, msg: []const u8, tocont: i32) void {
 }
 
 fn getGCObject(g: *global_State, ptr: anytype) ?*VMGCObject {
-    _ = g;
+    if (@typeInfo(@TypeOf(ptr)) != .pointer) return null;
+    if (@intFromPtr(ptr) == 0) return null;
     const T = @TypeOf(ptr);
     if (T == *lua_Table) return ptr.gc;
     if (T == *lua_Closure) {
@@ -3738,7 +3742,13 @@ fn getGCObject(g: *global_State, ptr: anytype) ?*VMGCObject {
             .lua => |lc| lc.gc,
         };
     }
-    if (T == *UpVal) return ptr.gc;
+    if (T == *UpVal) {
+        var curr = g.allgc;
+        while (curr) |obj| : (curr = obj.next) {
+            if (obj.val == .upval and obj.val.upval == ptr) return obj;
+        }
+        return null;
+    }
     if (T == *lua_Proto) return ptr.gc;
     if (T == *lua_Udata) return ptr.gc;
     if (T == *lua_TString) return ptr.gc;
@@ -3904,13 +3914,16 @@ fn luaS_clearcache(L: *lua_State) void {
 
 pub inline fn luaC_condGC(L: *lua_State) void {
     const g = G(L);
-    if (g.gc_running and g.totalbytes >= g.gc_threshold) {
+    if (g.gc_running and !g.gc_in_progress and g.totalbytes >= g.gc_threshold) {
         luaC_collectgarbage(L) catch {};
     }
 }
 
 pub fn luaC_collectgarbage(L: *lua_State) !void {
     const g = G(L);
+    if (g.gc_in_progress) return;
+    g.gc_in_progress = true;
+    defer g.gc_in_progress = false;
 
     // 1. Reset/Clear gray list
     var gray_list = std.ArrayList(*VMGCObject).empty;

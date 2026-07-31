@@ -636,7 +636,14 @@ pub fn luaT_adjustvarargs(L: *lua.lua_State, ci: *lua.CallInfo, cl: *lua.lua_LCl
         const actual_nextra: usize = if (nextra > 0) @intCast(nextra) else 0;
         const t = try createVarargTable(L, ci.func + nfixparams + 1, actual_nextra);
         L.stack[ci.func + nfixparams + 1] = lua.TValue{ .table = t };
+        // Clear stale stack values in the local-variable area (above the
+        // last argument/vararg-table slot) so the GC does not try to mark
+        // freed/dangling objects left over from previous frames.
+        const local_start = ci.func + nfixparams + 2;
         L.top = ci.top;
+        if (local_start < L.top) {
+            @memset(L.stack[local_start..L.top], .{ .nil = {} });
+        }
         lua.luaC_condGC(L);
     } else {
         try buildhiddenargs(L, ci, totalargs, nfixparams, nextra, p.maxStackSize);
