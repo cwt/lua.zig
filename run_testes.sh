@@ -1,8 +1,8 @@
 #!/bin/bash
-# Run the Lua 5.5.1 test suite against luazig
+# Run the Lua test suite against luazig or specified reference interpreter
 # Reports pass/fail per test file with summary.
 #
-# Usage: ./run_testes.sh [--verbose] [--timeout N]
+# Usage: ./run_testes.sh [--verbose] [--timeout N] [--lua PATH]
 
 set -euo pipefail
 
@@ -11,22 +11,31 @@ cd "$SCRIPT_DIR"
 
 VERBOSE=false
 TIMEOUT=30
+LUA_BIN="$SCRIPT_DIR/zig-out/bin/luazig"
 
 # Parse options
 while [[ $# -gt 0 ]]; do
     case "$1" in
         --verbose) VERBOSE=true; shift ;;
         --timeout) TIMEOUT="$2"; shift 2 ;;
+        --lua) LUA_BIN="$2"; shift 2 ;;
         *) break ;;
     esac
 done
 
-echo "=== Lua test suite runner for luazig ==="
-echo "Building luazig..."
-zig build 2>&1 | tail -3
-echo ""
+if [[ "$LUA_BIN" != /* ]]; then
+    LUA_BIN="$SCRIPT_DIR/$LUA_BIN"
+fi
 
-LUAZIG="$SCRIPT_DIR/zig-out/bin/luazig"
+echo "=== Lua test suite runner ==="
+echo "Interpreter: $LUA_BIN"
+if [[ "$LUA_BIN" == *"/luazig"* ]]; then
+    echo "Building luazig..."
+    zig build 2>&1 | tail -3
+    echo ""
+fi
+
+LUAZIG="$LUA_BIN"
 TEST_DIR="lua/testes"
 
 # Tests that are the harness / a standalone-interpreter driver. They are not
