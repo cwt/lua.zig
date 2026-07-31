@@ -6,6 +6,14 @@ tags: [log, changelog]
 timestamp: 2026-07-18T13:58:00Z
 ---
 
+## 2026-07-31 — Feature & Fix: Upstream `events.lua` Metatable Test Suite (100% PASS)
+
+- **VM Binary Arithmetic Fallthrough (`src/lvm.zig`)**: Removed fallback branches from binary math/bitwise opcodes (`ADDK`, `ADDI`, `ADD`, `SUBK`, etc.). On non-numeric operands, `ci.savedpc` is left unchanged so the VM falls through to `OP_MMBIN*` to execute metamethods with correct `flip` flags.
+- **String Library Arithmetic Metamethod Delegation (`src/lib/stringlib.zig`)**: Replaced `pushOperand` with `tonum` and `trymt` matching C reference `lstrlib.c`. When operand 1 is a string and operand 2 is non-numeric, stringlib delegates to operand 2's metamethod.
+- **Immediate Comparison Operand Types (`src/lvm.zig`)**: Checked `GETARG_C(instruction) != 0` (`is_float`) in `OP_LTI`, `OP_LEI`, `OP_GTI`, `OP_GEI` to construct `.number` vs `.integer` constant operands for ordering metamethods.
+- **Stack Safety in Metamethod Invocations (`src/ltm.zig`, `src/lua.zig`)**: Passed `L.stack.len` as dummy `res` target in `luaT_callorderTM` to prevent metamethod return values from polluting `L.stack[L.top]`. Restored `L.top = saved_top` in `luaT_callTMres` and added explicit `lua_checkstack` in `lua_len`.
+- **Test Gate**: `events.lua` runs to 100% completion (`OK`, exit code 0). All **127 basic unit tests** pass with zero memory leaks.
+
 ## 2026-07-31 — Feature & Fix: Upstream `pm.lua` Pattern Matching Test Suite (100% PASS)
 
 - **Pattern Matching Fixes (`src/lib/string/pattern.zig`)**:

@@ -211,125 +211,69 @@ const strlib = [_]struct {
     .{ .name = "unpack", .func = pack.str_unpack },
 };
 
-fn arith(L: *lua.lua_State, op: i32) anyerror!i32 {
-    // Convert both operands to numbers if they are strings, pushing the
-    // converted values on top WITHOUT mutating the original slots (the
-    // reference 'tonum' pushes a copy and leaves the caller's variables
-    // untouched). The two top slots are then the operands for arithmetic.
-    // Helper: push a numeric copy of the operand at `arg` on top, without
-    // mutating the original slot (string → converted number; number → copy).
-    const numMod = struct {
-        fn call(a: f64, b: f64) f64 {
-            var m = libm.getLibm().fmod(a, b);
-            if (if (m > 0) b < 0 else (m < 0 and b > 0)) {
-                m += b;
-            }
-            return m;
-        }
-    }.call;
-    const pushOperand = struct {
-        fn call(l: *lua.lua_State, arg: i32) !void {
-            const t = lua.lua_type(l, arg);
-            if (t == lua.LUA_TSTRING) {
-                const s = lua.lua_tostring(l, arg) orelse "";
-                if (lua.lua_stringtonumber(l, s) == 0) {
-                    return lauxlib.luaL_error(l, "attempt to perform arithmetic on a string value");
-                }
-            } else if (t != lua.LUA_TNUMBER) {
-                return lauxlib.luaL_error(l, "attempt to perform arithmetic on a string value");
-            } else {
-                lua.lua_pushvalue(l, arg);
-            }
-        }
-    }.call;
-    try pushOperand(L, 1);
-    try pushOperand(L, 2);
-    // Slots -2 and -1 now hold numeric copies of the operands.
-    const top = lua.lua_gettop(L);
-    const is_int1 = lua.lua_isinteger(L, top - 1);
-    const is_int2 = lua.lua_isinteger(L, top);
-    if (is_int1 != 0 and is_int2 != 0) {
-        const iv1 = lua.lua_tointeger(L, top - 1) orelse 0;
-        const iv2 = lua.lua_tointeger(L, top) orelse 0;
-        const result = switch (op) {
-            lua.LUA_OPADD => iv1 +% iv2,
-            lua.LUA_OPSUB => iv1 -% iv2,
-            lua.LUA_OPMUL => iv1 *% iv2,
-            lua.LUA_OPMOD => blk: {
-                if (iv2 == 0) return lauxlib.luaL_error(L, "attempt to divide by zero");
-                const r = if (iv2 == -1) @as(i64, 0) else @rem(iv1, iv2);
-                break :blk if (r != 0 and (r ^ iv2) < 0) r + iv2 else r;
-            },
-            lua.LUA_OPPOW => @as(i64, @intFromFloat(@floor(@as(f64, @floatFromInt(iv1)) / @as(f64, @floatFromInt(iv2))))),
-            lua.LUA_OPDIV => @as(i64, @intFromFloat(@as(f64, @floatFromInt(iv1)) / @as(f64, @floatFromInt(iv2)))),
-            lua.LUA_OPIDIV => blk: {
-                const ib = iv1;
-                const ic = iv2;
-                if (ic == 0) return lauxlib.luaL_error(L, "attempt to divide by zero");
-                const q: i64 = if (ic == -1) 0 -% ib else @divTrunc(ib, ic);
-                const r: i64 = if (ic == -1) 0 else @rem(ib, ic);
-                break :blk if (r == 0 or (ib >= 0) == (ic >= 0)) q else q - 1;
-            },
-            lua.LUA_OPBAND => iv1 & iv2,
-            lua.LUA_OPBOR => iv1 | iv2,
-            lua.LUA_OPBXOR => iv1 ^ iv2,
-            lua.LUA_OPSHL => lua.luaV_shift(iv1, iv2),
-            lua.LUA_OPSHR => lua.luaV_shift(iv1, -%iv2),
-            lua.LUA_OPUNM => -iv1,
-            else => return lauxlib.luaL_error(L, "unsupported arithmetic operation"),
-        };
-        lua.lua_pushinteger(L, result);
-    } else {
-        const fv1 = lua.lua_tonumber(L, top - 1) orelse 0.0;
-        const fv2 = lua.lua_tonumber(L, top) orelse 0.0;
-        const result = switch (op) {
-            lua.LUA_OPADD => fv1 + fv2,
-            lua.LUA_OPSUB => fv1 - fv2,
-            lua.LUA_OPMUL => fv1 * fv2,
-            lua.LUA_OPMOD => blk: {
-                break :blk numMod(fv1, fv2);
-            },
-            lua.LUA_OPPOW => std.math.pow(f64, fv1, fv2),
-            lua.LUA_OPDIV => fv1 / fv2,
-            lua.LUA_OPIDIV => blk: {
-                break :blk @floor(fv1 / fv2);
-            },
-            lua.LUA_OPUNM => -fv1,
-            else => return lauxlib.luaL_error(L, "unsupported arithmetic operation"),
-        };
-        lua.lua_pushnumber(L, result);
+fn trymt(L: *lua.lua_State, mtkey: []const u8, opname: []const u8) !i32 {
+    lua.lua_settop(L, 2);
+    if (lua.lua_type(L, 2) == lua.LUA_TSTRING or lauxlib.luaL_getmetafield(L, 2, mtkey) == 0) {
+        var buf: [128]u8 = undefined;
+        const tname1 = try lauxlib.luaL_typename(L, 1);
+        const tname2 = try lauxlib.luaL_typename(L, 2);
+        const msg = std.fmt.bufPrint(&buf, "attempt to {s} a '{s}' with a '{s}'", .{
+            opname,
+            tname1,
+            tname2,
+        }) catch "attempt to perform arithmetic";
+        return lauxlib.luaL_error(L, msg);
     }
-    // `top` holds the second operand copy; the result was just pushed on top
-    // (slot top+1). Move the result down onto the second operand's slot and
-    // truncate, leaving exactly one value (the result) on top for the caller.
-    lua.lua_replace(L, top);
-    lua.lua_settop(L, top);
+    lua.lua_insert(L, -3);
+    try lua.lua_callk(L, 2, 1, 0, null);
     return 1;
 }
 
+fn tonum(L: *lua.lua_State, arg: i32) bool {
+    const t = lua.lua_type(L, arg);
+    if (t == lua.LUA_TNUMBER) {
+        lua.lua_pushvalue(L, arg);
+        return true;
+    }
+    if (t == lua.LUA_TSTRING) {
+        const s = lua.lua_tostring(L, arg) orelse "";
+        return lua.lua_stringtonumber(L, s) != 0;
+    }
+    return false;
+}
+
+fn arith(L: *lua.lua_State, op: i32, mtkey: []const u8, opname: []const u8) !i32 {
+    if (tonum(L, 1) and tonum(L, 2)) {
+        lua.lua_arith(L, op);
+        return 1;
+    } else {
+        return try trymt(L, mtkey, opname);
+    }
+}
+
 fn arith_add(L: *lua.lua_State) anyerror!i32 {
-    return arith(L, lua.LUA_OPADD);
+    return arith(L, lua.LUA_OPADD, "__add", "add");
 }
 fn arith_sub(L: *lua.lua_State) anyerror!i32 {
-    return arith(L, lua.LUA_OPSUB);
+    return arith(L, lua.LUA_OPSUB, "__sub", "sub");
 }
 fn arith_mul(L: *lua.lua_State) anyerror!i32 {
-    return arith(L, lua.LUA_OPMUL);
+    return arith(L, lua.LUA_OPMUL, "__mul", "mul");
 }
 fn arith_mod(L: *lua.lua_State) anyerror!i32 {
-    return arith(L, lua.LUA_OPMOD);
+    return arith(L, lua.LUA_OPMOD, "__mod", "perform arithmetic on");
 }
 fn arith_pow(L: *lua.lua_State) anyerror!i32 {
-    return arith(L, lua.LUA_OPPOW);
+    return arith(L, lua.LUA_OPPOW, "__pow", "perform arithmetic on");
 }
 fn arith_div(L: *lua.lua_State) anyerror!i32 {
-    return arith(L, lua.LUA_OPDIV);
+    return arith(L, lua.LUA_OPDIV, "__div", "perform arithmetic on");
 }
 fn arith_idiv(L: *lua.lua_State) anyerror!i32 {
-    return arith(L, lua.LUA_OPIDIV);
+    return arith(L, lua.LUA_OPIDIV, "__idiv", "perform arithmetic on");
 }
 fn arith_unm(L: *lua.lua_State) anyerror!i32 {
-    return arith(L, lua.LUA_OPUNM);
+    return arith(L, lua.LUA_OPUNM, "__unm", "perform arithmetic on");
 }
 
 const stringmetamethods = [_]lauxlib.luaL_Reg{

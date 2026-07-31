@@ -4368,6 +4368,7 @@ pub fn lua_concat(L: *lua_State, n: i32) void {
 }
 
 pub fn lua_len(L: *lua_State, idx: i32) !void {
+    if (lua_checkstack(L, 1) == 0) return error.OutOfMemory;
     const v = stackAt(L, idx);
     switch (v) {
         .string => |s| {
@@ -4376,7 +4377,8 @@ pub fn lua_len(L: *lua_State, idx: i32) !void {
         .table => |t| {
             const tm = if (t.?.metatable) |mt| ltm.luaT_gettm(mt, .LEN, G(L).tmname[@intFromEnum(ltm.TMS.LEN)].?) else null;
             if (tm) |tm_val| {
-                _ = try ltm.luaT_callTMres(L, tm_val, &v, &v, L.top);
+                const res_val = try ltm.luaT_callTMres(L, tm_val, &v, &v, L.stack.len);
+                L.stack[L.top] = res_val;
                 L.top += 1;
             } else {
                 lua_pushinteger(L, @as(i64, @intCast(ltable.getn(t.?))));
@@ -4387,7 +4389,8 @@ pub fn lua_len(L: *lua_State, idx: i32) !void {
             if (tm == .nil) {
                 return error.RuntimeError;
             }
-            _ = try ltm.luaT_callTMres(L, tm, &v, &v, L.top);
+            const res_val = try ltm.luaT_callTMres(L, tm, &v, &v, L.stack.len);
+            L.stack[L.top] = res_val;
             L.top += 1;
         },
     }

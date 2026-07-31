@@ -186,7 +186,9 @@ pub fn luaT_callTMres(L: *lua.lua_State, f: lua.TValue, p1: *const lua.TValue, p
         return e;
     };
     const result = L.stack[old_top];
-    L.stack[res] = result;
+    if (res < L.stack.len) {
+        L.stack[res] = result;
+    }
     L.top = saved_top;
     return result;
 }
@@ -224,7 +226,7 @@ pub fn luaT_callorderTM(L: *lua.lua_State, p1: *const lua.TValue, p2: *const lua
     if (tm == .nil) {
         try lua.luaG_ordererror(L, p1.*, p2.*);
     }
-    const res_val = try luaT_callTMres(L, tm, p1, p2, L.top);
+    const res_val = try luaT_callTMres(L, tm, p1, p2, L.stack.len);
     return switch (res_val) {
         .nil => false,
         .boolean => |b| b,
