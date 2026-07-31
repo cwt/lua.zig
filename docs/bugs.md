@@ -11,7 +11,7 @@ timestamp: 2026-07-14T16:10:00Z
 > Working document tracking known defects in the `luazig` codebase. Bugs are
 > numbered `BUG-001` … in priority order. Severity reflects runtime impact.
 > Each entry records the location, the defect, the impact, and the recommended fix.
-> Last updated: 2026-07-14 (BUG-040–042 appended after Phase H.3 — io buffering + read("*n")).
+> Last updated: 2026-07-31 (Systematic bug-pattern audit + BUG-050–054 appended — cross-cutting codebase mistakes).
 
 Legend:
 - **[HIGH]** crashes, wrong control flow, or incorrect results on ordinary programs.
@@ -455,6 +455,138 @@ Legend:
 - **Defect:** Custom base string parsing (when `base` argument is provided) was delegating directly to `std.fmt.parseInt` on the raw input string. `parseInt` does not trim whitespace and does not recognize the optional `0x`/`0X` prefix for base-16 strings, resulting in parsing failures.
 - **Impact:** `math.lua` failed with assertion failures on `assert(tonumber('  001010  ', 2) == 10)`.
 - **Fix:** Ported `b_str2int` from `lbaselib.c` to parse strings using arbitrary bases (2 to 36): it skips initial spaces, detects sign (+/-), maps digits, prevents invalid alphanumeric digits, and skips trailing spaces. It checks that the entire string was consumed.
+
+---
+
+# Systematic Bug-Pattern Audit — 2026-07-31
+
+> Deep analysis of all bug fixes between rev 89 and rev 113 (about 25 commits),
+> plus a full codebase audit extrapolating the five most pervasive classes of
+> cross-cutting mistakes. Each class is documented as a numbered bug (BUG-050
+> through BUG-054) with its specific locations and fix plan.
+
+---
+
+## BUG-050 — VM binary arithmetic opcodes missing string-to-number coercion (25 opcodes) [HIGH]
+
+- **Locations:** `src/lvm.zig` — all 25 binary arithmetic/bitwise handlers:
+  `.ADDI` (L799), `.SHLI` (L945), `.SHRI` (L955), `.ADDK` (L811), `.SUBK` (L825),
+  `.MULK` (L839), `.MODK` (L853), `.POWK` (L869), `.DIVK` (L880), `.IDIVK` (L891),
+  `.BANDK` (L912), `.BORK` (L923), `.BXORK` (L934), `.ADD` (L965), `.SUB` (L979),
+  `.MUL` (L993), `.MOD` (L1007), `.POW` (L1023), `.DIV` (L1034), `.IDIV` (L1045),
+  `.BAND` (L1065), `.BOR` (L1076), `.BXOR` (L1092), `.SHL` (L1103), `.SHR` (L1114).
+- **Root cause pattern:** Transliterating C `switch` handlers faithfully but
+  forgetting that the C reference macros expand inline `luaV_tointegerns` /
+  `luaV_tointeger` / `luaV_tonumber_` calls for string→number coercion. In
+  the Zig port these were replaced with `isNumberValue()` guards which only match
+  `.integer`/`.number` tags — `.string` values always fall through to `MMBIN*`
+  which invokes the metamethod (strings have no arithmetic metamethods → error).
+- **Impact:** Runtime string arithmetic (`local s = "2"; print(s + 1)`) fails
+  while the equivalent literal form `print("2" + 1)` works (compiler constant-folds
+  the literal). `luaV_doarith()` at `lvm.zig:263` already has the correct
+  `toNumeric()` → `arithCompute()` → metamethod chain but is **dead code**.
+- **Also:** `forlimit()` at `lvm.zig:63` has `else => {}` on a switch over
+  `toNumeric()` result — should be `unreachable` since `toNumeric()` only
+  returns `.integer` or `.number`.
+- **Fix:** Add `toNumeric()` calls in all 25 opcode handlers before falling
+  through to MMBIN*. The pattern from `.UNM` (L1156) and `.BNOT` (L1173) is
+  the correct model.
+
+## BUG-051 — Silent `catch {}` swallowing errors in critical paths (31 sites) [HIGH]
+
+- **Pattern class:** Empty `catch {}` blocks that violate §0.1 rule 12 ("Never
+  swallow runtime errors with empty or dummy `catch` blocks"). The project had
+  already fixed many instances (BUG-002, BUG-012, BUG-025, BUG-031), but a
+  residual 31 remain after the audit.
+
+**Critical sites:**
+| File | Line | Expression | Why critical |
+|------|------|------------|-------------|
+| `lua.zig` | 1580 | `luaT_trybinTM(...) catch {}` | lua_arith unary TM failures |
+| `lua.zig` | 1658 | `luaT_trybinTM(...) catch {}` | lua_arith binary TM failures |
+| `lua.zig` | 2955 | `ltable.set(globals,...) catch {}` | lua_setglobal |
+| `lua.zig` | 3019 | `ltable.setInt(t,...) catch {}` | lua_rawseti |
+| `lua.zig` | 3029 | `ltable.set(t,...) catch {}` | lua_rawsetp |
+| `lua.zig` | 3144,3154,3162,3196 | `_ = luaG_errormsg(L) catch {}` | Error-reporting path itself failing |
+| `lua.zig` | 3907 | `luaC_collectgarbage(L) catch {}` | GC trigger can OOM |
+| `lua.zig` | 3238 | `closeupvals(L,...) catch {}` | Error-recovery path |
+| `lua.zig` | 4339,4343,4348,4358 | `list.appendSlice(...) catch {}` | lua_concat buffer growth OOM |
+| `lvm.zig` | 77,82 | `luaG_runerror(...) catch {}` | Error function failing — meta-bug |
+| `lvm.zig` | 191 | `luaG_runerror(...) catch {}` | Division-by-zero error propagation |
+| `lcode.zig` | 119,309,433,1209 | `syntaxerror/checklimit/lineinfo catch {}` | Parser errors swallowed |
+| `iolib.zig` | 87 | `f_close(L_, p) catch {}` | GC finalizer — close failure ignored |
+| `lauxlib.zig` | 302 | `lua_getinfo(...) catch {}` | luaL_where error-handler |
+| `lparser.zig` | 1872 | `ltable.set(...) catch {}` | Parser teardown |
+
+- **Fix:** Replace each with proper error propagation. For stderr-write failures
+  (`luazig.zig:136,137,139`) and other "best-effort" I/O, keep the silent
+  discard but add a loud comment justifying it. For GC finalizers, at minimum
+  log a warning. For the core API paths, propagate or handle with fallback.
+
+## BUG-052 — Dangling raw stack pointer passed through `lua_checkstack` in MMBIN [HIGH]
+
+- **Location:** `src/lvm.zig:1131` (`.MMBIN` handler).
+- **Defect:** `.MMBIN` passes `&L.stack[ra_idx]` and `&L.stack[rb_idx]` as raw
+  pointers through `luaT_trybinTM(L, &L.stack[ra_idx], &L.stack[rb_idx], ...)`.
+  The call chain is `luaT_trybinTM` → `luaT_callTMres` → `lua_checkstack(L, 3)`
+  at `ltm.zig:178`. `lua_checkstack` can realloc `L.stack`, invalidating the
+  original `ra_idx`/`rb_idx` pointers; the values are then dereferenced at
+  `ltm.zig:181-182` (`L.stack[old_top + 1] = p1.*`), reading freed memory.
+- **Contrast:** `.MMBINI` (L1140) and `.MMBINK` (L1152) correctly copy values
+  to local variables first: `const p1 = L.stack[ra_idx]; const p2 = ...` then
+  pass `&p1, &p2` (addresses of locals, stable across realloc).
+- **Verify:** All other call sites of `luaT_callTM*` pass locals or function
+  parameters, not raw stack pointers. Only `.MMBIN` is affected.
+- **Fix:** Copy `ra_idx` and `rb_idx` values to local variables before passing
+  to `luaT_trybinTM`, matching the MMBINI/MMBINK pattern.
+
+## BUG-053 — `lua_checkstack` result discarded → OOB writes on OOM (10 sites) [HIGH]
+
+- **Pattern class:** The return value of `lua_checkstack` (0=failure, 1=success)
+  is discarded with `_ = lua_checkstack(...)` and the code proceeds to write to
+  `L.stack[...]` unconditionally. If `lua_checkstack` failed due to OOM, the
+  stack was not grown, and the write is out-of-bounds.
+
+**Sites:**
+| File | Line | Context |
+|------|------|---------|
+| `lua.zig` | 618 | `luaD_hook`: `_ = lua_checkstack(L, 20)`, then writes `ci.top = L.top + 20` |
+| `lua.zig` | 1709–1963 | Six push-API functions (`pushnil/number/integer/boolean/lightud`): guarded by `if (L.top >= L.stack.len)` which fires one slot late — when already at capacity |
+| `lua.zig` | 3440,3475 | `lua_load`: two paths, both do `_ = lua_checkstack(L, 1)` then `L.stack[L.top]` |
+| `lvm.zig` | 531 | `setStack`: `_ = lua.lua_checkstack(L, grow)`, then `L.stack[idx] = val.*` |
+| `baselib.zig` | 359 | `select_fn`: `_ = lua.lua_checkstack(L, 2)`, then writes `L.stack[base]` and `L.stack[base + 1]` with zero guard |
+
+- **Fix:** Check the return value and return `error.OutOfMemory` or `error.StackOverflow`.
+  The E1–E20 list in the audit report are the correct pattern (e.g.
+  `if (lua_checkstack(L, 1) == 0) return error.OutOfMemory`).
+
+## BUG-054 — `unreachable` on genuinely fallible operations [HIGH]
+
+- **Locations:**
+  - `src/lib/iolib.zig:98` — `lua.lua_newuserdatauv(L_, @sizeOf(LStream), 0) orelse unreachable;`
+  - `src/lib/iolib.zig:610` — `lua.lua_newuserdatauv(L_, @sizeOf(LStream), 0) orelse unreachable;`
+- **Defect:** `lua_newuserdatauv` calls `L.allocator.create(lua_Udata)` which
+  returns `null` on OOM. Treating it as `unreachable` violates §0.1 rule 2
+  ("never use `unreachable` for a real runtime condition").
+- **Impact:** OOM during userdata allocation panics instead of returning
+  `LUA_ERRMEM` via the error path.
+- **Fix:** Replace with proper error handling: return an error value or push
+  `nil` + error message (the Lua convention for I/O failures).
+
+---
+
+### Audit methodology
+
+The five patterns above were discovered by:
+1. Cataloguing every bug fix in revs 89–113 (25 commits, ~50 distinct fixes).
+2. Classifying each fix into one of five root-cause categories.
+3. Searching the entire `src/` tree for occurrences of each category using
+   automated textual patterns (e.g. `catch {}`, `_ = lua_checkstack`, `else => {}`).
+4. Triaging hits by severity: "can this actually fail at runtime?".
+
+The full audit results are in the session logs. These five BUG-050–054 entries
+represent the **actionable bugs** — each with specific locations and concrete fix
+plans. They are now queued for implementation in the next development round.
 
 
 

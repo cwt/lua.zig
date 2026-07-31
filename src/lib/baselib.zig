@@ -356,7 +356,7 @@ fn load(L: *lua.lua_State) anyerror!i32 {
     } else {
         const err_val = L.stack[L.top - 1];
         const base = if (L.ci) |ci| ci.base else 0;
-        _ = lua.lua_checkstack(L, 2);
+        if (lua.lua_checkstack(L, 2) == 0) return error.OutOfMemory;
         L.stack[base] = .{ .nil = {} };
         L.stack[base + 1] = err_val;
         L.top = base + 2;

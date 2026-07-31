@@ -95,7 +95,7 @@ fn io_fclose(L_: *L) !i32 {
 }
 
 fn newfile(L_: *L) !*LStream {
-    const p = lua.lua_newuserdatauv(L_, @sizeOf(LStream), 0) orelse unreachable;
+    const p = lua.lua_newuserdatauv(L_, @sizeOf(LStream), 0) orelse return error.OutOfMemory;
     const stream = @as(*LStream, @ptrCast(@alignCast(p)));
     stream.* = LStream{ .fd = -1, .closef = null, .buf = null, .buf_len = 0, .buf_mode = 0, .unget = null };
     try lauxlib.luaL_setmetatable(L_, LUA_FILEHANDLE);
@@ -607,7 +607,7 @@ fn io_noclose(L_: *L) anyerror!i32 {
 }
 
 fn createstdfile(L_: *L, fd: i32, k: ?[]const u8, fname: ?[]const u8, cf: ?lua.lua_CFunction) !void {
-    const p = lua.lua_newuserdatauv(L_, @sizeOf(LStream), 0) orelse unreachable;
+    const p = lua.lua_newuserdatauv(L_, @sizeOf(LStream), 0) orelse return error.OutOfMemory;
     const stream = @as(*LStream, @ptrCast(@alignCast(p)));
     stream.* = LStream{ .fd = fd, .closef = cf, .buf = null, .buf_len = 0, .buf_mode = 0, .unget = null };
     try lauxlib.luaL_setmetatable(L_, LUA_FILEHANDLE);

@@ -615,9 +615,10 @@ pub fn luaD_hook(L: *lua_State, event: i32, line: i32, ftransfer: i32, ntransfer
                 L.top = ci.top;
             }
         }
-        _ = lua_checkstack(L, 20);
-        if (ci.top < L.top + 20) {
-            ci.top = L.top + 20;
+        if (lua_checkstack(L, 20) != 0) {
+            if (ci.top < L.top + 20) {
+                ci.top = L.top + 20;
+            }
         }
         L.allowhook = 0;
         hook.?(L, &ar);
@@ -1706,19 +1707,19 @@ pub fn lua_compare(L: *lua_State, idx1: i32, idx2: i32, op: i32) i32 {
 }
 
 pub fn lua_pushnil(L: *lua_State) void {
-    if (L.top >= L.stack.len) _ = lua_checkstack(L, 1);
+    if (L.top + 1 >= L.stack.len) _ = lua_checkstack(L, 2);
     L.stack[L.top] = TValue{ .nil = {} };
     L.top += 1;
 }
 
 pub fn lua_pushnumber(L: *lua_State, n: lua_Number) void {
-    if (L.top >= L.stack.len) _ = lua_checkstack(L, 1);
+    if (L.top + 1 >= L.stack.len) _ = lua_checkstack(L, 2);
     L.stack[L.top] = TValue{ .number = n };
     L.top += 1;
 }
 
 pub fn lua_pushinteger(L: *lua_State, n: lua_Integer) void {
-    if (L.top >= L.stack.len) _ = lua_checkstack(L, 1);
+    if (L.top + 1 >= L.stack.len) _ = lua_checkstack(L, 2);
     L.stack[L.top] = TValue{ .integer = n };
     L.top += 1;
 }
@@ -1954,13 +1955,13 @@ pub fn lua_upvaluejoin(L: *lua_State, fidx1: i32, n1: i32, fidx2: i32, n2: i32) 
 }
 
 pub fn lua_pushboolean(L: *lua_State, b: i32) void {
-    if (L.top >= L.stack.len) _ = lua_checkstack(L, 1);
+    if (L.top + 1 >= L.stack.len) _ = lua_checkstack(L, 2);
     L.stack[L.top] = TValue{ .boolean = b != 0 };
     L.top += 1;
 }
 
 pub fn lua_pushlightuserdata(L: *lua_State, p: ?*anyopaque) void {
-    if (L.top >= L.stack.len) _ = lua_checkstack(L, 1);
+    if (L.top + 1 >= L.stack.len) _ = lua_checkstack(L, 2);
     L.stack[L.top] = TValue{ .lightud = p };
     L.top += 1;
 }
