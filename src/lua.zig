@@ -4501,11 +4501,11 @@ fn parseLocaleNumber(s: []const u8) ?f64 {
         const off = @intFromPtr(endptr.?) - @intFromPtr(&buf);
         if (trailingAllSpace(s, off)) return n;
     }
-    // Fallback: replace '.' with the locale decimal point and retry.
+    // Fallback: replace '.' or ',' with the locale decimal point and retry.
     const dp = localeDecimalPoint();
     var k: usize = 0;
     while (k < s.len) : (k += 1) {
-        if (buf[k] == '.') {
+        if (buf[k] == '.' or buf[k] == ',') {
             buf[k] = dp;
             break;
         }

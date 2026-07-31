@@ -107,14 +107,13 @@ fn msghandler(L: *lua.lua_State) anyerror!i32 {
 /// the function+args and run it as the error function so uncaught errors get
 /// a full stack traceback. Returns the pcall status.
 fn pcallWithHandler(L: *lua.lua_State, nargs: i32) i32 {
+    const base = lua.lua_gettop(L) - nargs; // index of the target function
     lua.lua_pushcfunction(L, msghandler);
-    // Move the handler just below the [args..., func] block on top.
-    lua.lua_insert(L, -(nargs + 2));
-    const hidx: i32 = lua.lua_gettop(L) - (nargs + 1);
-    const status = lua.lua_pcallk(L, nargs, lua.LUA_MULTRET, hidx, 0, null) catch |e| {
+    lua.lua_insert(L, base); // insert msghandler immediately before function
+    const status = lua.lua_pcallk(L, nargs, lua.LUA_MULTRET, base, 0, null) catch |e| {
         return if (e == error.Yield) lua.LUA_YIELD else lua.LUA_ERRRUN;
     };
-    lua.lua_remove(L, hidx);
+    lua.lua_remove(L, base);
     return status;
 }
 

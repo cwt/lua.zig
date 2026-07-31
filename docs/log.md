@@ -6,6 +6,12 @@ tags: [log, changelog]
 timestamp: 2026-07-18T13:58:00Z
 ---
 
+## 2026-07-31 — Feature & Fix: CLI Error Handler Indexing & Locale Decimal Point Conformance
+
+- **CLI Error Handler Indexing (`src/luazig.zig`)**: Fixed `pcallWithHandler` to compute absolute stack index `base = lua_gettop(L) - nargs` for inserting `msghandler`. Previously, `-(nargs + 2)` miscalculated stack index when `nargs == 0`, executing `msghandler` as the target chunk rather than as the error handler.
+- **Locale Decimal Point Conformance (`src/llex.zig`, `src/lua.zig`)**: Updated `normalizeDecimal` and `parseLocaleNumber` to recognize both `,` and `.` when converting numeric strings in non-C locales (such as `pt_BR`), matching Lua 5.5 reference `luaO_str2num`.
+- **Test Gate**: `literals.lua` runs cleanly to `OK` (exit code 0). All **127 basic unit tests** pass with zero memory leaks.
+
 ## 2026-07-31 — Feature & Fix: Upstream Conformance for `goto.lua` and `nextvar.lua` (100% PASS)
 
 - **`goto.lua` Test Suite Fully Resolved (100% PASS)**:

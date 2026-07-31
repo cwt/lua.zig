@@ -428,7 +428,8 @@ fn normalizeDecimal(gpa: Allocator, s: []const u8, out: *std.ArrayList(u8)) !voi
     var i: usize = 0;
     while (i < s.len and lisspace(s[i])) : (i += 1) {}
     while (i < s.len) : (i += 1) {
-        const c = s[i];
+        var c = s[i];
+        if (c == ',') c = '.';
         try out.append(gpa, c);
         if (c == '.') {
             const nxt = if (i + 1 < s.len) s[i + 1] else 0;
