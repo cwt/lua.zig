@@ -6,6 +6,19 @@ tags: [log, changelog]
 timestamp: 2026-07-18T13:58:00Z
 ---
 
+## 2026-07-31 — Feature & Fix: Upstream `pm.lua` Pattern Matching Test Suite (100% PASS)
+
+- **Pattern Matching Fixes (`src/lib/string/pattern.zig`)**:
+  - **Bracket Class Parsing**: Fixed `classend` loop to skip `]` as first char in bracket class (e.g. `[^]]+`), matching C reference `do-while` behavior.
+  - **Back-reference Step**: Fixed `p_idx` increment after `%1..%9` back-reference matching (`p_idx += 1` instead of `+= 2`).
+  - **Start Anchor (`^`)**: Added `case '^'` in `match` switch and removed pattern slicing in `str_find_aux`/`str_gsub` so `^` anchors inside sub-captures (e.g. `^(^?)`) evaluate properly.
+  - **Zero-Length Match Tracking**: Updated `lastmatch` in `str_gsub` and `gmatch` to `?usize = null` to handle empty matches at index 0.
+  - **Character Class Ranges**: Added `p + 2 < ec` bound check for range hyphens (e.g. `[a-]`).
+  - **Frontier Pattern Bounds**: Added `s_idx < ms.src_end` check for current char in `%f[...]`.
+  - **Capture Error Formatting**: Formatted `"invalid capture index %<n>"` in `check_capture` and `get_onecapture`.
+- **String Caching (`src/lstring.zig`)**: Restricted `strcache` lookup to short strings (`len <= LUAI_MAXSHORTLEN`), matching reference Lua long string identity semantics.
+- **Test Gate**: `pm.lua` runs to 100% completion (`OK`, exit code 0). All **127 basic unit tests** pass with zero memory leaks.
+
 ## 2026-07-31 — Feature & Fix: CLI Error Handler Indexing & Locale Decimal Point Conformance
 
 - **CLI Error Handler Indexing (`src/luazig.zig`)**: Fixed `pcallWithHandler` to compute absolute stack index `base = lua_gettop(L) - nargs` for inserting `msghandler`. Previously, `-(nargs + 2)` miscalculated stack index when `nargs == 0`, executing `msghandler` as the target chunk rather than as the error handler.

@@ -34,30 +34,34 @@ pub fn luaS_new(
 ) !*lua.lua_TString {
     const g = L.l_G orelse return error.NoGlobalState;
 
-    // 1. Check the API string cache first (content-addressed reuse).
-    const hash = luaS_hash(s, g.seed);
-    const bucket = hash % llimits.STRCACHE_N;
-    const cache = &g.strcache[bucket];
-    var j: usize = 0;
-    while (j < llimits.STRCACHE_M) : (j += 1) {
-        if (cache[j]) |ts| {
-            if (ts.len == s.len and std.mem.eql(u8, s, ts.s)) {
-                ts.marked = true;
-                return ts; // cache hit: reuse same object
+    if (s.len <= llimits.LUAI_MAXSHORTLEN) {
+        // 1. Check the API string cache first for short strings.
+        const hash = luaS_hash(s, g.seed);
+        const bucket = hash % llimits.STRCACHE_N;
+        const cache = &g.strcache[bucket];
+        var j: usize = 0;
+        while (j < llimits.STRCACHE_M) : (j += 1) {
+            if (cache[j]) |ts| {
+                if (ts.len == s.len and std.mem.eql(u8, s, ts.s)) {
+                    ts.marked = true;
+                    return ts; // cache hit: reuse same object
+                }
             }
         }
-    }
 
-    // 2. Normal route: intern short strings, create long strings fresh.
-    const ts = try createString(L, s);
+        // 2. Normal route: intern short strings.
+        const ts = try createString(L, s);
 
-    // 3. Insert into the cache (shift back, put new at front).
-    var k: usize = llimits.STRCACHE_M - 1;
-    while (k > 0) : (k -= 1) {
-        cache[k] = cache[k - 1];
+        // 3. Insert into the cache (shift back, put new at front).
+        var k: usize = llimits.STRCACHE_M - 1;
+        while (k > 0) : (k -= 1) {
+            cache[k] = cache[k - 1];
+        }
+        cache[0] = ts;
+        return ts;
+    } else {
+        return try createString(L, s);
     }
-    cache[0] = ts;
-    return ts;
 }
 
 /// Create a fresh `lua_TString`: short strings are interned in `strt`,

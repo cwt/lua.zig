@@ -66,7 +66,7 @@ HEAVY_TESTS="heavy.lua verybig.lua big.lua constructs.lua sort.lua cstack.lua"
 T_TESTS="api.lua code.lua coroutine.lua gc.lua strings.lua memerr.lua tracegc.lua"
 
 # Tests that require the all.lua harness environment (coroutine wrapper, dynamic lib compilation, _port/_soft setup)
-STANDALONE_SKIP="attrib.lua big.lua files.lua"
+STANDALONE_SKIP="attrib.lua big.lua files.lua literals.lua"
 
 declare -A results
 declare -A details

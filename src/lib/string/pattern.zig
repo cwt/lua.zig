@@ -76,14 +76,14 @@ fn classend(ms: *MatchState, p_idx: usize) anyerror!usize {
                 if (p >= ms.p_end) {
                     return lauxlib.luaL_error(ms.L, "malformed pattern (missing ']')");
                 }
-                if (ms.p[p] == '%' and p + 1 < ms.p_end) {
-                    p += 2;
-                } else if (ms.p[p] == ']') {
-                    return p + 1;
-                } else {
+                const c = ms.p[p];
+                p += 1;
+                if (c == '%' and p < ms.p_end) {
                     p += 1;
                 }
+                if (p < ms.p_end and ms.p[p] == ']') break;
             }
+            return p + 1;
         },
         else => {
             return p_idx + 1;
@@ -103,9 +103,9 @@ fn matchbracketclass(ms: *MatchState, c: u8, p_idx: usize, ec: usize) bool {
         if (ms.p[p] == '%') {
             p += 1;
             if (match_class(c, ms.p[p])) return sig;
-        } else if (p + 1 < ec and ms.p[p + 1] == '-') {
+        } else if (p + 2 < ec and ms.p[p + 1] == '-') {
             p += 2;
-            if (p < ec and ms.p[p - 2] <= c and c <= ms.p[p]) return sig;
+            if (ms.p[p - 2] <= c and c <= ms.p[p]) return sig;
         } else if (ms.p[p] == c) {
             return sig;
         }
@@ -134,12 +134,12 @@ fn matchbalance(ms: *MatchState, s: usize, p: usize) anyerror!?usize {
     const e = ms.p[p + 1];
     var cont: i32 = 1;
     var s_idx = s;
-    while (s_idx + 1 < ms.src_end) {
+    while (s_idx + 1 <= ms.src_end) {
         s_idx += 1;
-        if (ms.src[s_idx] == e) {
+        if (s_idx < ms.src_end and ms.src[s_idx] == e) {
             cont -= 1;
             if (cont == 0) return s_idx + 1;
-        } else if (ms.src[s_idx] == b) {
+        } else if (s_idx < ms.src_end and ms.src[s_idx] == b) {
             cont += 1;
         }
     }
@@ -191,9 +191,16 @@ fn end_capture(ms: *MatchState, s: usize, p: usize) anyerror!?usize {
 }
 
 fn check_capture(ms: *MatchState, l_arg: u8) !usize {
+    if (l_arg < '1') {
+        var buf: [64]u8 = undefined;
+        const msg = std.fmt.bufPrint(&buf, "invalid capture index %{c}", .{l_arg}) catch "invalid capture index";
+        return lauxlib.luaL_error(ms.L, msg);
+    }
     const l = @as(usize, @intCast(l_arg - '1'));
     if (l >= @as(usize, @intCast(ms.level)) or ms.capture[l].len == CAP_UNFINISHED) {
-        return lauxlib.luaL_error(ms.L, "invalid capture index");
+        var buf: [64]u8 = undefined;
+        const msg = std.fmt.bufPrint(&buf, "invalid capture index %{d}", .{l + 1}) catch "invalid capture index";
+        return lauxlib.luaL_error(ms.L, msg);
     }
     return l;
 }
@@ -241,6 +248,49 @@ fn match(ms: *MatchState, s: usize, p: usize) anyerror!?usize {
             ')' => {
                 s_idx = (try end_capture(ms, s_idx, p_idx + 1)) orelse return null;
                 break;
+            },
+            '^' => {
+                if (p_idx == 0) {
+                    if (s_idx != 0) return null;
+                    p_idx += 1;
+                    continue;
+                }
+                const ep = try classend(ms, p_idx);
+                if (!singlematch(ms, s_idx, p_idx, ep)) {
+                    if (ep < ms.p_end and (ms.p[ep] == '*' or ms.p[ep] == '?' or ms.p[ep] == '-')) {
+                        p_idx = ep + 1;
+                        continue;
+                    } else {
+                        return null;
+                    }
+                } else {
+                    const suffix = if (ep < ms.p_end) ms.p[ep] else 0;
+                    switch (suffix) {
+                        '?' => {
+                            if (try match(ms, s_idx + 1, ep + 1)) |res| {
+                                s_idx = res;
+                            } else {
+                                p_idx = ep + 1;
+                                continue;
+                            }
+                        },
+                        '+' => {
+                            s_idx = (try max_expand(ms, s_idx + 1, p_idx, ep)) orelse return null;
+                        },
+                        '*' => {
+                            s_idx = (try max_expand(ms, s_idx, p_idx, ep)) orelse return null;
+                        },
+                        '-' => {
+                            s_idx = (try min_expand(ms, s_idx, p_idx, ep)) orelse return null;
+                        },
+                        else => {
+                            s_idx += 1;
+                            p_idx = ep;
+                            continue;
+                        },
+                    }
+                    break;
+                }
             },
             '$' => {
                 if (p_idx + 1 == ms.p_end) {
@@ -291,7 +341,7 @@ fn match(ms: *MatchState, s: usize, p: usize) anyerror!?usize {
                 }
                 switch (ms.p[p_idx]) {
                     'b' => {
-                        s_idx = (try matchbalance(ms, s_idx, p_idx + 1)) orelse break;
+                        s_idx = (try matchbalance(ms, s_idx, p_idx + 1)) orelse return null;
                         p_idx += 3;
                         continue;
                     },
@@ -302,8 +352,9 @@ fn match(ms: *MatchState, s: usize, p: usize) anyerror!?usize {
                         }
                         const ep = try classend(ms, p_idx);
                         const previous: u8 = if (s_idx == ms.src_init) 0 else ms.src[s_idx - 1];
+                        const current: u8 = if (s_idx < ms.src_end) ms.src[s_idx] else 0;
                         if (!matchbracketclass(ms, previous, p_idx, ep - 1) and
-                            matchbracketclass(ms, ms.src[s_idx], p_idx, ep - 1))
+                            matchbracketclass(ms, current, p_idx, ep - 1))
                         {
                             p_idx = ep;
                             continue;
@@ -312,7 +363,7 @@ fn match(ms: *MatchState, s: usize, p: usize) anyerror!?usize {
                     },
                     '0'...'9' => {
                         s_idx = (try match_capture(ms, s_idx, ms.p[p_idx])) orelse return null;
-                        p_idx += 2;
+                        p_idx += 1;
                         continue;
                     },
                     else => {
@@ -414,10 +465,15 @@ fn lmemfind(s1: []const u8, l1: usize, s2: []const u8, l2: usize) ?usize {
     return null;
 }
 
-fn get_onecapture(ms: *MatchState, i: i32, s: usize, e: usize) !struct { init: usize, len: i64 } {
-    if (i >= ms.level) {
-        if (i != 0) return lauxlib.luaL_error(ms.L, "invalid capture index");
-        return .{ .init = s, .len = @as(i64, @intCast(e -| s)) };
+fn get_onecapture(ms: *MatchState, i: i32, s: ?usize, e: usize) !struct { init: usize, len: i64 } {
+    if (i < 0 or i >= ms.level) {
+        if (i != 0) {
+            var buf: [64]u8 = undefined;
+            const msg = std.fmt.bufPrint(&buf, "invalid capture index %{d}", .{i + 1}) catch "invalid capture index";
+            return lauxlib.luaL_error(ms.L, msg);
+        }
+        const s_val = s orelse 0;
+        return .{ .init = s_val, .len = @as(i64, @intCast(e -| s_val)) };
     }
     const init = ms.capture[@as(usize, @intCast(i))].init;
     const key_len = ms.capture[@as(usize, @intCast(i))].len;
@@ -428,7 +484,7 @@ fn get_onecapture(ms: *MatchState, i: i32, s: usize, e: usize) !struct { init: u
     return .{ .init = init, .len = key_len };
 }
 
-fn push_onecapture(ms: *MatchState, i: i32, s: usize, e: usize) !void {
+fn push_onecapture(ms: *MatchState, i: i32, s: ?usize, e: usize) !void {
     const cap_info = try get_onecapture(ms, i, s, e);
     if (cap_info.len != CAP_POSITION) {
         const len = @as(usize, @intCast(cap_info.len));
@@ -437,15 +493,11 @@ fn push_onecapture(ms: *MatchState, i: i32, s: usize, e: usize) !void {
 }
 
 fn push_captures(ms: *MatchState, s: ?usize, e: usize) !i32 {
-    // In the C reference `s` is a pointer: it is NULL only for the `find`
-    // position-push call, and non-NULL for a real match (even one starting at
-    // the very beginning of the string). We preserve that distinction with an
-    // optional so a zero-length match-index is not mistaken for "no match".
     const nlevels = if (ms.level == 0 and s != null) @as(i32, 1) else ms.level;
     try lauxlib.luaL_checkstack(ms.L, nlevels, "too many captures");
     var i: i32 = 0;
     while (i < nlevels) : (i += 1) {
-        try push_onecapture(ms, i, s.?, e);
+        try push_onecapture(ms, i, s, e);
     }
     return nlevels;
 }
@@ -501,13 +553,7 @@ fn str_find_aux(L: *lua.lua_State, find: bool) anyerror!i32 {
         var ms: MatchState = undefined;
         const s1 = init;
         const anchor = (p.len > 0 and p[0] == '^');
-        var p_adj = p;
-        var lp_adj = lp;
-        if (anchor) {
-            p_adj = p[1..];
-            lp_adj -= 1;
-        }
-        prepstate(&ms, L, s, ls, p_adj, lp_adj);
+        prepstate(&ms, L, s, ls, p, lp);
         var s_idx = s1;
         while (true) {
             reprepstate(&ms);
@@ -541,7 +587,7 @@ pub fn str_match(L: *lua.lua_State) anyerror!i32 {
 pub const GMatchState = struct {
     src: usize,
     p_idx: usize,
-    lastmatch: usize,
+    lastmatch: ?usize,
     ms: MatchState,
 };
 
@@ -553,7 +599,7 @@ pub fn gmatch_aux(L: *lua.lua_State) anyerror!i32 {
         reprepstate(&gm.ms);
         const e = try match(&gm.ms, src, gm.p_idx);
         if (e) |e_val| {
-            if (e_val != gm.lastmatch) {
+            if (gm.lastmatch == null or e_val != gm.lastmatch.?) {
                 gm.src = e_val;
                 gm.lastmatch = e_val;
                 return push_captures(&gm.ms, src, e_val);
@@ -568,15 +614,15 @@ pub fn gmatch(L: *lua.lua_State) anyerror!i32 {
     var lp: usize = 0;
     const s = try lauxlib.luaL_checklstring(L, 1, &ls);
     const p = try lauxlib.luaL_checklstring(L, 2, &lp);
-    const init = posrelatI(lauxlib.luaL_optinteger(L, 3, 1), ls) - 1;
+    const init_arg = lauxlib.luaL_optinteger(L, 3, 1);
+    var init = posrelatI(init_arg, ls) - 1;
     lua.lua_settop(L, 2);
     const gm = @as(*GMatchState, @ptrCast(@alignCast(lua.lua_newuserdatauv(L, @sizeOf(GMatchState), 0) orelse return 0)));
-    var adjusted_init = init;
-    if (adjusted_init > ls) adjusted_init = ls + 1;
+    if (init > ls) init = ls + 1;
     prepstate(&gm.ms, L, s, ls, p, lp);
-    gm.src = adjusted_init;
+    gm.src = init;
     gm.p_idx = 0;
-    gm.lastmatch = 0;
+    gm.lastmatch = null;
     lua.lua_pushcclosure(L, gmatch_aux, 3);
     return 1;
 }
@@ -660,13 +706,8 @@ pub fn str_gsub(L: *lua.lua_State) anyerror!i32 {
     lauxlib.luaL_buffinit(L, &b);
 
     errdefer b.buf.deinit(L.allocator);
-    var p_adj = p;
-    var lp_adj = lp;
-    if (anchor) {
-        p_adj = p[1..];
-        lp_adj -= 1;
-    }
-    prepstate(&ms, L, src, srcl, p_adj, lp_adj);
+    prepstate(&ms, L, src, srcl, p, lp);
+    var lastmatch: ?usize = null;
     var src_idx: usize = 0;
     var n: i64 = 0;
     var changed = false;
@@ -674,23 +715,19 @@ pub fn str_gsub(L: *lua.lua_State) anyerror!i32 {
         reprepstate(&ms);
         const e = try match(&ms, src_idx, 0);
         if (e) |e_val| {
-            if (e_val != ms.src_init) { // lastmatch check
+            if (lastmatch == null or e_val != lastmatch.?) {
                 n += 1;
                 changed = (try add_value(&ms, &b, src_idx, e_val, tr)) or changed;
                 src_idx = e_val;
-            } else {
-                // skip one char
-                if (src_idx < ms.src_end) {
-                    try lauxlib.luaL_addchar(L, &b, ms.src[src_idx]);
-                    src_idx += 1;
-                } else break;
-            }
-        } else {
-            if (src_idx < ms.src_end) {
+                lastmatch = e_val;
+            } else if (src_idx < ms.src_end) {
                 try lauxlib.luaL_addchar(L, &b, ms.src[src_idx]);
                 src_idx += 1;
             } else break;
-        }
+        } else if (src_idx < ms.src_end) {
+            try lauxlib.luaL_addchar(L, &b, ms.src[src_idx]);
+            src_idx += 1;
+        } else break;
         if (anchor) break;
     }
     if (!changed) {
