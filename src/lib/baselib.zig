@@ -591,6 +591,9 @@ fn tonumber(L: *lua.lua_State) anyerror!i32 {
             lua.lua_pushnil(L);
             return 1;
         }
+        try lauxlib.luaL_checkany(L, 1);
+        lua.lua_pushnil(L);
+        return 1;
     } else {
         const base = try lauxlib.luaL_checkinteger(L, 2);
         if (base < 2 or base > 36) {

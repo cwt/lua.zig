@@ -209,7 +209,7 @@ const DumpState = struct {
         self.dumpConstants(f);
         self.dumpUpvalues(f);
         self.dumpProtos(f, strip);
-        self.dumpString(f.source);
+        self.dumpString(if (strip) null else f.source);
         self.dumpDebug(f, strip);
     }
 

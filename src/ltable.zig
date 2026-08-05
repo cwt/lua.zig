@@ -97,12 +97,12 @@ inline fn hashKey(key: TValue, len: usize) usize {
         .integer => |n| hashBits(@bitCast(@as(f64, @floatFromInt(n)))),
         .string => |ts| if (ts) |s| s.hash else 0,
         .boolean => |b| if (b) 1 else 0,
-        .lightud => |p| if (p) |q| @intFromPtr(q) else 0,
-        .userdata => |p| if (p) |q| @intFromPtr(q) else 0,
-        .function => |p| if (p) |q| @intFromPtr(q) else 0,
-        .table => |p| if (p) |q| @intFromPtr(q) else 0,
-        .thread => |p| if (p) |q| @intFromPtr(q) else 0,
-        .proto => |p| if (p) |q| @intFromPtr(q) else 0,
+        .lightud => |p| if (p) |q| hashBits(@intFromPtr(q)) else 0,
+        .userdata => |p| if (p) |q| hashBits(@intFromPtr(q)) else 0,
+        .function => |p| if (p) |q| hashBits(@intFromPtr(q)) else 0,
+        .table => |p| if (p) |q| hashBits(@intFromPtr(q)) else 0,
+        .thread => |p| if (p) |q| hashBits(@intFromPtr(q)) else 0,
+        .proto => |p| if (p) |q| hashBits(@intFromPtr(q)) else 0,
         else => 0,
     };
     return h & mask;
@@ -169,10 +169,10 @@ fn findNodeIndex(t: *Table, key: TValue) ?usize {
     const mp = hashKey(key, len);
     var n = mp;
     while (true) {
-        if (t.node.items[n].key == .nil) return null;
         if (keyEquals(t.node.items[n].key, key)) return n;
-        if (t.node.items[n].next == -1) return null;
-        n = @intCast(t.node.items[n].next);
+        const next_idx = t.node.items[n].next;
+        if (next_idx < 0 or next_idx >= len) return null;
+        n = @intCast(next_idx);
     }
 }
 
@@ -234,7 +234,6 @@ inline fn getHash(t: *Table, key: TValue) TValue {
     const mp = hashKey(key, len);
     var n = mp;
     while (true) {
-        if (t.node.items[n].key == .nil) return TValue{ .nil = {} };
         if (keyEquals(t.node.items[n].key, key)) return t.node.items[n].val;
         const next_idx = t.node.items[n].next;
         if (next_idx < 0 or next_idx >= len) return TValue{ .nil = {} };
@@ -254,7 +253,6 @@ inline fn getStr(t: *Table, key: *const TString) TValue {
     var n = mp;
     while (true) {
         const k = t.node.items[n].key;
-        if (k == .nil) return TValue{ .nil = {} };
         if (k == .string) {
             if (k.string) |ks| {
                 // Interned strings are unique per content, so pointer identity
@@ -330,7 +328,6 @@ fn setHash(t: *Table, key: TValue, val: TValue) anyerror!void {
     const mp = hashKey(key, len);
     var n = mp;
     while (true) {
-        if (t.node.items[n].key == .nil) break;
         if (keyEquals(t.node.items[n].key, key)) {
             t.node.items[n].val = val;
             return;

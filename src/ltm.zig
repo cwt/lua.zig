@@ -44,6 +44,23 @@ pub fn luaT_init(L: *lua.lua_State) !void {
     }
 }
 
+pub fn luaT_objtypename(L: *lua.lua_State, o: lua.TValue) []const u8 {
+    const mt: ?*lua.lua_Table = switch (o) {
+        .table => |t_opt| if (t_opt) |t| t.metatable else null,
+        .userdata => |u_opt| if (u_opt) |u| u.metatable else null,
+        else => null,
+    };
+    if (mt) |m| {
+        if (lstring.luaS_new(L, "__name")) |name_ts| {
+            const name_val = ltable.get(m, lua.TValue{ .string = name_ts });
+            if (name_val == .string) {
+                if (name_val.string) |s| return s.s;
+            }
+        } else |_| {}
+    }
+    return lua.lua_typename(o.typ());
+}
+
 pub inline fn checknoTM(mt: ?*lua.lua_Table, event: TMS) bool {
     if (mt) |m| {
         return (m.flags & (@as(u8, 1) << @intCast(@intFromEnum(event)))) != 0;
@@ -204,14 +221,17 @@ pub fn luaT_trybinTM(L: *lua.lua_State, p1: *const lua.TValue, p2: *const lua.TV
                 if (p1.isNumberValue() and p2.isNumberValue()) {
                     return lua.luaG_tointerror(L, p1.*);
                 } else {
-                    return lua.luaG_opinterror(L, p1.*, p2.*, "perform bitwise operation on");
+                    return lua.luaG_opinterror(L, p1, p2, "perform bitwise operation on");
                 }
             },
             .LEN => {
-                return lua.luaG_typeerror(L, p1.*, "get length of");
+                return lua.luaG_typeerrorPtr(L, p1, "get length of");
+            },
+            .CONCAT => {
+                return lua.luaG_opinterror(L, p1, p2, "concatenate");
             },
             else => {
-                return lua.luaG_opinterror(L, p1.*, p2.*, "perform arithmetic on");
+                return lua.luaG_opinterror(L, p1, p2, "perform arithmetic on");
             },
         }
     }
@@ -428,9 +448,8 @@ const MAXTAGLOOP: usize = 2000;
 ///   - If `__index` is a function, calls it and returns the result.
 ///   - If `__index` is a table, recurses into that table.
 /// Errors with `error.RuntimeError` when no metamethod exists.
-pub inline fn luaV_gettable(L: *lua.lua_State, t: lua.TValue, key: lua.TValue, res: usize) !void {
-    // Fast path: a plain table with no metatable cannot have an __index, so a
-    // hit returns the value and a miss returns nil — no metamethod machinery.
+pub inline fn luaV_gettable(L: *lua.lua_State, t_ptr: *const lua.TValue, key: lua.TValue, res: usize) !void {
+    const t = t_ptr.*;
     if (t == .table) {
         if (t.table) |tbl| {
             if (tbl.metatable == null) {
@@ -473,9 +492,11 @@ pub inline fn luaV_gettable(L: *lua.lua_State, t: lua.TValue, key: lua.TValue, r
             // Not a table — try __index metamethod on this type
             const tm = luaT_gettmbyobj(L, current, .INDEX);
             if (tm == .nil) {
-                var buf8: [128]u8 = undefined;
-                const formatted = std.fmt.bufPrint(&buf8, "attempt to index a {s} value", .{lua.lua_typename(current.typ())}) catch "attempt to index a value";
-                try lua.luaG_runerror(L, formatted);
+                if (loop == 0) {
+                    return lua.luaG_typeerrorPtr(L, t_ptr, "index");
+                } else {
+                    return lua.luaG_typeerror(L, current, "index");
+                }
             }
             if (tm == .function) {
                 _ = try luaT_callTMres(L, tm, &current, &key, res);
@@ -494,9 +515,8 @@ pub inline fn luaV_gettable(L: *lua.lua_State, t: lua.TValue, key: lua.TValue, r
 ///   - If `__newindex` is a function, calls it.
 ///   - If `__newindex` is a table, recurses into that table.
 /// Errors with `error.RuntimeError` when no metamethod exists.
-pub inline fn luaV_settable(L: *lua.lua_State, t: lua.TValue, key: lua.TValue, val: lua.TValue) !void {
-    // Fast path: a plain table with no metatable cannot have a __newindex, so a
-    // raw write is always correct.
+pub inline fn luaV_settable(L: *lua.lua_State, t_ptr: *const lua.TValue, key: lua.TValue, val: lua.TValue) !void {
+    const t = t_ptr.*;
     if (t == .table) {
         if (t.table) |tbl| {
             if (tbl.metatable == null) {
@@ -556,7 +576,11 @@ pub inline fn luaV_settable(L: *lua.lua_State, t: lua.TValue, key: lua.TValue, v
         } else {
             const tm = luaT_gettmbyobj(L, current, .NEWINDEX);
             if (tm == .nil) {
-                return error.RuntimeError;
+                if (loop == 0) {
+                    return lua.luaG_typeerrorPtr(L, t_ptr, "index");
+                } else {
+                    return lua.luaG_typeerror(L, current, "index");
+                }
             }
             if (tm == .function) {
                 try luaT_callTM(L, tm, &current, &key, &val);
@@ -696,6 +720,10 @@ fn buildhiddenargs(L: *lua.lua_State, ci: *lua.CallInfo, totalargs: i32, nfixpar
     // all live registers of the relocated frame (otherwise auxiliary calls
     // such as metamethod invocations clobber them).
     L.top = ci.top;
+    const local_start = ci.func + nfixparams + 1;
+    if (local_start < ci.top) {
+        @memset(L.stack[local_start..ci.top], .{ .nil = {} });
+    }
 }
 
 // lua/ltm.c luaT_getvarargs
@@ -708,13 +736,7 @@ pub fn luaT_getvarargs(L: *lua.lua_State, ci: *lua.CallInfo, where_idx: usize, w
         touse = nargs;
         wanted = nargs;
         const need = where_idx + @as(usize, @intCast(nargs)) + 1;
-        if (need > L.stack.len) {
-            const old_len = L.stack.len;
-            const new_len = @max(L.stack.len * 2, need);
-            L.stack = try L.allocator.realloc(L.stack, new_len);
-            @memset(L.stack[old_len..], .{ .nil = {} });
-            L.stack_last = L.stack.len - 1;
-        }
+        try lua.growStack(L, need);
         L.top = where_idx + @as(usize, @intCast(nargs));
     } else {
         touse = if (nargs > wanted) wanted else nargs;

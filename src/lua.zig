@@ -112,7 +112,7 @@ pub const lua_Debug = struct {
     nups: u8,
     nparams: u8,
     isvararg: bool,
-    extraargs: u8,
+    extraargs: i32,
     istailcall: bool,
     ftransfer: i32,
     ntransfer: i32,
@@ -582,8 +582,13 @@ pub fn closeupvals(L: *lua_State, limit: usize, err_val: ?TValue) !void {
 pub fn luaD_hook(L: *lua_State, event: i32, line: i32, ftransfer: i32, ntransfer: i32) void {
     const hook = L.hook;
     if (hook != null and L.allowhook != 0) {
+        const old_oldpc = L.oldpc;
+        defer L.oldpc = old_oldpc;
         const old_top = L.top;
         const ci = L.ci.?;
+        const old_is_hooked = ci.is_hooked;
+        ci.is_hooked = true;
+        defer ci.is_hooked = old_is_hooked;
         const old_ci_top = ci.top;
         var ar = lua_Debug{
             .event = event,
@@ -628,6 +633,56 @@ pub fn luaD_hook(L: *lua_State, event: i32, line: i32, ftransfer: i32, ntransfer
     }
 }
 
+pub fn luaG_traceexec(L: *lua_State) void {
+    if (L.hookmask == 0) return;
+    const ci = L.ci orelse return;
+    if (!isLua(ci, L)) return;
+    const val = L.stack[ci.func];
+    if (val != .function or val.function == null or val.function.?.* != .lua) return;
+    const p = val.function.?.lua.p;
+    const mask = L.hookmask;
+    const pc: i32 = currentpc(ci);
+    if (pc >= 0 and @as(usize, @intCast(pc)) < p.code.len) {
+        const op = @as(lvm.OpCode, @enumFromInt(p.code[@intCast(pc)] & 0x7F));
+        if (op == .VARARGPREP) {
+            L.oldpc = -1;
+            return;
+        }
+    }
+
+    var counthook = false;
+    if ((mask & llimits.LUA_MASKCOUNT) != 0) {
+        if (L.hookcount > 0) {
+            L.hookcount -= 1;
+        }
+        if (L.hookcount == 0) {
+            counthook = true;
+            L.hookcount = L.basehookcount;
+        }
+    }
+
+    if (counthook) {
+        luaD_hook(L, LUA_HOOKCOUNT, -1, 0, 0);
+    }
+
+    if ((mask & llimits.LUA_MASKLINE) != 0) {
+        const oldpc: i32 = @intCast(L.oldpc);
+        if (oldpc == -1 or pc < oldpc or changedline(p, oldpc, pc)) {
+            const newline = luaG_getfuncline(p, pc);
+            if (newline > 0) {
+                luaD_hook(L, LUA_HOOKLINE, newline, 0, 0);
+            }
+        }
+        L.oldpc = @intCast(pc);
+    }
+}
+
+fn changedline(p: *const lua_Proto, oldpc: i32, newpc: i32) bool {
+    const line1 = luaG_getfuncline(p, oldpc);
+    const line2 = luaG_getfuncline(p, newpc);
+    return line1 != line2;
+}
+
 pub fn poscall(L: *lua_State, ci: *CallInfo, first_result_idx: usize, n: usize) !void {
     L.top = first_result_idx + n;
     try closeupvals(L, ci.base, null);
@@ -647,6 +702,8 @@ pub fn poscall(L: *lua_State, ci: *CallInfo, first_result_idx: usize, n: usize) 
     }
     const func_idx = ci.func;
     const nresults = ci.nresults;
+    const old_top = L.top;
+    var new_top: usize = undefined;
     if (nresults >= 0) {
         const copy_count = @min(@as(usize, @intCast(nresults)), n);
         var i: usize = 0;
@@ -656,13 +713,22 @@ pub fn poscall(L: *lua_State, ci: *CallInfo, first_result_idx: usize, n: usize) 
         while (i < @as(usize, @intCast(nresults))) : (i += 1) {
             L.stack[func_idx + i] = .{ .nil = {} };
         }
-        L.top = func_idx + @as(usize, @intCast(nresults));
+        new_top = func_idx + @as(usize, @intCast(nresults));
     } else {
         var i: usize = 0;
         while (i < n) : (i += 1) {
             L.stack[func_idx + i] = L.stack[first_result_idx + i];
         }
-        L.top = func_idx + n;
+        new_top = func_idx + n;
+    }
+    if (new_top < old_top) {
+        @memset(L.stack[new_top..@min(old_top, L.stack.len)], .{ .nil = {} });
+    }
+    L.top = new_top;
+    if (ci.previous) |prev| {
+        if (isLua(prev, L)) {
+            L.oldpc = currentpc(prev);
+        }
     }
 }
 
@@ -751,7 +817,7 @@ const PF_VATAB: u8 = 2; // function has a vararg table
             L.nCcalls += 1;
             defer L.nCcalls -= 1;
             if (L.nCcalls >= llimits.LUAI_MAXCCALLS) {
-                return error.StackOverflow;
+                try luaG_runerror(L, "C stack overflow");
             }
             if (lua_checkstack(L, 20) == 0) return error.StackOverflow;
             const old_ci = L.ci;
@@ -770,6 +836,9 @@ const PF_VATAB: u8 = 2; // function has a vararg table
                 prev.next = new_ci;
             }
             L.ci = new_ci;
+            if (L.hookmask & llimits.LUA_MASKCALL != 0) {
+                luaD_hook(L, LUA_HOOKCALL, -1, 0, 0);
+            }
             const n = cc.f(L) catch |e| {
                 if (e == error.Yield) {
                     return error.Yield;
@@ -813,29 +882,7 @@ const PF_VATAB: u8 = 2; // function has a vararg table
             const base_idx = func_idx + 1;
             const frame_top = base_idx + proto.maxStackSize;
              const is_vararg = (proto.flag & (PF_VAHID | PF_VATAB)) != 0;
-             if (frame_top >= L.stack.len) {
-                const old_len = L.stack.len;
-                var new_len = @max(L.stack.len * 2, frame_top + 10);
-                const max_limit = llimits.ERRORSTACKSIZE;
-                if (new_len > max_limit) new_len = max_limit;
-                const old_ptr = L.stack.ptr;
-                const old_base = @intFromPtr(old_ptr);
-                const old_end = old_base + old_len * @sizeOf(TValue);
-                L.stack = try L.allocator.realloc(L.stack, new_len);
-                {
-                    var curr = L.openupval;
-                    while (curr) |uv| {
-                        const uv_addr = @intFromPtr(uv.v);
-                        if (uv_addr >= old_base and uv_addr < old_end) {
-                            const uv_idx = (uv_addr -| old_base) / @sizeOf(TValue);
-                            uv.v = &L.stack[uv_idx];
-                        }
-                        curr = uv.next;
-                    }
-                }
-                @memset(L.stack[old_len..], .{ .nil = {} });
-                L.stack_last = L.stack.len - 1;
-            }
+            try growStack(L, frame_top + 1);
             const num_args_passed = L.top - base_idx;
             if (num_args_passed < num_params) {
                 var i = num_args_passed;
@@ -854,10 +901,13 @@ const PF_VATAB: u8 = 2; // function has a vararg table
                 .previous = L.ci,
                 .next = null,
                 .nextraargs = @intCast(ccmt),
+                .is_lua = true,
+                .is_hooked = (L.allowhook == 0),
             };
             if (L.ci) |prev| {
                 prev.next = new_ci;
             }
+            L.oldpc = -1;
             // For non-vararg Lua functions, lift 'L->top' to the frame top so
             // that auxiliary calls (e.g. metamethod invocations via
             // luaT_callTMres) are placed above all live registers, matching the
@@ -870,6 +920,9 @@ const PF_VATAB: u8 = 2; // function has a vararg table
                 L.top = frame_top;
             }
             L.ci = new_ci;
+            if (L.hookmask & llimits.LUA_MASKCALL != 0) {
+                luaD_hook(L, LUA_HOOKCALL, -1, 0, 0);
+            }
             return new_ci;
         },
     }
@@ -906,6 +959,8 @@ pub const CallInfo = struct {
     // Mirrors C reference ci->u2.nres / CIST_CLSRET.
     nres_saved: i32 = 0,
     clsret: bool = false,
+    is_lua: bool = false,
+    is_hooked: bool = false,
 };
 
 pub const GCColor = enum(u2) {
@@ -987,7 +1042,19 @@ pub fn registerGC(L: *lua_State, val: anytype) !void {
     gc.* = .{
         .next = g.allgc,
         .val = union_val,
+        .color = if (g.gc_in_progress) .black else .white,
     };
+    switch (union_val) {
+        .table => |t| t.gc = gc,
+        .closure => |cl| switch (cl.*) {
+            .c => |cc| cc.gc = gc,
+            .lua => |lc| lc.gc = gc,
+        },
+        .userdata => |ud| ud.gc = gc,
+        .proto => |pr| pr.gc = gc,
+        .string => |ts| ts.gc = gc,
+        .upval => |uv| uv.gc = gc,
+    }
     g.allgc = gc;
     g.gc_count += 1;
 
@@ -1061,7 +1128,7 @@ pub const lua_State = struct {
     allocator: std.mem.Allocator,
 };
 
-fn idxPtr(L: *lua_State, idx: i32) ?*TValue {
+pub fn idxPtr(L: *lua_State, idx: i32) ?*TValue {
     if (idx > 0) {
         // Positive indices are frame-relative: 1 = ci.base, 2 = ci.base+1, etc.
         // If there is no active call frame, treat as 1-based absolute index.
@@ -1107,12 +1174,8 @@ fn toAbsoluteIndex(L: *lua_State, idx: i32) usize {
 }
 
 pub fn lua_absindex(L: *lua_State, idx: i32) i32 {
-    // C reference: (idx > 0 || idx <= LUA_REGISTRYINDEX) ? idx : lua_gettop(L) + 1 + idx
     if (idx > 0 or idx <= LUA_REGISTRYINDEX) return idx;
-    const base: usize = if (L.ci) |ci| ci.base else 0;
-    // Negative stack index: convert to positive relative to base
-    const abs_idx = toAbsoluteIndex(L, idx);
-    return @as(i32, @intCast(abs_idx - base)) + 1;
+    return lua_gettop(L) + idx + 1;
 }
 
 pub fn lua_gettop(L: *lua_State) i32 {
@@ -1212,34 +1275,34 @@ pub fn lua_copy(L: *lua_State, fromidx: i32, toidx: i32) void {
     dst.* = src.*;
 }
 
+pub fn growStack(L: *lua_State, needed: usize) !void {
+    if (needed <= L.stack.len) return;
+    const old_ptr = L.stack.ptr;
+    const old_len = L.stack.len;
+    const old_base = @intFromPtr(old_ptr);
+    const old_end = old_base + old_len * @sizeOf(TValue);
+    const new_cap = @min(@max(L.stack.len * 2, needed + LUA_MINSTACK + 20), llimits.ERRORSTACKSIZE);
+    L.stack = try L.allocator.realloc(L.stack, new_cap);
+    var curr = L.openupval;
+    while (curr) |uv| {
+        const uv_addr = @intFromPtr(uv.v);
+        if (uv_addr >= old_base and uv_addr < old_end) {
+            const uv_idx = (uv_addr -| old_base) / @sizeOf(TValue);
+            uv.v = &L.stack[uv_idx];
+        }
+        curr = uv.next;
+    }
+    @memset(L.stack[old_len..], .{ .nil = {} });
+    L.stack_last = L.stack.len - 1;
+}
+
 pub fn lua_checkstack(L: *lua_State, n: i32) i32 {
     if (n <= 0) return 1;
     const extra = @as(usize, @intCast(n));
     if (extra > llimits.LUAI_MAXSTACK) return 0;
     const needed = L.top + extra;
     if (needed > llimits.LUAI_MAXSTACK) return 0;
-    if (needed <= L.stack.len) return 1;
-    const new_cap = @min(needed + LUA_MINSTACK + 20, llimits.ERRORSTACKSIZE);
-    const old_ptr = L.stack.ptr;
-    const old_len = L.stack.len;
-    const old_base = @intFromPtr(old_ptr);
-    const old_end = old_base + old_len * @sizeOf(TValue);
-    L.stack = L.allocator.realloc(L.stack, new_cap) catch return 0;
-    {
-        var curr = L.openupval;
-        while (curr) |uv| {
-            const uv_addr = @intFromPtr(uv.v);
-            if (uv_addr >= old_base and uv_addr < old_end) {
-                const uv_idx = (uv_addr -| old_base) / @sizeOf(TValue);
-                uv.v = &L.stack[uv_idx];
-            }
-            curr = uv.next;
-        }
-    }
-    for (L.stack[old_len..]) |*item| {
-        item.* = .{ .nil = {} };
-    }
-    L.stack_last = L.stack.len - 1;
+    growStack(L, needed) catch return 0;
     return 1;
 }
 
@@ -1372,7 +1435,7 @@ pub fn lua_type(L: *lua_State, idx: i32) i32 {
 
 pub fn lua_typename(tp: i32) []const u8 {
     return switch (tp) {
-        LUA_TNONE => "none",
+        LUA_TNONE => "no value",
         LUA_TNIL => "nil",
         LUA_TBOOLEAN => "boolean",
         LUA_TLIGHTUSERDATA => "light userdata",
@@ -2084,6 +2147,7 @@ pub fn lua_sethook(L: *lua_State, func: ?lua_Hook, mask: i32, count: i32) void {
     L.basehookcount = count;
     L.hookcount = count;
     L.hookmask = @intCast(actual_mask);
+    L.oldpc = -1;
 }
 
 pub fn lua_gethook(L: *lua_State) ?lua_Hook {
@@ -2181,6 +2245,7 @@ fn upvalname(p: *const lua_Proto, uv: usize) []const u8 {
         if (p.upvalues[uv].name) |s| {
             return s.s;
         }
+        if (uv == 0) return "_ENV";
     }
     return "?";
 }
@@ -2309,6 +2374,18 @@ fn funcnamefromcode(L: *lua_State, p: *const lua_Proto, pc: i32, name: *?[]const
                 tm = @enumFromInt(tm_idx);
             }
         },
+        .ADD, .ADDK, .ADDI => tm = .ADD,
+        .SUB, .SUBK => tm = .SUB,
+        .MUL, .MULK => tm = .MUL,
+        .MOD, .MODK => tm = .MOD,
+        .POW, .POWK => tm = .POW,
+        .DIV, .DIVK => tm = .DIV,
+        .IDIV, .IDIVK => tm = .IDIV,
+        .BAND, .BANDK => tm = .BAND,
+        .BOR, .BORK => tm = .BOR,
+        .BXOR, .BXORK => tm = .BXOR,
+        .SHL, .SHLI => tm = .SHL,
+        .SHR, .SHRI => tm = .SHR,
         .UNM => tm = .UNM,
         .BNOT => tm = .BNOT,
         .LEN => tm = .LEN,
@@ -2345,23 +2422,20 @@ fn funcnamefromcall(L: *lua_State, ci: *CallInfo, name: *?[]const u8) ?[]const u
 
 fn getfuncname(L: *lua_State, ci: ?*CallInfo, name: *?[]const u8) ?[]const u8 {
     if (ci) |c| {
+        if (c.is_hooked) {
+            name.* = "?";
+            return "hook";
+        }
         if (c.previous) |prev| {
-            if (prev != &L.base_ci) {
-                return funcnamefromcall(L, prev, name);
-            }
+            return funcnamefromcall(L, prev, name);
         }
     }
     return null;
 }
 
 pub fn isLua(ci: *CallInfo, L: *lua_State) bool {
-    const val = L.stack[ci.func];
-    if (val == .function) {
-        if (val.function) |cl| {
-            return cl.* == .lua;
-        }
-    }
-    return false;
+    _ = L;
+    return ci.is_lua;
 }
 
 pub fn currentpc(ci: *CallInfo) i32 {
@@ -2393,6 +2467,12 @@ pub fn luaG_findlocal(L: *lua_State, ci: *CallInfo, n: i32, pos: *?usize) ?[]con
     const is_lua = isLua(ci, L);
     if (is_lua) {
         if (n < 0) {
+            const nextra = ci.nextraargs;
+            if (-n <= nextra) {
+                const un = @as(usize, @intCast(-n));
+                pos.* = ci.func - @as(usize, @intCast(nextra)) + (un - 1);
+                return "(vararg)";
+            }
             return null;
         } else {
             const val = L.stack[ci.func];
@@ -2459,13 +2539,11 @@ pub fn luaO_chunkid(out: *[LUA_IDSIZE]u8, source: []const u8) void {
     const bufflen = LUA_IDSIZE;
     @memset(out, 0);
 
-    if (source.len == 0) return;
-
-    if (source[0] == '=') {
+    if (source.len > 0 and source[0] == '=') {
         const src = source[1..];
         const len = @min(src.len, bufflen - 1);
         @memcpy(out[0..len], src[0..len]);
-    } else if (source[0] == '@') {
+    } else if (source.len > 0 and source[0] == '@') {
         const src = source[1..];
         if (src.len < bufflen) {
             @memcpy(out[0..src.len], src);
@@ -2565,7 +2643,7 @@ pub fn luaG_getfuncline(f: *const lua_Proto, pc: i32) i32 {
         var basepc: i32 = undefined;
         var baseline = getbaseline(f, pc, &basepc);
         basepc += 1;
-        while (basepc < pc) {
+        while (basepc <= pc) {
             if (basepc >= 0 and @as(usize, @intCast(basepc)) < f.lineinfo.len) {
                 baseline += @as(i32, f.lineinfo[@as(usize, @intCast(basepc))]);
             }
@@ -2604,7 +2682,6 @@ fn collectvalidlines(L: *lua_State, cl: *lua_Closure) !void {
         .lua => |lcl| {
             const p = lcl.p;
             lua_createtable(L, 0, 0);
-            const tbl_idx = L.top - 1;
             if (p.lineinfo.len > 0) {
                 var currentline = p.lineDefined;
                 var i: usize = 0;
@@ -2615,7 +2692,7 @@ fn collectvalidlines(L: *lua_State, cl: *lua_Closure) !void {
                 while (i < p.lineinfo.len) {
                     currentline = nextline(p, currentline, @intCast(i));
                     lua_pushboolean(L, 1);
-                    try lua_seti(L, @intCast(tbl_idx), currentline);
+                    lua_rawseti(L, -2, currentline);
                     i += 1;
                 }
             }
@@ -2681,7 +2758,7 @@ pub fn lua_getinfo(L: *lua_State, what: []const u8, ar: *lua_Debug) !i32 {
             },
             't' => {
                 ar.istailcall = false;
-                ar.extraargs = if (ci) |info_ci| @as(u8, @intCast(@max(0, info_ci.nextraargs))) else 0;
+                ar.extraargs = if (ci) |info_ci| @intCast(@max(0, info_ci.nextraargs)) else 0;
             },
             'n' => {
                 var name_opt: ?[]const u8 = null;
@@ -2775,27 +2852,33 @@ pub fn lua_getglobal(L: *lua_State, name: []const u8) i32 {
 }
 
 fn getTable(L: *lua_State, idx: i32) ?*lua_Table {
-    const v = stackAt(L, idx);
-    if (v == .table) return v.table;
+    const ptr = idxPtr(L, idx) orelse return null;
+    if (ptr.* == .table) return ptr.table;
     return null;
 }
 
 pub fn lua_gettable(L: *lua_State, idx: i32) !i32 {
-    const obj = stackAt(L, idx);
-    if (obj == .nil) {
+    const obj_ptr = idxPtr(L, idx) orelse {
+        lua_pushnil(L);
+        return LUA_TNIL;
+    };
+    if (obj_ptr.* == .nil) {
         lua_pushnil(L);
         return LUA_TNIL;
     }
     const key = L.stack[L.top - 1];
     const res = L.top - 1;
-    try ltm.luaV_gettable(L, obj, key, res);
+    try ltm.luaV_gettable(L, obj_ptr, key, res);
     L.top = res + 1;
     return L.stack[res].typ();
 }
 
 pub fn lua_getfield(L: *lua_State, idx: i32, k: []const u8) !i32 {
-    const obj = stackAt(L, idx);
-    if (obj == .nil) {
+    const obj_ptr = idxPtr(L, idx) orelse {
+        lua_pushnil(L);
+        return LUA_TNIL;
+    };
+    if (obj_ptr.* == .nil) {
         lua_pushnil(L);
         return LUA_TNIL;
     }
@@ -2804,14 +2887,17 @@ pub fn lua_getfield(L: *lua_State, idx: i32, k: []const u8) !i32 {
     const res = L.top;
     L.stack[L.top] = .{ .nil = {} };
     L.top += 1;
-    try ltm.luaV_gettable(L, obj, key, res);
+    try ltm.luaV_gettable(L, obj_ptr, key, res);
     L.top = res + 1;
     return L.stack[res].typ();
 }
 
 pub fn lua_geti(L: *lua_State, idx: i32, n: lua_Integer) !i32 {
-    const obj = stackAt(L, idx);
-    if (obj == .nil) {
+    const obj_ptr = idxPtr(L, idx) orelse {
+        lua_pushnil(L);
+        return LUA_TNIL;
+    };
+    if (obj_ptr.* == .nil) {
         lua_pushnil(L);
         return LUA_TNIL;
     }
@@ -2819,7 +2905,7 @@ pub fn lua_geti(L: *lua_State, idx: i32, n: lua_Integer) !i32 {
     const res = L.top;
     L.stack[L.top] = .{ .nil = {} };
     L.top += 1;
-    try ltm.luaV_gettable(L, obj, key, res);
+    try ltm.luaV_gettable(L, obj_ptr, key, res);
     L.top = res + 1;
     return L.stack[res].typ();
 }
@@ -2960,38 +3046,47 @@ pub fn lua_setglobal(L: *lua_State, name: []const u8) void {
 }
 
 pub fn lua_settable(L: *lua_State, idx: i32) !void {
-    const obj = stackAt(L, idx);
-    if (obj == .nil) {
+    const obj_ptr = idxPtr(L, idx) orelse {
+        L.top -= 2;
+        return;
+    };
+    if (obj_ptr.* == .nil) {
         L.top -= 2;
         return;
     }
     const key = L.stack[L.top - 2];
     const val = L.stack[L.top - 1];
     L.top -= 2;
-    try ltm.luaV_settable(L, obj, key, val);
+    try ltm.luaV_settable(L, obj_ptr, key, val);
 }
 
 pub fn lua_setfield(L: *lua_State, idx: i32, k: []const u8) !void {
-    const obj = stackAt(L, idx);
-    if (obj == .nil) {
+    const obj_ptr = idxPtr(L, idx) orelse {
+        L.top -= 1;
+        return;
+    };
+    if (obj_ptr.* == .nil) {
         L.top -= 1;
         return;
     }
     const ts = try lstring.luaS_new(L, k);
     const val = L.stack[L.top - 1];
     L.top -= 1;
-    try ltm.luaV_settable(L, obj, TValue{ .string = ts }, val);
+    try ltm.luaV_settable(L, obj_ptr, TValue{ .string = ts }, val);
 }
 
 pub fn lua_seti(L: *lua_State, idx: i32, n: lua_Integer) !void {
-    const obj = stackAt(L, idx);
-    if (obj == .nil) {
+    const obj_ptr = idxPtr(L, idx) orelse {
+        L.top -= 1;
+        return;
+    };
+    if (obj_ptr.* == .nil) {
         L.top -= 1;
         return;
     }
     const val = L.stack[L.top - 1];
     L.top -= 1;
-    try ltm.luaV_settable(L, obj, TValue{ .integer = n }, val);
+    try ltm.luaV_settable(L, obj_ptr, TValue{ .integer = n }, val);
 }
 
 /// Raw (no metamethod) set — key and value are on top of stack.
@@ -3262,7 +3357,30 @@ pub inline fn lua_pcall(L: *lua_State, nargs: i32, nresults: i32, errfunc: i32) 
 /// `luaG_runerror`. Returns `!lua.TValue` so it can be used as a function's
 /// error return regardless of the function's success payload type.
 pub fn luaG_runerror(L: *lua_State, msg: []const u8) !void {
-    const ts = lstring.luaS_new(L, msg) catch null;
+    var full_msg: [512]u8 = undefined;
+    var final_msg = msg;
+    if (L.ci) |ci| {
+        if (isLua(ci, L)) {
+            const val = L.stack[ci.func];
+            if (val == .function and val.function != null and val.function.?.* == .lua) {
+                const proto = val.function.?.lua.p;
+                if (proto.source) |src| {
+                    var chunkid_buf: [LUA_IDSIZE]u8 = undefined;
+                    luaO_chunkid(&chunkid_buf, src.s);
+                    const chunkid = std.mem.sliceTo(&chunkid_buf, 0);
+                    const line = luaG_getfuncline(proto, currentpc(ci));
+                    if (std.fmt.bufPrint(&full_msg, "{s}:{d}: {s}", .{ chunkid, line, msg })) |formatted| {
+                        final_msg = formatted;
+                    } else |_| {}
+                } else {
+                    if (std.fmt.bufPrint(&full_msg, "?:?: {s}", .{msg})) |formatted| {
+                        final_msg = formatted;
+                    } else |_| {}
+                }
+            }
+        }
+    }
+    const ts = lstring.luaS_new(L, final_msg) catch null;
     if (ts) |t| {
         L.stack[L.top] = TValue{ .string = t };
         L.top += 1;
@@ -3288,31 +3406,72 @@ fn tvEqual(a: TValue, b: TValue) bool {
 /// Mirror PUC-Rio `varinfo`: locate `o` in the current Lua frame and build a
 /// description such as ` (field 'huge')` or ` (global 'x')`, written into `buf`.
 /// Returns the slice of `buf` used, or `""` if unknown.
-fn luaG_varinfo(L: *lua_State, o: TValue, buf: []u8) []u8 {
-    const ci = L.ci orelse return "";
-    if (!isLua(ci, L)) return "";
+fn luaG_varinfo(L: *lua_State, o_ptr: *const TValue, buf: []u8) []u8 {
+    var ci = L.ci orelse return "";
+    if (!isLua(ci, L)) {
+        ci = ci.previous orelse return "";
+        if (!isLua(ci, L)) return "";
+    }
     if (ci.func >= L.stack.len) return "";
     const val = L.stack[ci.func];
     if (val != .function or val.function == null) return "";
     const cl = val.function.?;
     if (cl.* != .lua) return "";
-    const p = cl.lua.p;
-    const base = ci.base;
-    // Find the register holding a value equal to `o` (instack by value).
-    var reg: i32 = -1;
-    var idx: usize = base;
-    const limit = @min(L.top, L.stack.len);
-    while (idx < limit) : (idx += 1) {
-        if (tvEqual(L.stack[idx], o)) {
-            reg = @intCast(idx - base);
-            break;
+    const lcl = cl.lua;
+
+    // 1. Check exact upvalue pointer match first
+    for (lcl.upvals, 0..) |opt_uv, uv_idx| {
+        if (opt_uv) |uv| {
+            if (uv.v == o_ptr) {
+                const uname = upvalname(lcl.p, uv_idx);
+                return std.fmt.bufPrint(buf, " (upvalue '{s}')", .{uname}) catch "";
+            }
         }
     }
+
+    const p = lcl.p;
+    const base = ci.base;
+    var reg: i32 = -1;
+
+    // 2. Check exact stack pointer match
+    const o_addr = @intFromPtr(o_ptr);
+    const stack_addr = @intFromPtr(L.stack.ptr);
+    const stack_end_addr = stack_addr + L.stack.len * @sizeOf(TValue);
+    if (o_addr >= stack_addr and o_addr < stack_end_addr) {
+        const idx = (o_addr - stack_addr) / @sizeOf(TValue);
+        if (idx >= base and idx < ci.top) {
+            reg = @intCast(idx - base);
+        }
+    }
+
+    // 3. Fall back to upvalue value match
+    if (reg < 0) {
+        for (lcl.upvals, 0..) |opt_uv, uv_idx| {
+            if (opt_uv) |uv| {
+                if (tvEqual(uv.v.*, o_ptr.*)) {
+                    const uname = upvalname(lcl.p, uv_idx);
+                    return std.fmt.bufPrint(buf, " (upvalue '{s}')", .{uname}) catch "";
+                }
+            }
+        }
+    }
+
+    // 4. Fall back to stack register value match
+    if (reg < 0) {
+        var idx: usize = base;
+        const limit = @min(ci.top, L.stack.len);
+        while (idx < limit) : (idx += 1) {
+            if (tvEqual(L.stack[idx], o_ptr.*)) {
+                reg = @intCast(idx - base);
+                break;
+            }
+        }
+    }
+
     if (reg < 0) return "";
     var name: ?[]const u8 = null;
     const kind = getobjname(p, currentpc(ci), reg, &name) orelse return "";
     if (name == null) return "";
-    // formatvarinfo: " (kind 'name')".
     return std.fmt.bufPrint(buf, " ({s} '{s}')", .{ kind, name.? }) catch "";
 }
 
@@ -3333,38 +3492,59 @@ pub fn luaG_errnnil(L: *lua_State, proto: *const lua_Proto, k: i32) !void {
     return luaG_runerror(L, msg);
 }
 
+pub fn luaG_forerror(L: *lua_State, o: TValue, what: []const u8) !void {
+    const t = ltm.luaT_objtypename(L, o);
+    var msg: [256]u8 = undefined;
+    const mslice = std.fmt.bufPrint(&msg, "bad 'for' {s} (number expected, got {s})", .{ what, t }) catch "bad 'for' value";
+    return luaG_runerror(L, mslice);
+}
+
 pub fn luaG_tointerror(L: *lua_State, o: TValue) !void {
     var buf: [256]u8 = undefined;
-    const info = luaG_varinfo(L, o, &buf);
+    const info = luaG_varinfo(L, &o, &buf);
     var msg: [320]u8 = undefined;
     const mslice = std.fmt.bufPrint(&msg, "number{s} has no integer representation", .{info}) catch "number has no integer representation";
     return luaG_runerror(L, mslice);
 }
 
 pub fn luaG_typeerror(L: *lua_State, o: TValue, op: []const u8) !void {
+    return luaG_typeerrorPtr(L, &o, op);
+}
+
+pub fn luaG_typeerrorPtr(L: *lua_State, o: *const TValue, op: []const u8) !void {
     var buf: [256]u8 = undefined;
     const info = luaG_varinfo(L, o, &buf);
-    const t = lua_typename(o.typ());
+    const t = ltm.luaT_objtypename(L, o.*);
     var msg: [320]u8 = undefined;
     const mslice = std.fmt.bufPrint(&msg, "attempt to {s} a {s} value{s}", .{ op, t, info }) catch "attempt to perform operation on value";
     return luaG_runerror(L, mslice);
 }
 
 pub fn luaG_callerror(L: *lua_State, o: TValue) !void {
+    var fname: ?[]const u8 = null;
+    const kind = getfuncname(L, L.ci, &fname);
+    const t = ltm.luaT_objtypename(L, o);
+    var msg: [320]u8 = undefined;
+    if (kind) |k| {
+        if (fname) |fnm| {
+            const mslice = std.fmt.bufPrint(&msg, "attempt to call a {s} value ({s} '{s}')", .{ t, k, fnm }) catch "attempt to call a non-function value";
+            return luaG_runerror(L, mslice);
+        }
+    }
     return luaG_typeerror(L, o, "call");
 }
 
-pub fn luaG_opinterror(L: *lua_State, p1: TValue, p2: TValue, msg: []const u8) !void {
+pub fn luaG_opinterror(L: *lua_State, p1: *const TValue, p2: *const TValue, msg: []const u8) !void {
     var err_obj = p1;
     if (p1.isNumberValue()) {
         err_obj = p2;
     }
-    return luaG_typeerror(L, err_obj, msg);
+    return luaG_typeerrorPtr(L, err_obj, msg);
 }
 
 pub fn luaG_ordererror(L: *lua_State, p1: TValue, p2: TValue) !void {
-    const t1 = lua_typename(p1.typ());
-    const t2 = lua_typename(p2.typ());
+    const t1 = ltm.luaT_objtypename(L, p1);
+    const t2 = ltm.luaT_objtypename(L, p2);
     var msg: [256]u8 = undefined;
     const mslice = if (std.mem.eql(u8, t1, t2))
         std.fmt.bufPrint(&msg, "attempt to compare two {s} values", .{t1}) catch "attempt to compare values"
@@ -3735,12 +3915,67 @@ fn getGCObject(g: *global_State, ptr: anytype) ?*VMGCObject {
     if (@typeInfo(@TypeOf(ptr)) != .pointer) return null;
     if (@intFromPtr(ptr) == 0) return null;
     const T = @TypeOf(ptr);
-    if (T == *lua_Table) return ptr.gc;
+    if (T == *lua_Table) {
+        if (ptr.gc) |gc| return gc;
+        var curr = g.allgc;
+        while (curr) |obj| : (curr = obj.next) {
+            if (obj.val == .table and obj.val.table == ptr) {
+                ptr.gc = obj;
+                return obj;
+            }
+        }
+        return null;
+    }
     if (T == *lua_Closure) {
-        return switch (ptr.*) {
+        const gc_opt = switch (ptr.*) {
             .c => |cc| cc.gc,
             .lua => |lc| lc.gc,
         };
+        if (gc_opt) |gc| return gc;
+        var curr = g.allgc;
+        while (curr) |obj| : (curr = obj.next) {
+            if (obj.val == .closure and obj.val.closure == ptr) {
+                switch (ptr.*) {
+                    .c => |cc| cc.gc = obj,
+                    .lua => |lc| lc.gc = obj,
+                }
+                return obj;
+            }
+        }
+        return null;
+    }
+    if (T == *lua_Udata) {
+        if (ptr.gc) |gc| return gc;
+        var curr = g.allgc;
+        while (curr) |obj| : (curr = obj.next) {
+            if (obj.val == .userdata and obj.val.userdata == ptr) {
+                ptr.gc = obj;
+                return obj;
+            }
+        }
+        return null;
+    }
+    if (T == *lua_Proto) {
+        if (ptr.gc) |gc| return gc;
+        var curr = g.allgc;
+        while (curr) |obj| : (curr = obj.next) {
+            if (obj.val == .proto and obj.val.proto == ptr) {
+                ptr.gc = obj;
+                return obj;
+            }
+        }
+        return null;
+    }
+    if (T == *lua_TString) {
+        if (ptr.gc) |gc| return gc;
+        var curr = g.allgc;
+        while (curr) |obj| : (curr = obj.next) {
+            if (obj.val == .string and obj.val.string == ptr) {
+                ptr.gc = obj;
+                return obj;
+            }
+        }
+        return null;
     }
     if (T == *UpVal) {
         var curr = g.allgc;
@@ -3749,9 +3984,6 @@ fn getGCObject(g: *global_State, ptr: anytype) ?*VMGCObject {
         }
         return null;
     }
-    if (T == *lua_Proto) return ptr.gc;
-    if (T == *lua_Udata) return ptr.gc;
-    if (T == *lua_TString) return ptr.gc;
     return null;
 }
 
@@ -3832,10 +4064,6 @@ fn freeGCObject(L: *lua_State, gc: *VMGCObject) void {
             L.allocator.destroy(u);
         },
         .string => |ts| {
-            // External (LSTRFIX / LSTRMEM) strings: bytes are owned by the
-            // caller — free via falloc if non-null, otherwise static.
-            // Non-externally-owned strings on allgc (long non-interned) have
-            // bytes allocated by Lua that must be freed here.
             if (ts.falloc) |falloc| {
                 _ = falloc(ts.ud, @constCast(ts.s.ptr), ts.len + 1, 0);
             } else if (!ts.externally_owned and ts.s.len > 0) {
@@ -3967,38 +4195,46 @@ pub fn luaC_collectgarbage(L: *lua_State) !void {
 
     // Root 4: The stack of all active states and call frames.
     var opt_ci: ?*CallInfo = L.ci;
-    var is_top_frame = true;
+    var next_ci_func: ?usize = null;
     while (opt_ci) |ci| {
-        if (ci.previous != null and ci.func < L.stack.len) {
-            try markValue(L, &gray_list, L.stack[ci.func]);
-        }
-        var s_idx = ci.base;
-        const top_limit = if (is_top_frame) L.top else ci.top;
+        var s_idx = ci.func;
+        const top_limit = if (next_ci_func) |nfunc| nfunc else L.top;
         const s_lim = @min(top_limit, L.stack.len);
         while (s_idx < s_lim) : (s_idx += 1) {
             try markValue(L, &gray_list, L.stack[s_idx]);
         }
-        is_top_frame = false;
+        next_ci_func = ci.func;
         opt_ci = ci.previous;
     }
 
-    // Root 4b: The stacks of all created threads
+    // Root 4b: The stacks and open upvalues of all created threads
     var curr_th = g.thread_list;
     while (curr_th) |th| {
-        var j: usize = 0;
-        while (j < th.top) : (j += 1) {
-            try markValue(L, &gray_list, th.stack[j]);
-        }
-        curr_th = th.twups;
-    }
-
-    // Root 5: Open upvalues
-    var curr_uv = L.openupval;
-    while (curr_uv) |uv| {
-        if (getGCObject(g, uv)) |gc| {
+        if (getGCObject(g, th)) |gc| {
             try markObject(L, gc, &gray_list);
         }
-        curr_uv = uv.next;
+        if (th != L) {
+            var opt_th_ci: ?*CallInfo = th.ci;
+            var next_th_ci_func: ?usize = null;
+            while (opt_th_ci) |th_ci| {
+                var s_idx = th_ci.func;
+                const top_limit = if (next_th_ci_func) |nfunc| nfunc else th.top;
+                const s_lim = @min(top_limit, th.stack.len);
+                while (s_idx < s_lim) : (s_idx += 1) {
+                    try markValue(L, &gray_list, th.stack[s_idx]);
+                }
+                next_th_ci_func = th_ci.func;
+                opt_th_ci = th_ci.previous;
+            }
+        }
+        var curr_uv = th.openupval;
+        while (curr_uv) |uv| {
+            if (getGCObject(g, uv)) |gc| {
+                try markObject(L, gc, &gray_list);
+            }
+            curr_uv = uv.next;
+        }
+        curr_th = th.twups;
     }
 
     // 4. Traverse gray list until empty
@@ -4012,8 +4248,10 @@ pub fn luaC_collectgarbage(L: *lua_State) !void {
                 const mode = if (t.metatable) |mt| getWeakMode(L, mt) else WeakMode{ .keys = false, .vals = false };
                 // Mark array part
                 if (!mode.vals) {
-                    for (t.array.items) |val| {
-                        try markValue(L, &gray_list, val);
+                    if (t.array.items.len > 0) {
+                        for (t.array.items) |val| {
+                            try markValue(L, &gray_list, val);
+                        }
                     }
                 }
                 // Mark hash part
@@ -4061,7 +4299,12 @@ pub fn luaC_collectgarbage(L: *lua_State) !void {
                 if (uv.v == &uv.value) {
                     try markValue(L, &gray_list, uv.value);
                 } else {
-                    try markValue(L, &gray_list, uv.v.*);
+                    const addr = @intFromPtr(uv.v);
+                    const base = @intFromPtr(L.stack.ptr);
+                    const top_addr = base + L.top * @sizeOf(TValue);
+                    if (addr >= base and addr < top_addr) {
+                        try markValue(L, &gray_list, uv.v.*);
+                    }
                 }
             },
             .proto => |p| {
@@ -4179,11 +4422,9 @@ pub fn luaC_collectgarbage(L: *lua_State) !void {
         }
     }
 
-    // Now remove and free them
+    // Now remove from strt table. The actual memory will be freed by sweep on g.allgc.
     for (dead_strings.items) |ts| {
         _ = g.strt.swapRemove(ts.s);
-        L.allocator.free(ts.s);
-        L.allocator.destroy(ts);
     }
 }
 
@@ -4362,14 +4603,10 @@ pub fn lua_concat(L: *lua_State, n: i32) void {
                 list.appendSlice(L.allocator, slice) catch {};
             },
             else => {
-                // Non-scalar value: default "<type>: 0x...>" representation
-                // (mirrors luaL_tolstring's fallback; __tostring is not wired
-                // through the TMS enum in luazig).
-                var buf: [64]u8 = undefined;
-                const tname = lua_typename(lua_type(L, @as(i32, @intCast(start + k))));
-                const ptr = lua_topointer(L, @as(i32, @intCast(start + k)));
-                const s = std.fmt.bufPrint(&buf, "{s}: 0x{x:0>14}", .{ tname, @intFromPtr(ptr) }) catch "";
-                list.appendSlice(L.allocator, s) catch {};
+                const p1 = if (k > 0) L.stack[start + k - 1] else val;
+                const p2 = val;
+                ltm.luaT_trybinTM(L, &p1, &p2, start, .CONCAT) catch {};
+                return;
             },
         }
     }

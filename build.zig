@@ -84,8 +84,7 @@ pub fn build(b: *std.Build) void {
 
     const test_step = b.step("test", "Run unit tests");
     test_step.dependOn(&run_tests.step);
-    // Build the luazig executable too, so CLI integration tests can spawn it.
-    test_step.dependOn(&exe.step);
+    test_step.dependOn(b.getInstallStep());
 
     const run_step = b.step("run", "Build and run luazig");
     run_step.dependOn(&exe.step);

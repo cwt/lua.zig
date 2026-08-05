@@ -471,12 +471,15 @@ fn writeToStream(p: *LStream, data: []const u8) bool {
 }
 
 fn g_write(L_: *L, p: *LStream, arg: i32) !i32 {
-    const nargs = lua.lua_gettop(L_) - arg;
+    const top = lua.lua_gettop(L_);
+    if (top < arg) return 1;
+    const nargs = top - arg + 1;
     var status = true;
     for (0..@as(usize, @intCast(nargs))) |i| {
         const idx = arg + @as(i32, @intCast(i));
-        const s = lua.lua_tostring(L_, idx);
-        if (s) |str| {
+        var len: usize = 0;
+        if (lua.lua_type(L_, idx) == lua.LUA_TSTRING) {
+            const str = (try lauxlib.luaL_checklstring(L_, idx, &len));
             if (!writeToStream(p, str)) {
                 status = false;
                 break;
@@ -489,7 +492,7 @@ fn g_write(L_: *L, p: *LStream, arg: i32) !i32 {
                 status = false;
                 break;
             }
-        } else {
+        } else if (lua.lua_type(L_, idx) == lua.LUA_TNUMBER) {
             const num = lua.lua_tonumber(L_, idx) orelse 0.0;
             var buf: [64]u8 = undefined;
             const formatted = std.fmt.bufPrint(&buf, "{d}", .{num}) catch unreachable;
@@ -497,9 +500,16 @@ fn g_write(L_: *L, p: *LStream, arg: i32) !i32 {
                 status = false;
                 break;
             }
+        } else {
+            const str = (try lauxlib.luaL_checklstring(L_, idx, &len));
+            if (!writeToStream(p, str)) {
+                status = false;
+                break;
+            }
         }
     }
     if (status) {
+        lua.lua_pushvalue(L_, 1);
         return 1;
     }
     return lauxlib.luaL_fileresult(L_, false, null);
@@ -512,7 +522,6 @@ fn io_write(L_: *L) !i32 {
 
 fn f_write(L_: *L) !i32 {
     const p = try tostream(L_, 1);
-    lua.lua_pushvalue(L_, 1);
     return g_write(L_, p, 2);
 }
 
@@ -649,10 +658,7 @@ const flib = [_]luaL_Reg{
 };
 
 pub fn openio(L_: *L) !void {
-    // luaL_newmetatable stores the file metatable in the registry but does not
-    // leave it on the stack, so push it here to populate it.
     _ = try lauxlib.luaL_newmetatable(L_, LUA_FILEHANDLE);
-    _ = try lua.lua_getfield(L_, lua.LUA_REGISTRYINDEX, LUA_FILEHANDLE);
     try lauxlib.luaL_setfuncs(L_, &flib, 0);
     // Make the metatable its own __index so that `file:method(...)` resolves
     // the methods stored as fields of the metatable (matches PUC-Rio liolib).

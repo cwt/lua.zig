@@ -200,7 +200,10 @@ const priority = [_]struct { left: u8, right: u8 }{
 // ---------------------------------------------------------------------------
 
 fn eqstr(a: ?*lua.lua_TString, b: ?*lua.lua_TString) bool {
-    return a == b;
+    if (a == b) return true;
+    const sa = a orelse return false;
+    const sb = b orelse return false;
+    return std.mem.eql(u8, sa.s, sb.s);
 }
 
 fn eqstr_str(ts: ?*lua.lua_TString, lit: []const u8) bool {
@@ -1887,8 +1890,12 @@ pub fn luaD_protectedparser(
     }
     const f = luaY_parser(L, &ls) catch |err| {
         if (ls.errmsg) |msg| {
+            var short_src: [lua.LUA_IDSIZE]u8 = undefined;
+            lua.luaO_chunkid(&short_src, chunkname);
+            const len = std.mem.indexOfScalar(u8, &short_src, 0) orelse short_src.len;
+            const src_str = short_src[0..len];
             var buf: [512]u8 = undefined;
-            const formatted = std.fmt.bufPrint(&buf, "{s}:{d}: {s}", .{ chunkname, ls.linenumber, msg }) catch msg;
+            const formatted = std.fmt.bufPrint(&buf, "{s}:{d}: {s}", .{ src_str, ls.linenumber, msg }) catch msg;
             _ = lua.lua_pushstring(L, formatted);
         } else {
             _ = lua.lua_pushstring(L, "syntax error");

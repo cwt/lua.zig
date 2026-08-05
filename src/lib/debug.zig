@@ -84,7 +84,8 @@ fn hookf(L1: *lua.lua_State, ar: ?*lua.lua_Debug) void {
             lua.lua_pop(L1, 2);
             return;
         };
-        if (lua.lua_type(L1, -1) == lua.LUA_TFUNCTION) {
+        const val_type = lua.lua_type(L1, -1);
+        if (val_type == lua.LUA_TFUNCTION) {
             const event_str: []const u8 = if (ar != null) switch (ar.?.event) {
                 lua.LUA_HOOKCALL => "call",
                 lua.LUA_HOOKRET => "return",
@@ -98,7 +99,10 @@ fn hookf(L1: *lua.lua_State, ar: ?*lua.lua_Debug) void {
             } else {
                 lua.lua_pushnil(L1);
             }
-            _ = lua.lua_pcall(L1, 2, 0, 0);
+            const status = lua.lua_pcall(L1, 2, 0, 0);
+            if (status != 0) {
+                lua.lua_pop(L1, 1);
+            }
         } else {
             lua.lua_pop(L1, 1);
         }
@@ -141,6 +145,10 @@ fn db_sethook(L: *lua.lua_State) !i32 {
     if (lua.lua_type(L, -1) != lua.LUA_TTABLE) {
         lua.lua_pop(L, 1);
         lua.lua_createtable(L, 0, 0);
+        lua.lua_createtable(L, 0, 1);
+        _ = lua.lua_pushstring(L, "k");
+        try lua.lua_setfield(L, -2, "__mode");
+        _ = lua.lua_setmetatable(L, -2);
         lua.lua_pushvalue(L, -1);
         try lua.lua_setfield(L, lua.LUA_REGISTRYINDEX, HOOKKEY);
     }
@@ -153,7 +161,6 @@ fn db_sethook(L: *lua.lua_State) !i32 {
     }
     try lua.lua_settable(L, -3);
     lua.lua_pop(L, 1);
-
     lua.lua_sethook(L1, func, @bitCast(mask), count);
     return 0;
 }
@@ -189,6 +196,15 @@ fn db_gethook(L: *lua.lua_State) !i32 {
     lua.lua_pushinteger(L, count);
 
     return 3;
+}
+
+fn treatstackoption(L: *lua.lua_State, L1: *lua.lua_State, fname: []const u8) void {
+    if (L == L1) {
+        lua.lua_rotate(L, -2, 1);
+    } else {
+        lua.lua_xmove(L1, L, 1);
+    }
+    lua.lua_setfield(L, -2, fname) catch {};
 }
 
 fn db_getinfo(L: *lua.lua_State) !i32 {
@@ -300,25 +316,11 @@ fn db_getinfo(L: *lua.lua_State) !i32 {
         try lua.lua_setfield(L, -2, "extraargs");
     }
 
-    // 'L' and 'f' options push extra values; move them into the result table
-    var i: usize = 0;
-    while (i < options.len) : (i += 1) {
-        if (options[i] == 'L') {
-            if (L == L1) {
-                // The activelines table was pushed on L stack by lua_getinfo
-                lua.lua_rotate(L, -2, 1);
-            } else {
-                lua.lua_xmove(L1, L, 1);
-            }
-            try lua.lua_setfield(L, -2, "activelines");
-        } else if (options[i] == 'f') {
-            if (L == L1) {
-                lua.lua_rotate(L, -2, 1);
-            } else {
-                lua.lua_xmove(L1, L, 1);
-            }
-            try lua.lua_setfield(L, -2, "func");
-        }
+    if (std.mem.indexOfScalar(u8, options, 'L') != null) {
+        treatstackoption(L, L1, "activelines");
+    }
+    if (std.mem.indexOfScalar(u8, options, 'f') != null) {
+        treatstackoption(L, L1, "func");
     }
 
     return 1;
@@ -346,7 +348,9 @@ fn db_getlocal(L: *lua.lua_State) !i32 {
             return lauxlib.luaL_error(L, "stack overflow");
         }
         if (lua.lua_getlocal(L1, &ar, nvar)) |name| {
-            lua.lua_xmove(L1, L, 1);
+            if (L != L1) {
+                lua.lua_xmove(L1, L, 1);
+            }
             _ = lua.lua_pushlstring(L, name, name.len);
             lua.lua_rotate(L, -2, 1);
             return 2;
@@ -367,15 +371,21 @@ fn db_setlocal(L: *lua.lua_State) !i32 {
         return lauxlib.luaL_argerror(L, arg + 1, "level out of range");
     }
     try lauxlib.luaL_checkany(L, arg + 3);
-    lua.lua_settop(L, arg + 3);
     if (L != L1 and lua.lua_checkstack(L1, 1) == 0) {
         return lauxlib.luaL_error(L, "stack overflow");
     }
-    lua.lua_xmove(L, L1, 1);
+    lua.lua_pushvalue(L, arg + 3);
+    if (L != L1) {
+        lua.lua_xmove(L, L1, 1);
+    }
     if (lua.lua_setlocal(L1, &ar, nvar)) |name| {
         _ = lua.lua_pushlstring(L, name, name.len);
     } else {
-        lua.lua_pop(L1, 1);
+        if (L != L1) {
+            lua.lua_pop(L1, 1);
+        } else {
+            lua.lua_pop(L, 1);
+        }
         lua.lua_pushnil(L);
     }
     return 1;
@@ -450,8 +460,10 @@ fn db_traceback(L: *lua.lua_State) !i32 {
     var arg: i32 = undefined;
     const L1 = getthread(L, &arg);
     const msg = if (lua.lua_isstring(L, arg + 1) != 0) lua.lua_tostring(L, arg + 1) orelse "" else "";
-    const level = @as(i32, @intCast(lauxlib.luaL_optinteger(L, arg + 2, if (L == L1) 2 else 1)));
-    try lauxlib.luaL_traceback(L, L1, msg, level);
+    const level = @as(i32, @intCast(lauxlib.luaL_optinteger(L, arg + 2, if (L == L1) 1 else 0)));
+    lauxlib.luaL_traceback(L, L1, msg, level) catch |e| {
+        return e;
+    };
     return 1;
 }
 
@@ -483,4 +495,11 @@ pub fn opendbalib(L: *lua.lua_State) !void {
         lua.lua_pushcfunction(L, reg.func);
         try lua.lua_setfield(L, -2, reg.name);
     }
+    // Create _HOOKKEY table with weak keys metatable in registry
+    lua.lua_createtable(L, 0, 1);
+    lua.lua_createtable(L, 0, 1);
+    _ = lua.lua_pushstring(L, "k");
+    try lua.lua_setfield(L, -2, "__mode");
+    _ = lua.lua_setmetatable(L, -2);
+    try lua.lua_setfield(L, lua.LUA_REGISTRYINDEX, HOOKKEY);
 }
