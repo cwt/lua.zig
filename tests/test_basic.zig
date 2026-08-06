@@ -4559,24 +4559,34 @@ test "H.8 deprecated compatibility aliases (newuserdata, getuservalue, setuserva
     try std.testing.expectEqual(@as(i32, lua.LUA_TUSERDATA), lua.lua_type(&L, -1));
     lua.lua_pop(&L, 1);
 
-    // --- lua_getuservalue: alias for lua_getiuservalue(L, idx, 1) ---
-    // Currently a stub (pushes nil, returns 1); verify it compiles and runs.
-    lua.lua_createtable(&L, 0, 0);
-    const r1 = lua.lua_getuservalue(&L, -1);
+    // --- lua_getuservalue / lua_setuservalue: real user-value storage ---
+    // lua_newuserdata (nuvalue=1) creates a full userdata with one user value.
+    const ud2 = lua.lua_newuserdata(&L, 8);
+    try std.testing.expect(ud2 != null);
+    try std.testing.expectEqual(@as(i32, lua.LUA_TUSERDATA), lua.lua_type(&L, -1));
+    lua.lua_pushinteger(&L, 42);
+    const r1 = lua.lua_setuservalue(&L, -2);
     try std.testing.expectEqual(@as(i32, 1), r1);
-    try std.testing.expectEqual(@as(i32, lua.LUA_TNIL), lua.lua_type(&L, -1));
-    lua.lua_pop(&L, 2); // pop nil + table
+    const r2 = lua.lua_getuservalue(&L, -1);
+    try std.testing.expectEqual(@as(i32, lua.LUA_TNUMBER), r2);
+    try std.testing.expectEqual(@as(i64, 42), lua.lua_tointeger(&L, -1).?);
+    lua.lua_pop(&L, 2); // pop uservalue + userdata
 
-    // --- lua_setuservalue: alias for lua_setiuservalue(L, idx, 1) ---
-    // Currently a stub (returns 1); verify it compiles and runs.
-    lua.lua_createtable(&L, 0, 0);
-    const r2 = lua.lua_setuservalue(&L, -1);
-    try std.testing.expectEqual(@as(i32, 1), r2);
-    lua.lua_pop(&L, 1);
+    // Out-of-range user value index: getiuservalue returns LUA_TNONE,
+    // setiuservalue returns 0 (matching the reference for nuvalue=0 userdata).
+    const r3 = lua.lua_getiuservalue(&L, -1, 2);
+    try std.testing.expectEqual(@as(i32, lua.LUA_TNONE), r3);
+    try std.testing.expectEqual(@as(i32, lua.LUA_TNIL), lua.lua_type(&L, -1));
+    lua.lua_pop(&L, 1); // pop the nil pushed by getiuservalue
+    lua.lua_pushboolean(&L, 1);
+    const r4 = lua.lua_setiuservalue(&L, -2, 2);
+    try std.testing.expectEqual(@as(i32, 0), r4);
+    lua.lua_pop(&L, 1); // pop the boolean consumed by setiuservalue
+    lua.lua_pop(&L, 1); // pop the userdata
 
     // --- lua_resetthread: alias for lua_closethread(L, null) ---
-    const r3 = lua.lua_resetthread(&L);
-    try std.testing.expectEqual(@as(i32, lua.LUA_OK), r3);
+    const r5 = lua.lua_resetthread(&L);
+    try std.testing.expectEqual(@as(i32, lua.LUA_OK), r5);
     // The state should still be usable after reset.
     lua.lua_pushinteger(&L, 99);
     try std.testing.expectEqual(@as(i32, lua.LUA_TNUMBER), lua.lua_type(&L, -1));

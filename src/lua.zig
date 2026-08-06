@@ -126,6 +126,7 @@ pub const LUA_HOOKCALL: i32 = llimits.LUA_HOOKCALL;
 pub const LUA_HOOKRET: i32 = llimits.LUA_HOOKRET;
 pub const LUA_HOOKLINE: i32 = llimits.LUA_HOOKLINE;
 pub const LUA_HOOKCOUNT: i32 = llimits.LUA_HOOKCOUNT;
+pub const LUA_HOOKTAILCALL: i32 = llimits.LUA_HOOKTAILCALL;
 pub const LUA_MASKCALL: u32 = llimits.LUA_MASKCALL;
 pub const LUA_MASKRET: u32 = llimits.LUA_MASKRET;
 pub const LUA_MASKLINE: u32 = llimits.LUA_MASKLINE;
@@ -177,6 +178,9 @@ pub const lua_TString = struct {
 pub const lua_Udata = struct {
     metatable: ?*lua_Table = null,
     data: []u8,
+    /// User values (created via lua_newuserdatauv). Nil-initialized, length
+    /// equals the `nuvalue` requested at creation. Mirrors C `Udata->uv`.
+    uv: []TValue = &.{},
     gc: ?*VMGCObject = null,
 };
 
@@ -688,16 +692,11 @@ pub fn poscall(L: *lua_State, ci: *CallInfo, first_result_idx: usize, n: usize) 
     try closeupvals(L, ci.base, null);
 
     if (L.hookmask & llimits.LUA_MASKRET != 0) {
-        var delta: i32 = 0;
-        const val = L.stack[ci.func];
-        if (val == .function and val.function.?.* == .lua) {
-            const proto = val.function.?.lua.p;
-            if (proto.flag & PF_VAHID != 0) {
-                delta = ci.nextraargs + @as(i32, @intCast(proto.numParams)) + 1;
-            }
-        }
+        // Mirror the reference rethook: by the time poscall runs, ci.func has
+        // already been restored (OP_RETURN* / tail call undo the PF_VAHID
+        // relocation), so ftransfer is just firstres - ci.func.
         const firstres = first_result_idx;
-        const ftransfer = @as(i32, @intCast(firstres)) - (@as(i32, @intCast(ci.func)) + delta);
+        const ftransfer = @as(i32, @intCast(firstres)) - @as(i32, @intCast(ci.func));
         luaD_hook(L, LUA_HOOKRET, -1, ftransfer, @as(i32, @intCast(n)));
     }
     const func_idx = ci.func;
@@ -837,7 +836,8 @@ const PF_VATAB: u8 = 2; // function has a vararg table
             }
             L.ci = new_ci;
             if (L.hookmask & llimits.LUA_MASKCALL != 0) {
-                luaD_hook(L, LUA_HOOKCALL, -1, 0, 0);
+                const narg = L.top - func_idx - 1;
+                luaD_hook(L, LUA_HOOKCALL, -1, 1, @intCast(narg));
             }
             const n = cc.f(L) catch |e| {
                 if (e == error.Yield) {
@@ -921,7 +921,7 @@ const PF_VATAB: u8 = 2; // function has a vararg table
             }
             L.ci = new_ci;
             if (L.hookmask & llimits.LUA_MASKCALL != 0) {
-                luaD_hook(L, LUA_HOOKCALL, -1, 0, 0);
+                luaD_hook(L, LUA_HOOKCALL, -1, 1, proto.numParams);
             }
             return new_ci;
         },
@@ -961,6 +961,10 @@ pub const CallInfo = struct {
     clsret: bool = false,
     is_lua: bool = false,
     is_hooked: bool = false,
+    /// Set when this frame was created by a tail call (OP_TAILCALL reusing the
+    /// caller's frame), mirroring the reference's CIST_TAIL. Read by the
+    /// debug API's `t` option (debug.getinfo(..., "t").istailcall).
+    is_tailcall: bool = false,
 };
 
 pub const GCColor = enum(u2) {
@@ -1065,7 +1069,7 @@ pub fn registerGC(L: *lua_State, val: anytype) !void {
             .c => |cc| @sizeOf(lua_Closure) + @sizeOf(lua_CClosure) + cc.upvals.len * @sizeOf(TValue),
             .lua => |lc| @sizeOf(lua_Closure) + @sizeOf(lua_LClosure) + lc.upvals.len * @sizeOf(?*UpVal),
         },
-        .userdata => |ud| @sizeOf(lua_Udata) + ud.data.len,
+        .userdata => |ud| @sizeOf(lua_Udata) + ud.data.len + ud.uv.len * @sizeOf(TValue),
         .proto => @sizeOf(lua_Proto),
         .upval => @sizeOf(UpVal),
     };
@@ -2407,6 +2411,10 @@ fn funcnamefromcode(L: *lua_State, p: *const lua_Proto, pc: i32, name: *?[]const
 }
 
 fn funcnamefromcall(L: *lua_State, ci: *CallInfo, name: *?[]const u8) ?[]const u8 {
+    if (ci.is_hooked) {
+        name.* = "?";
+        return "hook";
+    }
     if (isLua(ci, L)) {
         const val = L.stack[ci.func];
         if (val == .function) {
@@ -2421,11 +2429,9 @@ fn funcnamefromcall(L: *lua_State, ci: *CallInfo, name: *?[]const u8) ?[]const u
 }
 
 fn getfuncname(L: *lua_State, ci: ?*CallInfo, name: *?[]const u8) ?[]const u8 {
+    // Mirror the reference: the name is looked up in the *calling* frame
+    // (ci->previous); a hooked frame is reported via funcnamefromcall.
     if (ci) |c| {
-        if (c.is_hooked) {
-            name.* = "?";
-            return "hook";
-        }
         if (c.previous) |prev| {
             return funcnamefromcall(L, prev, name);
         }
@@ -2486,7 +2492,9 @@ pub fn luaG_findlocal(L: *lua_State, ci: *CallInfo, n: i32, pos: *?usize) ?[]con
         }
     }
     if (name == null) {
-        const limit = if (ci.next) |next| next.func else L.top;
+        // Mirror the reference: for the current frame the limit is L->top;
+        // for an older frame it is the next frame's function position.
+        const limit = if (ci == L.ci) L.top else (if (ci.next) |next| next.func else L.top);
         const un = @as(usize, @intCast(n));
         if (n > 0 and limit >= base + un) {
             name = if (is_lua) "(temporary)" else "(C temporary)";
@@ -2757,7 +2765,7 @@ pub fn lua_getinfo(L: *lua_State, what: []const u8, ar: *lua_Debug) !i32 {
                 }
             },
             't' => {
-                ar.istailcall = false;
+                ar.istailcall = if (ci) |info_ci| info_ci.is_tailcall else false;
                 ar.extraargs = if (ci) |info_ci| @intCast(@max(0, info_ci.nextraargs)) else 0;
             },
             'n' => {
@@ -2771,8 +2779,13 @@ pub fn lua_getinfo(L: *lua_State, what: []const u8, ar: *lua_Debug) !i32 {
                 }
             },
             'r' => {
-                ar.ftransfer = 0;
-                ar.ntransfer = 0;
+                if (ci == null or !ci.?.is_hooked) {
+                    ar.ftransfer = 0;
+                    ar.ntransfer = 0;
+                } else {
+                    ar.ftransfer = L.transferinfo.ftransfer;
+                    ar.ntransfer = L.transferinfo.ntransfer;
+                }
             },
             'L', 'f' => {},
             else => {
@@ -2955,15 +2968,25 @@ pub fn lua_createtable(L: *lua_State, narr: i32, nrec: i32) void {
 }
 
 pub fn lua_newuserdatauv(L: *lua_State, sz: usize, nuvalue: i32) ?*anyopaque {
-    _ = nuvalue;
-    const data = L.allocator.alloc(u8, sz) catch return null;
-    const u = L.allocator.create(lua_Udata) catch {
-        L.allocator.free(data);
+    var uv: []TValue = &.{};
+    if (nuvalue > 0) {
+        uv = L.allocator.alloc(TValue, @intCast(nuvalue)) catch return null;
+        for (uv) |*slot| slot.* = .{ .nil = {} };
+    }
+    for (uv) |*slot| slot.* = .{ .nil = {} };
+    const data = L.allocator.alloc(u8, sz) catch {
+        if (uv.len > 0) L.allocator.free(uv);
         return null;
     };
-    u.* = .{ .metatable = null, .data = data };
+    const u = L.allocator.create(lua_Udata) catch {
+        L.allocator.free(data);
+        if (uv.len > 0) L.allocator.free(uv);
+        return null;
+    };
+    u.* = .{ .metatable = null, .data = data, .uv = uv };
     registerGC(L, u) catch {
         L.allocator.free(data);
+        if (uv.len > 0) L.allocator.free(uv);
         L.allocator.destroy(u);
         return null;
     };
@@ -3003,10 +3026,24 @@ pub fn lua_getmetatable(L: *lua_State, objindex: i32) i32 {
 }
 
 pub fn lua_getiuservalue(L: *lua_State, idx: i32, n: i32) i32 {
-    _ = idx;
-    _ = n;
+    const val = idxPtr(L, idx) orelse {
+        lua_pushnil(L);
+        return LUA_TNONE;
+    };
+    const ud = switch (val.*) {
+        .userdata => |u| u,
+        else => null,
+    };
+    if (ud) |u| {
+        if (n >= 1 and @as(usize, @intCast(n)) <= u.uv.len) {
+            const v = u.uv[@as(usize, @intCast(n - 1))];
+            L.stack[L.top] = v;
+            L.top += 1;
+            return v.typ();
+        }
+    }
     lua_pushnil(L);
-    return 1;
+    return LUA_TNONE;
 }
 
 /// Deprecated alias for `lua_getiuservalue(L, idx, 1)`.
@@ -3167,10 +3204,24 @@ pub fn lua_setmetatable(L: *lua_State, objindex: i32) i32 {
 }
 
 pub fn lua_setiuservalue(L: *lua_State, idx: i32, n: i32) i32 {
-    _ = L;
-    _ = idx;
-    _ = n;
-    return 1;
+    if (L.top == 0) return 0;
+    const val = idxPtr(L, idx) orelse {
+        L.top -= 1;
+        return 0;
+    };
+    const ud = switch (val.*) {
+        .userdata => |u| u,
+        else => null,
+    };
+    var res: i32 = 0;
+    if (ud) |u| {
+        if (n >= 1 and @as(usize, @intCast(n)) <= u.uv.len) {
+            u.uv[@as(usize, @intCast(n - 1))] = L.stack[L.top - 1];
+            res = 1;
+        }
+    }
+    L.top -= 1;
+    return res;
 }
 
 /// Deprecated alias for `lua_setiuservalue(L, idx, 1)`.
@@ -3524,12 +3575,7 @@ pub fn luaG_callerror(L: *lua_State, o: TValue) !void {
     var fname: ?[]const u8 = null;
     var kind: ?[]const u8 = null;
     if (L.ci) |ci| {
-        if (ci.is_hooked) {
-            fname = "?";
-            kind = "hook";
-        } else {
-            kind = funcnamefromcall(L, ci, &fname);
-        }
+        kind = funcnamefromcall(L, ci, &fname);
     }
     const t = ltm.luaT_objtypename(L, o);
     var msg: [320]u8 = undefined;
@@ -3890,10 +3936,16 @@ pub fn lua_resume(L: *lua_State, from: ?*lua_State, narg: i32, nresults: ?*i32) 
     }
 
     if (L.status == LUA_YIELD) return LUA_YIELD;
-    // Coroutine finished (dead/completed): discard its call stack. Recycled
-    // CallInfos would otherwise linger in the freelist until the thread is
-    // explicitly closed, which the caller may never do.
-    freeAllCallInfos(L);
+    if (L.status == LUA_OK) {
+        // Coroutine completed normally: its call frames were already popped
+        // back to base_ci, so only recycled CallInfos remain. Discard them
+        // (they would otherwise linger in the freelist until the thread is
+        // explicitly closed, which the caller may never do).
+        freeAllCallInfos(L);
+    }
+    // Otherwise the coroutine died with an error: keep its CallInfo chain so
+    // that debug.traceback(co) can still report the frames where it failed
+    // (mirrors the reference, which frees them at lua_closethread / lua_close).
     return L.status;
 }
 
@@ -4035,7 +4087,7 @@ fn freeGCObject(L: *lua_State, gc: *VMGCObject) void {
             .c => |cc| @sizeOf(lua_Closure) + @sizeOf(lua_CClosure) + cc.upvals.len * @sizeOf(TValue),
             .lua => |lc| @sizeOf(lua_Closure) + @sizeOf(lua_LClosure) + lc.upvals.len * @sizeOf(?*UpVal),
         },
-        .userdata => |ud| @sizeOf(lua_Udata) + ud.data.len,
+        .userdata => |ud| @sizeOf(lua_Udata) + ud.data.len + ud.uv.len * @sizeOf(TValue),
         .proto => @sizeOf(lua_Proto),
         .upval => @sizeOf(UpVal),
     };
@@ -4069,6 +4121,7 @@ fn freeGCObject(L: *lua_State, gc: *VMGCObject) void {
         },
         .userdata => |u| {
             L.allocator.free(u.data);
+            if (u.uv.len > 0) L.allocator.free(u.uv);
             L.allocator.destroy(u);
         },
         .string => |ts| {
@@ -4337,6 +4390,9 @@ pub fn luaC_collectgarbage(L: *lua_State) !void {
                 }
             },
             .userdata => |ud| {
+                for (ud.uv) |val| {
+                    try markValue(L, &gray_list, val);
+                }
                 if (ud.metatable) |mt| {
                     if (getGCObject(g, mt)) |mt_gc| {
                         try markObject(L, mt_gc, &gray_list);

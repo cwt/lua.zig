@@ -1545,9 +1545,16 @@ pub fn run(L: *lua.lua_State, active_ci: *lua.CallInfo) anyerror!void {
                         ci.base = base_idx;
                         ci.top = frame_top;
                         ci.savedpc = 0;
+                        ci.is_tailcall = true;
                         cl = lc;
                         proto = lc.p;
                         code = proto.code;
+                        // Fire the call hook for the tail-called Lua function
+                        // (mirrors the reference's `startfunc` -> `luaD_hookcall`,
+                        // which reports a tail call when CIST_TAIL is set).
+                        if (L.hookmask & llimits.LUA_MASKCALL != 0) {
+                            lua.luaD_hook(L, lua.LUA_HOOKTAILCALL, -1, 1, proto.numParams);
+                        }
                     },
                 }
             },

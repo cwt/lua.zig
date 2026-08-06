@@ -415,7 +415,7 @@ fn finishpcall(L: *lua.lua_State, status: i32, extra: usize) i32 {
         lua.lua_insert(L, -2); // insert false prior to error message
         return 2; // return false, msg
     } else {
-        return @as(i32, @intCast(lua.lua_gettop(L))) + 1 - @as(i32, @intCast(extra));
+        return @as(i32, @intCast(lua.lua_gettop(L))) - @as(i32, @intCast(extra));
     }
 }
 

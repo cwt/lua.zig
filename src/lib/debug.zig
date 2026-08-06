@@ -459,11 +459,14 @@ fn db_debug(L: *lua.lua_State) !i32 {
 fn db_traceback(L: *lua.lua_State) !i32 {
     var arg: i32 = undefined;
     const L1 = getthread(L, &arg);
-    const msg = if (lua.lua_isstring(L, arg + 1) != 0) lua.lua_tostring(L, arg + 1) orelse "" else "";
-    const level = @as(i32, @intCast(lauxlib.luaL_optinteger(L, arg + 2, if (L == L1) 1 else 0)));
-    lauxlib.luaL_traceback(L, L1, msg, level) catch |e| {
-        return e;
-    };
+    const msg = lua.lua_tostring(L, arg + 1);
+    if (msg == null and !lua.lua_isnoneornil(L, arg + 1)) {
+        lua.lua_pushvalue(L, arg + 1);
+        return 1;
+    } else {
+        const level = @as(i32, @intCast(lauxlib.luaL_optinteger(L, arg + 2, if (L == L1) 1 else 0)));
+        try lauxlib.luaL_traceback(L, L1, if (msg) |m| m else "", level);
+    }
     return 1;
 }
 
