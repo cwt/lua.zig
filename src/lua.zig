@@ -1119,6 +1119,13 @@ pub const lua_State = struct {
     hook: ?lua_Hook,
     errfunc: isize,
     err_obj: TValue = .{ .nil = {} },
+    /// Name of the function that raised the current error (and how it was
+    /// called, e.g. "global"). Recorded by luaG_errormsg so a dead coroutine's
+    /// debug.traceback can report "[C]: in global 'error'" even though the
+    /// erroring C frame is unwound during propagation. Strings are anchored by
+    /// the caller's proto constants / global table, so they stay alive.
+    err_name: ?[]const u8 = null,
+    err_namewhat: ?[]const u8 = null,
     nCcalls: u32,
     oldpc: i32,
     nci: i32,
@@ -3394,6 +3401,8 @@ pub fn lua_pcallk(L: *lua_State, nargs: i32, nresults: i32, errfunc: i32, ctx: l
         return LUA_ERRRUN;
     }
 
+    L.err_name = null;
+    L.err_namewhat = null;
     return LUA_OK;
 }
 
@@ -4615,6 +4624,17 @@ pub fn luaG_errormsg(L: *lua_State) anyerror {
         }
         if (L.top > 0) {
             L.err_obj = L.stack[L.top - 1];
+        }
+    }
+    // Record the name of the erroring function (and how it was called), so a
+    // dead coroutine's debug.traceback can report where it failed even though
+    // the C frame is unwound during error propagation.
+    if (L.ci) |eci| {
+        var fname: ?[]const u8 = null;
+        const kind = getfuncname(L, eci, &fname);
+        if (kind) |k| {
+            L.err_name = fname;
+            L.err_namewhat = k;
         }
     }
     return error.RuntimeError;

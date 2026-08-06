@@ -459,6 +459,16 @@ pub fn luaL_traceback(L: *lua.lua_State, L2: *lua.lua_State, msg: []const u8, le
     }
     try luaL_addlstring(L, &b, "stack traceback:");
 
+    // When tracing a coroutine that died with an error, prepend the frame of
+    // the C function that raised it (its name was recorded by luaG_errormsg),
+    // e.g. "[C]: in global 'error'". Matches the reference, which keeps that
+    // frame in the chain.
+    if (L2.err_name != null and L2.err_namewhat != null) {
+        var name_buf: [128]u8 = undefined;
+        const nslice = try std.fmt.bufPrint(&name_buf, "\n\t[C]: in {s} '{s}'", .{ L2.err_namewhat.?, L2.err_name.? });
+        try luaL_addlstring(L, &b, nslice);
+    }
+
     var ar: lua.lua_Debug = undefined;
     var last: i32 = 0;
     while (lua.lua_getstack(L2, last, &ar) != 0) {

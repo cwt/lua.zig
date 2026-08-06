@@ -1301,31 +1301,84 @@ pub fn run(L: *lua.lua_State, active_ci: *lua.CallInfo) anyerror!void {
                 const n = @as(usize, @intCast(GETARG_B(instruction)));
                 var list = std.ArrayListUnmanaged(u8).empty;
                 defer list.deinit(L.allocator);
+                // Running result: nil until a concatenation metamethod runs;
+                // once it does, L.stack[ra_idx] holds that result and further
+                // operands concatenate onto it (mirroring the reference's
+                // incremental luaV_concat, which invokes the metamethod once
+                // per non-string group, not once per operand).
+                var mm_result: ?lua.TValue = null;
                 var k: usize = 0;
                 while (k < n) : (k += 1) {
                     const val = L.stack[ra_idx + k];
-                    switch (val) {
-                        .string => |s| try list.appendSlice(L.allocator, s.?.s),
-                        .number => |num| {
-                            var buf: [64]u8 = undefined;
-                            const slice = std.fmt.bufPrint(&buf, "{d}", .{num}) catch "";
-                            try list.appendSlice(L.allocator, slice);
-                        },
-                        .integer => |num| {
-                            var buf: [32]u8 = undefined;
-                            const slice = std.fmt.bufPrint(&buf, "{d}", .{num}) catch "";
-                            try list.appendSlice(L.allocator, slice);
-                        },
-                        else => {
-                            const p1 = if (k > 0) L.stack[ra_idx + k - 1] else val;
-                            const p2 = val;
-                            try ltm.luaT_trybinTM(L, &p1, &p2, ra_idx, .CONCAT);
-                            return;
-                        },
+                    if (mm_result) |acc| {
+                        // A metamethod already produced a running result.
+                        if (val == .string or val == .number or val == .integer) {
+                            // Convert the result and concatenate the operand.
+                            var buf: [128]u8 = undefined;
+                            const acc_s: []const u8 = switch (acc) {
+                                .string => |s| s.?.s,
+                                .number => |num| std.fmt.bufPrint(&buf, "{d}", .{num}) catch "",
+                                .integer => |num| std.fmt.bufPrint(&buf, "{d}", .{num}) catch "",
+                                else => "",
+                            };
+                            try list.appendSlice(L.allocator, acc_s);
+                            switch (val) {
+                                .string => |s| try list.appendSlice(L.allocator, s.?.s),
+                                .number => |num| {
+                                    var nb: [64]u8 = undefined;
+                                    try list.appendSlice(L.allocator, std.fmt.bufPrint(&nb, "{d}", .{num}) catch "");
+                                },
+                                .integer => |num| {
+                                    var nb: [32]u8 = undefined;
+                                    try list.appendSlice(L.allocator, std.fmt.bufPrint(&nb, "{d}", .{num}) catch "");
+                                },
+                                else => unreachable,
+                            }
+                            mm_result = null;
+                        } else {
+                            try ltm.luaT_trybinTM(L, &acc, &val, ra_idx, .CONCAT);
+                            mm_result = L.stack[ra_idx];
+                        }
+                    } else {
+                        switch (val) {
+                            .string => |s| try list.appendSlice(L.allocator, s.?.s),
+                            .number => |num| {
+                                var buf: [64]u8 = undefined;
+                                try list.appendSlice(L.allocator, std.fmt.bufPrint(&buf, "{d}", .{num}) catch "");
+                            },
+                            .integer => |num| {
+                                var buf: [32]u8 = undefined;
+                                try list.appendSlice(L.allocator, std.fmt.bufPrint(&buf, "{d}", .{num}) catch "");
+                            },
+                            else => {
+                                // Non-string operand: concatenate the
+                                // accumulated string (or the previous operand)
+                                // with it via the metamethod.
+                                const left: lua.TValue = if (list.items.len > 0) blk: {
+                                    const ts = try lstring.luaS_new(L, list.items);
+                                    list.clearRetainingCapacity();
+                                    break :blk lua.TValue{ .string = ts };
+                                } else if (k > 0) L.stack[ra_idx + k - 1] else L.stack[ra_idx];
+                                try ltm.luaT_trybinTM(L, &left, &val, ra_idx, .CONCAT);
+                                mm_result = L.stack[ra_idx];
+                            },
+                        }
                     }
                 }
-                const ts = try lstring.luaS_new(L, list.items);
-                L.stack[ra_idx] = .{ .string = ts };
+                if (mm_result) |acc| {
+                    if (list.items.len == 0) {
+                        L.stack[ra_idx] = acc;
+                    } else {
+                        // Trailing strings were accumulated after the
+                        // metamethod result; combine them (result is a string
+                        // in `list` from the mm_result+operand path).
+                        const ts = try lstring.luaS_new(L, list.items);
+                        L.stack[ra_idx] = .{ .string = ts };
+                    }
+                } else {
+                    const ts = try lstring.luaS_new(L, list.items);
+                    L.stack[ra_idx] = .{ .string = ts };
+                }
             },
             .CLOSE => {
                 const ra_idx = ci.base + @as(usize, @intCast(GETARG_A(instruction)));
