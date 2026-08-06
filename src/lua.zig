@@ -4486,9 +4486,17 @@ pub fn luaC_collectgarbage(L: *lua_State) !void {
         }
     }
 
-    // Now remove from strt table. The actual memory will be freed by sweep on g.allgc.
+    // Now remove from strt table and free the dead short strings. Short
+    // strings are NOT registered in allgc (see lstring.createString), so the
+    // allgc sweep above never sees them; without this they would leak.
     for (dead_strings.items) |ts| {
         _ = g.strt.swapRemove(ts.s);
+        if (ts.falloc) |falloc| {
+            _ = falloc(ts.ud, @constCast(ts.s.ptr), ts.len + 1, 0);
+        } else if (!ts.externally_owned and ts.s.len > 0) {
+            L.allocator.free(ts.s);
+        }
+        L.allocator.destroy(ts);
     }
 }
 
