@@ -1613,7 +1613,6 @@ fn forlist(ls: *llex.LexState, indexname: *lua.lua_TString) !void {
     const fs = ls.fs.?;
     var e: expdesc = undefined;
     var nvars: i32 = 4;
-    const line = ls.linenumber;
     const base = fs.freereg;
     _ = try new_localvarliteral(ls, "(for state)");
     _ = try new_localvarliteral(ls, "(for state)");
@@ -1624,6 +1623,10 @@ fn forlist(ls: *llex.LexState, indexname: *lua.lua_TString) !void {
         nvars += 1;
     }
     try checknext(ls, llex.TK_IN);
+    // Mirror the reference: 'line' is the line of the iterator expression list
+    // (the token just past 'in'), not the 'in' line, so loop instructions are
+    // attributed to the expression that is actually evaluated/called.
+    const line = ls.linenumber;
     const nexps = try explist(ls, &e);
     try adjust_assign(ls, 4, nexps, &e);
     try adjustlocalvars(ls, 3);
@@ -1862,6 +1865,8 @@ pub fn luaD_protectedparser(
     first_slice: []const u8,
     is_eof: bool,
 ) !*lua.lua_Proto {
+    L.noyield += 1; // cannot yield during parsing (mirrors the reference)
+    defer L.noyield -= 1;
     const anchor_tab = try ltable.createTable(L.allocator, 0, 8);
     try lua.registerGC(L, anchor_tab);
     if (L.l_G) |g| {

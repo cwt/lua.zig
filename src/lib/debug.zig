@@ -95,7 +95,11 @@ fn hookf(L1: *lua.lua_State, ar: ?*lua.lua_Debug) void {
             } else "unknown";
             _ = lua.lua_pushstring(L1, event_str);
             if (ar != null and ar.?.event == lua.LUA_HOOKLINE) {
-                lua.lua_pushinteger(L1, ar.?.currentline);
+                if (ar.?.currentline >= 0) {
+                    lua.lua_pushinteger(L1, ar.?.currentline);
+                } else {
+                    lua.lua_pushnil(L1);
+                }
             } else {
                 lua.lua_pushnil(L1);
             }
@@ -466,6 +470,7 @@ fn db_traceback(L: *lua.lua_State) !i32 {
     } else {
         const level = @as(i32, @intCast(lauxlib.luaL_optinteger(L, arg + 2, if (L == L1) 1 else 0)));
         try lauxlib.luaL_traceback(L, L1, if (msg) |m| m else "", level);
+
     }
     return 1;
 }

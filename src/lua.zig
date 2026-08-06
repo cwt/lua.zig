@@ -231,6 +231,14 @@ pub const TValue = union(enum) {
         };
     }
 
+    /// Returns true if this is a string value.
+    pub fn isString(self: TValue) bool {
+        return switch (self) {
+            .string => true,
+            else => false,
+        };
+    }
+
     /// Extract the f64 value from a numeric TValue. Call only when isNumberValue is true.
     pub fn toFloat(self: TValue) f64 {
         return switch (self) {
@@ -672,10 +680,11 @@ pub fn luaG_traceexec(L: *lua_State) void {
     if ((mask & llimits.LUA_MASKLINE) != 0) {
         const oldpc: i32 = @intCast(L.oldpc);
         if (oldpc == -1 or pc < oldpc or changedline(p, oldpc, pc)) {
+            // Mirror the reference: always call the line hook on a line
+            // change. For stripped code (no debug info) luaG_getfuncline
+            // returns -1, which the debug-lib hook converts to nil.
             const newline = luaG_getfuncline(p, pc);
-            if (newline > 0) {
-                luaD_hook(L, LUA_HOOKLINE, newline, 0, 0);
-            }
+            luaD_hook(L, LUA_HOOKLINE, newline, 0, 0);
         }
         L.oldpc = @intCast(pc);
     }
@@ -803,8 +812,15 @@ const PF_VATAB: u8 = 2; // function has a vararg table
         .lua => |lc| func_idx + 1 + @as(usize, lc.p.maxStackSize) + 20,
     };
     if (needed > L.stack.len) {
-        if (needed > llimits.LUAI_MAXSTACK) {
+        if (L.stack.len > llimits.LUAI_MAXSTACK) {
+            try luaG_runerror(L, "error in error handling");
+        }
+        if (needed > llimits.ERRORSTACKSIZE) {
             return error.StackOverflow;
+        }
+        if (needed > llimits.LUAI_MAXSTACK) {
+            reserveErrorStack(L) catch return error.StackOverflow;
+            try luaG_runerror(L, "stack overflow");
         }
         const extra = if (needed > L.top) needed - L.top else 20;
         if (lua_checkstack(L, @intCast(extra)) == 0) {
@@ -815,8 +831,12 @@ const PF_VATAB: u8 = 2; // function has a vararg table
         .c => |cc| {
             L.nCcalls += 1;
             defer L.nCcalls -= 1;
-            if (L.nCcalls >= llimits.LUAI_MAXCCALLS) {
+            if (L.nCcalls == llimits.LUAI_MAXCCALLS) {
                 try luaG_runerror(L, "C stack overflow");
+            } else if (L.nCcalls >= llimits.LUAI_MAXCCALLS * 11 / 10) {
+                // We are already handling a stack overflow (the error handler
+                // itself keeps raising); report "error in error handling".
+                try luaG_runerror(L, "error in error handling");
             }
             if (lua_checkstack(L, 20) == 0) return error.StackOverflow;
             const old_ci = L.ci;
@@ -1137,6 +1157,10 @@ pub const lua_State = struct {
     err_name: ?[]const u8 = null,
     err_namewhat: ?[]const u8 = null,
     nCcalls: u32,
+    /// Number of non-yieldable contexts entered (mirrors the reference's high
+    /// 16 bits of nCcalls). The main thread starts at 1; parsing increments it.
+    /// `lua_isyieldable` is true iff this is zero.
+    noyield: u32 = 0,
     oldpc: i32,
     nci: i32,
     basehookcount: i32,
@@ -1296,13 +1320,44 @@ pub fn lua_copy(L: *lua_State, fromidx: i32, toidx: i32) void {
     dst.* = src.*;
 }
 
-pub fn growStack(L: *lua_State, needed: usize) !void {
+ pub fn growStack(L: *lua_State, needed: usize) !void {
     if (needed <= L.stack.len) return;
+    // Normal stack growth never crosses the working limit; the ERRORSTACKSIZE
+    // headroom is reserved separately (see reserveErrorStack) only when a
+    // stack overflow is about to be raised, mirroring luaD_growstack.
+    if (needed > llimits.LUAI_MAXSTACK) return error.StackOverflow;
+    const new_cap = @min(@max(L.stack.len * 2, needed + LUA_MINSTACK + 20), llimits.LUAI_MAXSTACK);
+    try reallocStack(L, new_cap);
+}
+
+/// Reserve the error-handling headroom: grow the stack to ERRORSTACKSIZE so
+/// the error handler (e.g. debug.traceback) can run after a stack overflow.
+fn reserveErrorStack(L: *lua_State) !void {
+    if (L.stack.len >= llimits.ERRORSTACKSIZE) return;
+    try reallocStack(L, llimits.ERRORSTACKSIZE);
+}
+
+/// Shrink the stack back to a reasonable size after it was overgrown (e.g. by
+/// a stack overflow). Mirrors luaD_shrinkstack.
+fn shrinkStack(L: *lua_State) void {
+    var lim = L.top;
+    var ci = L.ci;
+    while (ci) |c| {
+        if (lim < c.top) lim = c.top;
+        ci = c.previous;
+    }
+    const inuse = @max(lim, @as(usize, @intCast(LUA_MINSTACK))) + 1;
+    const max = if (inuse > llimits.LUAI_MAXSTACK / 3) llimits.LUAI_MAXSTACK else inuse * 3;
+    if (L.stack.len > max) {
+        reallocStack(L, @max(max, @as(usize, @intCast(LUA_MINSTACK)))) catch {};
+    }
+}
+
+fn reallocStack(L: *lua_State, new_cap: usize) !void {
     const old_ptr = L.stack.ptr;
     const old_len = L.stack.len;
     const old_base = @intFromPtr(old_ptr);
     const old_end = old_base + old_len * @sizeOf(TValue);
-    const new_cap = @min(@max(L.stack.len * 2, needed + LUA_MINSTACK + 20), llimits.ERRORSTACKSIZE);
     L.stack = try L.allocator.realloc(L.stack, new_cap);
     var curr = L.openupval;
     while (curr) |uv| {
@@ -1313,7 +1368,9 @@ pub fn growStack(L: *lua_State, needed: usize) !void {
         }
         curr = uv.next;
     }
-    @memset(L.stack[old_len..], .{ .nil = {} });
+    if (new_cap > old_len) {
+        @memset(L.stack[old_len..new_cap], .{ .nil = {} });
+    }
     L.stack_last = L.stack.len - 1;
 }
 
@@ -1322,7 +1379,10 @@ pub fn lua_checkstack(L: *lua_State, n: i32) i32 {
     const extra = @as(usize, @intCast(n));
     if (extra > llimits.LUAI_MAXSTACK) return 0;
     const needed = L.top + extra;
-    if (needed > llimits.LUAI_MAXSTACK) return 0;
+    // The stack may grow past LUAI_MAXSTACK up to ERRORSTACKSIZE: that
+    // headroom is what lets the error handler (debug.traceback) run after a
+    // stack overflow (mirrors luaD_growstack's 'ERRORSTACKSIZE' branch).
+    if (needed > llimits.ERRORSTACKSIZE) return 0;
     growStack(L, needed) catch return 0;
     return 1;
 }
@@ -3250,12 +3310,23 @@ pub inline fn lua_setuservalue(L: *lua_State, idx: i32) i32 {
     return lua_setiuservalue(L, idx, 1);
 }
 
-pub fn lua_callk(L: *lua_State, nargs: i32, nresults: i32, ctx: lua_KContext, k: ?lua_KFunction) !void {
-    if (k != null and lua_isyieldable(L) != 0) {
+ pub fn lua_callk(L: *lua_State, nargs: i32, nresults: i32, ctx: lua_KContext, k: ?lua_KFunction) !void {
+    const yieldable_call = (k != null and lua_isyieldable(L) != 0);
+    if (yieldable_call) {
         if (L.ci) |ci| {
             ci.k = k;
             ci.ctx = ctx;
         }
+    }
+    if (!yieldable_call) {
+        // Non-yieldable call (no continuation): mirror luaD_callnoyield so
+        // nested yields report "attempt to yield across a C-call boundary".
+        // NOTE: the defer MUST be at function scope (Zig runs a block-scoped
+        // defer at the end of the `if` block, reverting it too early).
+        L.noyield += 1;
+    }
+    defer {
+        if (!yieldable_call) L.noyield -= 1;
     }
     const func_idx = L.top - @as(usize, @intCast(nargs)) - 1;
     if (try precall(L, func_idx, nresults)) |new_ci| {
@@ -3273,11 +3344,21 @@ pub fn lua_call(L: *lua_State, nargs: i32, nresults: i32) !void {
 }
 
 pub fn lua_pcallk(L: *lua_State, nargs: i32, nresults: i32, errfunc: i32, ctx: lua_KContext, k: ?lua_KFunction) anyerror!i32 {
-    if (k != null and lua_isyieldable(L) != 0) {
+    const yieldable_call = (k != null and lua_isyieldable(L) != 0);
+    if (yieldable_call) {
         if (L.ci) |ci| {
             ci.k = k;
             ci.ctx = ctx;
         }
+    }
+    if (!yieldable_call) {
+        // Non-yieldable protected call (no continuation): mirror the reference
+        // (luaD_pcall -> f_call -> luaD_callnoyield). Kept until the call
+        // finishes (including any error unwinding).
+        L.noyield += 1;
+    }
+    defer {
+        if (!yieldable_call) L.noyield -= 1;
     }
     const old_ci = L.ci;
 
@@ -3412,6 +3493,10 @@ pub fn lua_pcallk(L: *lua_State, nargs: i32, nresults: i32, errfunc: i32, ctx: l
         // surrounding C pcall wrapper can prepend the status boolean.
         L.stack[func_idx] = err_obj;
         L.top = func_idx + 1;
+        // After a stack overflow the stack was overgrown (ERRORSTACKSIZE);
+        // shrink it back so subsequent calls don't inherit the overflow
+        // headroom as their working limit (mirrors luaD_shrinkstack).
+        shrinkStack(L);
         return LUA_ERRRUN;
     }
 
@@ -3619,6 +3704,17 @@ pub fn luaG_opinterror(L: *lua_State, p1: *const TValue, p2: *const TValue, msg:
     return luaG_typeerrorPtr(L, err_obj, msg);
 }
 
+pub fn luaG_concaterror(L: *lua_State, p1: *const TValue, p2: *const TValue) !void {
+    // Port of the reference: if the first operand is (or can be converted to)
+    // a string, blame the second operand. Without the string check, an already
+    // coerced operand (e.g. `1..{}`) would wrongly report "a string value".
+    var err_obj = p1;
+    if (p1.isNumberValue() or p1.isString()) {
+        err_obj = p2;
+    }
+    return luaG_typeerrorPtr(L, err_obj, "concatenate");
+}
+
 pub fn luaG_ordererror(L: *lua_State, p1: TValue, p2: TValue) !void {
     const t1 = ltm.luaT_objtypename(L, p1);
     const t2 = ltm.luaT_objtypename(L, p2);
@@ -3824,7 +3920,14 @@ pub fn lua_dump(L: *lua_State, writer: lua_Writer, data: ?*anyopaque, strip: i32
 pub fn lua_yieldk(L: *lua_State, nresults: i32, ctx: lua_KContext, k: ?lua_KFunction) anyerror!i32 {
     const ci = L.ci orelse return error.RuntimeError;
     if (lua_isyieldable(L) == 0) {
-        return error.RuntimeError;
+        // Mirror the reference: report a different message depending on
+        // whether this is the main thread or a coroutine stuck in a
+        // non-yieldable context.
+        if (G(L).mainthread != L) {
+            try luaG_runerror(L, "attempt to yield across a C-call boundary");
+        } else {
+            try luaG_runerror(L, "attempt to yield from outside a coroutine");
+        }
     }
     L.status = LUA_YIELD;
     ci.nyield = nresults;
@@ -3977,9 +4080,7 @@ pub fn lua_status(L: *lua_State) i32 {
 }
 
 pub fn lua_isyieldable(L: *lua_State) i32 {
-    if (L.ci == &L.base_ci) return 0;
-    if (L.nCcalls >= llimits.LUAI_MAXCCALLS) return 0;
-    return 1;
+    return if (L.noyield == 0) 1 else 0;
 }
 
 pub fn lua_setwarnf(L: *lua_State, f: lua_WarnFunction, ud: ?*anyopaque) void {
@@ -4098,6 +4199,30 @@ fn markValue(L: *lua_State, gray_list: *std.ArrayList(*VMGCObject), val: TValue)
         .proto => |p| if (p) |pr| if (getGCObject(g, pr)) |gc| try markObject(L, gc, gray_list),
         .userdata => |u| if (u) |ud| if (getGCObject(g, ud)) |gc| try markObject(L, gc, gray_list),
         else => {},
+    }
+}
+
+/// Mark a thread's stack slots (per its CallInfo chain) and open upvalues.
+fn markThreadStack(L: *lua_State, gray_list: *std.ArrayList(*VMGCObject), th: *lua_State) !void {
+    const g = G(L);
+    var opt_th_ci: ?*CallInfo = th.ci;
+    var next_th_ci_func: ?usize = null;
+    while (opt_th_ci) |th_ci| {
+        var s_idx = th_ci.func;
+        const top_limit = if (next_th_ci_func) |nfunc| nfunc else th.top;
+        const s_lim = @min(top_limit, th.stack.len);
+        while (s_idx < s_lim) : (s_idx += 1) {
+            try markValue(L, gray_list, th.stack[s_idx]);
+        }
+        next_th_ci_func = th_ci.func;
+        opt_th_ci = th_ci.previous;
+    }
+    var curr_uv = th.openupval;
+    while (curr_uv) |uv| {
+        if (getGCObject(g, uv)) |gc| {
+            try markObject(L, gc, gray_list);
+        }
+        curr_uv = uv.next;
     }
 }
 
@@ -4395,32 +4520,23 @@ pub fn luaC_collectgarbage(L: *lua_State) !void {
         opt_ci = ci.previous;
     }
 
-    // Root 4b: The stacks and open upvalues of all created threads
+    // Root 4b: The stacks and open upvalues of all created threads, plus the
+    // main thread (which is not in thread_list but is always a GC root; the
+    // reference marks it in markroot). Without this, running a GC from a
+    // coroutine could collect objects still referenced by the main thread.
+    if (g.mainthread) |mt| {
+        if (mt != L) {
+            try markThreadStack(L, &gray_list, mt);
+        } else {
+        }
+    }
     var curr_th = g.thread_list;
     while (curr_th) |th| {
         if (getGCObject(g, th)) |gc| {
             try markObject(L, gc, &gray_list);
         }
         if (th != L) {
-            var opt_th_ci: ?*CallInfo = th.ci;
-            var next_th_ci_func: ?usize = null;
-            while (opt_th_ci) |th_ci| {
-                var s_idx = th_ci.func;
-                const top_limit = if (next_th_ci_func) |nfunc| nfunc else th.top;
-                const s_lim = @min(top_limit, th.stack.len);
-                while (s_idx < s_lim) : (s_idx += 1) {
-                    try markValue(L, &gray_list, th.stack[s_idx]);
-                }
-                next_th_ci_func = th_ci.func;
-                opt_th_ci = th_ci.previous;
-            }
-        }
-        var curr_uv = th.openupval;
-        while (curr_uv) |uv| {
-            if (getGCObject(g, uv)) |gc| {
-                try markObject(L, gc, &gray_list);
-            }
-            curr_uv = uv.next;
+            try markThreadStack(L, &gray_list, th);
         }
         curr_th = th.twups;
     }
@@ -4777,11 +4893,15 @@ pub fn luaG_errormsg(L: *lua_State) anyerror {
         L.stack[L.top - 1] = L.stack[errfunc];
         L.top += 1;
 
+        var handler_errored = false;
         const err_ci = precall(L, L.top - 2, 1) catch |e| b: {
-            if (e == error.StackError or e == error.StackOverflow) {
+            // The error handler itself raised (e.g. xpcall(error, error)):
+            // report "error in error handling", mirroring the reference's
+            // LUA_ERRERR path. This also covers stack errors in the handler.
+            if (e == error.StackError or e == error.StackOverflow or e == error.RuntimeError) {
+                handler_errored = true;
                 if (lstring.luaS_new(L, "error in error handling")) |ts| {
-                    L.stack[L.top - 1] = TValue{ .string = ts };
-                    L.err_obj = L.stack[L.top - 1];
+                    L.err_obj = TValue{ .string = ts };
                 } else |_| {}
             }
             break :b @as(?*CallInfo, null);
@@ -4789,14 +4909,18 @@ pub fn luaG_errormsg(L: *lua_State) anyerror {
         if (err_ci) |eci| {
             lvm.run(L, eci) catch |e| {
                 if (e == error.StackOverflow or e == error.StackError or e == error.RuntimeError) {
+                    handler_errored = true;
                     if (lstring.luaS_new(L, "error in error handling")) |ts| {
-                        L.stack[L.top - 1] = TValue{ .string = ts };
-                        L.err_obj = L.stack[L.top - 1];
+                        L.err_obj = TValue{ .string = ts };
                     } else |_| {}
                 }
             };
         }
-        if (L.top > 0) {
+        if (handler_errored) {
+            if (L.top > 0) {
+                L.stack[L.top - 1] = L.err_obj;
+            }
+        } else if (L.top > 0) {
             L.err_obj = L.stack[L.top - 1];
         }
     }
@@ -5246,6 +5370,7 @@ pub fn luaL_newstate_io(L: *lua_State, gpa: std.mem.Allocator, io: std.Io) !void
         .hook = null,
         .errfunc = 0,
         .nCcalls = 0,
+        .noyield = 1, // main thread is always non-yieldable
         .oldpc = 0,
         .nci = 0,
         .basehookcount = 0,

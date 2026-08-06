@@ -419,8 +419,8 @@ pub fn luaL_where(L: *lua.lua_State, level: i32) void {
     _ = lua.lua_pushstring(L, "");
 }
 
-const LEVELS1 = 12;
-const LEVELS2 = 10;
+const LEVELS1 = 10;
+const LEVELS2 = 11;
 
 fn pushfuncname(L: *lua.lua_State, ar: *const lua.lua_Debug) !void {
     if (ar.namewhat != null and ar.namewhat.?.len > 0) {
@@ -448,6 +448,27 @@ fn pushfuncname(L: *lua.lua_State, ar: *const lua.lua_Debug) !void {
     }
 }
 
+/// Mirror the reference `lastlevel`: find the largest valid stack level for
+/// the state (exponential search + binary search).
+fn lastlevel(L2: *lua.lua_State) i32 {
+    var ar: lua.lua_Debug = undefined;
+    var li: i32 = 1;
+    var le: i32 = 1;
+    while (lua.lua_getstack(L2, le, &ar) != 0) {
+        li = le;
+        le *= 2;
+    }
+    while (li < le) {
+        const m = @divTrunc(li + le, 2);
+        if (lua.lua_getstack(L2, m, &ar) != 0) {
+            li = m + 1;
+        } else {
+            le = m;
+        }
+    }
+    return le - 1;
+}
+
 pub fn luaL_traceback(L: *lua.lua_State, L2: *lua.lua_State, msg: []const u8, level: i32) !void {
     var b = luaL_Buffer{};
     luaL_buffinit(L, &b);
@@ -470,10 +491,7 @@ pub fn luaL_traceback(L: *lua.lua_State, L2: *lua.lua_State, msg: []const u8, le
     }
 
     var ar: lua.lua_Debug = undefined;
-    var last: i32 = 0;
-    while (lua.lua_getstack(L2, last, &ar) != 0) {
-        last += 1;
-    }
+    const last: i32 = lastlevel(L2);
 
     var lvl = level;
     var limit2show: i32 = if (last - lvl > LEVELS1 + LEVELS2) LEVELS1 else -1;

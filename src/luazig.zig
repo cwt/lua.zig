@@ -137,6 +137,14 @@ fn printError(L: *lua.lua_State, io: std.Io) void {
         stderrWrite(io, "\n") catch {};
     } else {
         stderrWrite(io, "(error object is not a string)\n") catch {};
+        stderrWrite(io, "type: ") catch {};
+        stderrWrite(io, lua.lua_typename(lua.lua_type(L, -1))) catch {};
+        stderrWrite(io, "\n") catch {};
+        _ = lauxlib.luaL_traceback(L, L, "", 1) catch {};
+        if (lua.lua_tostring(L, -1)) |tb| {
+            stderrWrite(io, tb) catch {};
+            stderrWrite(io, "\n") catch {};
+        }
     }
     lua.lua_pop(L, 1);
 }

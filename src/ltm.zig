@@ -228,7 +228,7 @@ pub fn luaT_trybinTM(L: *lua.lua_State, p1: *const lua.TValue, p2: *const lua.TV
                 return lua.luaG_typeerrorPtr(L, p1, "get length of");
             },
             .CONCAT => {
-                return lua.luaG_opinterror(L, p1, p2, "concatenate");
+                return lua.luaG_concaterror(L, p1, p2);
             },
             else => {
                 return lua.luaG_opinterror(L, p1, p2, "perform arithmetic on");

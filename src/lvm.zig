@@ -1299,85 +1299,51 @@ pub fn run(L: *lua.lua_State, active_ci: *lua.CallInfo) anyerror!void {
             .CONCAT => {
                 const ra_idx = ci.base + @as(usize, @intCast(GETARG_A(instruction)));
                 const n = @as(usize, @intCast(GETARG_B(instruction)));
-                var list = std.ArrayListUnmanaged(u8).empty;
-                defer list.deinit(L.allocator);
-                // Running result: nil until a concatenation metamethod runs;
-                // once it does, L.stack[ra_idx] holds that result and further
-                // operands concatenate onto it (mirroring the reference's
-                // incremental luaV_concat, which invokes the metamethod once
-                // per non-string group, not once per operand).
-                var mm_result: ?lua.TValue = null;
-                var k: usize = 0;
-                while (k < n) : (k += 1) {
-                    const val = L.stack[ra_idx + k];
-                    if (mm_result) |acc| {
-                        // A metamethod already produced a running result.
-                        if (val == .string or val == .number or val == .integer) {
-                            // Convert the result and concatenate the operand.
-                            var buf: [128]u8 = undefined;
-                            const acc_s: []const u8 = switch (acc) {
-                                .string => |s| s.?.s,
-                                .number => |num| std.fmt.bufPrint(&buf, "{d}", .{num}) catch "",
-                                .integer => |num| std.fmt.bufPrint(&buf, "{d}", .{num}) catch "",
-                                else => "",
-                            };
-                            try list.appendSlice(L.allocator, acc_s);
-                            switch (val) {
-                                .string => |s| try list.appendSlice(L.allocator, s.?.s),
-                                .number => |num| {
-                                    var nb: [64]u8 = undefined;
-                                    try list.appendSlice(L.allocator, std.fmt.bufPrint(&nb, "{d}", .{num}) catch "");
-                                },
-                                .integer => |num| {
-                                    var nb: [32]u8 = undefined;
-                                    try list.appendSlice(L.allocator, std.fmt.bufPrint(&nb, "{d}", .{num}) catch "");
-                                },
-                                else => unreachable,
+                if (n >= 2) {
+                    var list = std.ArrayListUnmanaged(u8).empty;
+                    defer list.deinit(L.allocator);
+                    // Right-to-left fold mirroring luaV_concat: at each step
+                    // consider the two rightmost operands; if both are (or
+                    // convert to) strings, merge a maximal run of consecutive
+                    // stringish operands; otherwise invoke the __concat
+                    // metamethod on the pair (left operand's metatable wins).
+                    // The metamethod is therefore called once per non-string
+                    // group, with the correct operand pair (the original
+                    // left-to-right loop wrongly paired a leading non-string
+                    // operand with itself, e.g. `c..d` -> "ccd").
+                    var k: usize = n;
+                    while (k > 1) {
+                        const lhs_idx = ra_idx + k - 2;
+                        const rhs_idx = ra_idx + k - 1;
+                        const lhs = L.stack[lhs_idx];
+                        const rhs = L.stack[rhs_idx];
+                        if (isStringish(lhs) and isStringish(rhs)) {
+                            var start = k - 2;
+                            while (start > 0 and isStringish(L.stack[ra_idx + start - 1])) : (start -= 1) {}
+                            list.clearRetainingCapacity();
+                            var j = start;
+                            while (j < k) : (j += 1) {
+                                switch (L.stack[ra_idx + j]) {
+                                    .string => |s| try list.appendSlice(L.allocator, s.?.s),
+                                    .number => |num| {
+                                        var b: [64]u8 = undefined;
+                                        try list.appendSlice(L.allocator, std.fmt.bufPrint(&b, "{d}", .{num}) catch "");
+                                    },
+                                    .integer => |num| {
+                                        var b: [32]u8 = undefined;
+                                        try list.appendSlice(L.allocator, std.fmt.bufPrint(&b, "{d}", .{num}) catch "");
+                                    },
+                                    else => unreachable,
+                                }
                             }
-                            mm_result = null;
+                            const ts = try lstring.luaS_new(L, list.items);
+                            L.stack[ra_idx + start] = .{ .string = ts };
+                            k = start + 1;
                         } else {
-                            try ltm.luaT_trybinTM(L, &acc, &val, ra_idx, .CONCAT);
-                            mm_result = L.stack[ra_idx];
-                        }
-                    } else {
-                        switch (val) {
-                            .string => |s| try list.appendSlice(L.allocator, s.?.s),
-                            .number => |num| {
-                                var buf: [64]u8 = undefined;
-                                try list.appendSlice(L.allocator, std.fmt.bufPrint(&buf, "{d}", .{num}) catch "");
-                            },
-                            .integer => |num| {
-                                var buf: [32]u8 = undefined;
-                                try list.appendSlice(L.allocator, std.fmt.bufPrint(&buf, "{d}", .{num}) catch "");
-                            },
-                            else => {
-                                // Non-string operand: concatenate the
-                                // accumulated string (or the previous operand)
-                                // with it via the metamethod.
-                                const left: lua.TValue = if (list.items.len > 0) blk: {
-                                    const ts = try lstring.luaS_new(L, list.items);
-                                    list.clearRetainingCapacity();
-                                    break :blk lua.TValue{ .string = ts };
-                                } else if (k > 0) L.stack[ra_idx + k - 1] else L.stack[ra_idx];
-                                try ltm.luaT_trybinTM(L, &left, &val, ra_idx, .CONCAT);
-                                mm_result = L.stack[ra_idx];
-                            },
+                            try ltm.luaT_trybinTM(L, &lhs, &rhs, lhs_idx, .CONCAT);
+                            k -= 1;
                         }
                     }
-                }
-                if (mm_result) |acc| {
-                    if (list.items.len == 0) {
-                        L.stack[ra_idx] = acc;
-                    } else {
-                        // Trailing strings were accumulated after the
-                        // metamethod result; combine them (result is a string
-                        // in `list` from the mm_result+operand path).
-                        const ts = try lstring.luaS_new(L, list.items);
-                        L.stack[ra_idx] = .{ .string = ts };
-                    }
-                } else {
-                    const ts = try lstring.luaS_new(L, list.items);
-                    L.stack[ra_idx] = .{ .string = ts };
                 }
             },
             .CLOSE => {
@@ -1523,6 +1489,13 @@ pub fn run(L: *lua.lua_State, active_ci: *lua.CallInfo) anyerror!void {
                     val = L.stack[ra_idx];
                 }
                 ci.nextraargs += @intCast(ccmt);
+                // The PF_VAHID undo delta must be computed from the frame's
+                // own extra args (set by buildhiddenargs), NOT including the
+                // metamethods just inserted here (the reference computes delta
+                // before luaD_pretailcall). Using the inflated value makes the
+                // relocated frame land one slot too low, so the tail-called
+                // function's results miss the caller's expected position.
+                const nextraargs_before: i32 = ci.nextraargs - @as(i32, @intCast(ccmt));
                 const cl_call = val.function.?;
                 switch (cl_call.*) {
                     .c => {
@@ -1546,7 +1519,7 @@ pub fn run(L: *lua.lua_State, active_ci: *lua.CallInfo) anyerror!void {
                         // poscall, so the results land at the original caller's
                         // expected position (mirrors `ci->func.p -= delta`).
                         if (nparams1 != 0) {
-                            ci.func -= @as(usize, @intCast(@as(i32, @intCast(ci.nextraargs)) + nparams1));
+                            ci.func -= @as(usize, @intCast(nextraargs_before + nparams1));
                             ci.base = ci.func + 1;
                         }
                         try lua.poscall(L, ci, ra_idx, num_returned);
@@ -1575,7 +1548,7 @@ pub fn run(L: *lua.lua_State, active_ci: *lua.CallInfo) anyerror!void {
                         // relocated the frame, so restore it before reusing the ci.
                         const nparams1 = GETARG_C(instruction);
                         if (nparams1 != 0) {
-                            ci.func -= @as(usize, @intCast(@as(i32, @intCast(ci.nextraargs)) + nparams1));
+                            ci.func -= @as(usize, @intCast(nextraargs_before + nparams1));
                             ci.base = ci.func + 1;
                         }
                         var k: usize = 0;
@@ -1823,6 +1796,15 @@ fn docondjump(L: *lua.lua_State, ci: *lua.CallInfo, cond: bool, code: []Instruct
         const sJ = GETARG_sJ(jmp_inst);
         ci.savedpc = @intCast(@as(i64, @intCast(ci.savedpc)) + sJ + 1);
     }
+}
+
+/// True if a value can participate in string concatenation directly (string)
+/// or after numeric coercion (number/integer) without a metamethod.
+fn isStringish(v: lua.TValue) bool {
+    return switch (v) {
+        .string, .number, .integer => true,
+        else => false,
+    };
 }
 
 fn isFalse(val: lua.TValue) bool {
