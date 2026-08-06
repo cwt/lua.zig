@@ -961,6 +961,8 @@ pub const CallInfo = struct {
     clsret: bool = false,
     is_lua: bool = false,
     is_hooked: bool = false,
+    /// Set while running a __gc finalizer, mirroring the reference's CIST_FIN.
+    is_fin: bool = false,
     /// Set when this frame was created by a tail call (OP_TAILCALL reusing the
     /// caller's frame), mirroring the reference's CIST_TAIL. Read by the
     /// debug API's `t` option (debug.getinfo(..., "t").istailcall).
@@ -977,6 +979,12 @@ pub const VMGCObject = struct {
     next: ?*VMGCObject,
     val: ValUnion,
     color: GCColor = .white,
+    /// True once this object's __gc metamethod has been called, so a later
+    /// collection frees it without running the finalizer again.
+    finalized: bool = false,
+    /// Set by the pre-sweep pass when this (dead) object has an unrun __gc
+    /// finalizer and its metatable has been kept alive for it.
+    pending_fin: bool = false,
 
     pub const ValUnion = union(enum) {
         table: *lua_Table,
@@ -1004,6 +1012,8 @@ pub const global_State = struct {
     seed: usize,
     registry: TValue,
     allgc: ?*VMGCObject = null,
+    /// Objects awaiting their __gc finalizer (kept alive for one cycle).
+    finobj: ?*VMGCObject = null,
     mt: [9]?*lua_Table = [_]?*lua_Table{null} ** 9,
     tmname: [25]?*lua_TString = [_]?*lua_TString{null} ** 25,
     io_backend: ?std.Io.Threaded = null,
@@ -2421,6 +2431,10 @@ fn funcnamefromcall(L: *lua_State, ci: *CallInfo, name: *?[]const u8) ?[]const u
     if (ci.is_hooked) {
         name.* = "?";
         return "hook";
+    }
+    if (ci.is_fin) {
+        name.* = "__gc";
+        return "metamethod";
     }
     if (isLua(ci, L)) {
         const val = L.stack[ci.func];
@@ -4087,6 +4101,110 @@ fn markValue(L: *lua_State, gray_list: *std.ArrayList(*VMGCObject), val: TValue)
     }
 }
 
+/// Traverse the outgoing references of a gray/black object, marking them.
+/// Shared by the main collection and the pre-finalizer marking pass.
+fn traverseGrayObject(L: *lua_State, gray_list: *std.ArrayList(*VMGCObject), gc: *VMGCObject) !void {
+    const g = G(L);
+    switch (gc.val) {
+        .table => |t| {
+            const mode = if (t.metatable) |mt| getWeakMode(L, mt) else WeakMode{ .keys = false, .vals = false };
+            // Mark array part
+            if (!mode.vals) {
+                if (t.array.items.len > 0) {
+                    for (t.array.items) |val| {
+                        try markValue(L, gray_list, val);
+                    }
+                }
+            }
+            // Mark hash part
+            for (t.node.items) |nd| {
+                if (nd.val != .nil) {
+                    if (!mode.keys) {
+                        try markValue(L, gray_list, nd.key);
+                    }
+                    if (!mode.vals) {
+                        try markValue(L, gray_list, nd.val);
+                    }
+                }
+            }
+            // Mark metatable
+            if (t.metatable) |mt| {
+                if (getGCObject(g, mt)) |mt_gc| {
+                    try markObject(L, mt_gc, gray_list);
+                }
+            }
+        },
+        .closure => |cl| {
+            switch (cl.*) {
+                .c => |cc| {
+                    for (cc.upvals) |uv| {
+                        try markValue(L, gray_list, uv);
+                    }
+                },
+                .lua => |lc| {
+                    // Mark prototype
+                    if (getGCObject(g, lc.p)) |proto_gc| {
+                        try markObject(L, proto_gc, gray_list);
+                    }
+                    // Mark upvalues
+                    for (lc.upvals) |opt_uv| {
+                        if (opt_uv) |uv| {
+                            if (getGCObject(g, uv)) |uv_gc| {
+                                try markObject(L, uv_gc, gray_list);
+                            }
+                        }
+                    }
+                },
+            }
+        },
+        .upval => |uv| {
+            if (uv.v == &uv.value) {
+                try markValue(L, gray_list, uv.value);
+            } else {
+                const addr = @intFromPtr(uv.v);
+                const base = @intFromPtr(L.stack.ptr);
+                const top_addr = base + L.top * @sizeOf(TValue);
+                if (addr >= base and addr < top_addr) {
+                    try markValue(L, gray_list, uv.v.*);
+                }
+            }
+        },
+        .proto => |p| {
+            if (p.source) |src| try markString(L, gray_list, src);
+            // Mark upvalue names
+            for (p.upvalues) |uvd| {
+                if (uvd.name) |name| try markString(L, gray_list, name);
+            }
+            // Mark local variable names
+            for (p.locvars) |lv| {
+                if (lv.varname) |name| try markString(L, gray_list, name);
+            }
+            // Mark constants
+            for (p.k) |val| {
+                try markValue(L, gray_list, val);
+            }
+            // Mark nested prototypes
+            for (p.p) |sub_p| {
+                if (getGCObject(g, sub_p)) |sub_gc| {
+                    try markObject(L, sub_gc, gray_list);
+                }
+            }
+        },
+        .userdata => |ud| {
+            for (ud.uv) |val| {
+                try markValue(L, gray_list, val);
+            }
+            if (ud.metatable) |mt| {
+                if (getGCObject(g, mt)) |mt_gc| {
+                    try markObject(L, mt_gc, gray_list);
+                }
+            }
+        },
+        // Strings (external) have no outgoing references to traverse.
+        .string => {},
+    }
+}
+
 fn freeGCObject(L: *lua_State, gc: *VMGCObject) void {
     const g = G(L);
     const sz: usize = switch (gc.val) {
@@ -4311,106 +4429,7 @@ pub fn luaC_collectgarbage(L: *lua_State) !void {
     while (gray_list.pop()) |gc| {
         if (gc.color == .black) continue;
         gc.color = .black;
-
-        // Traverse fields of the object and mark them
-        switch (gc.val) {
-            .table => |t| {
-                const mode = if (t.metatable) |mt| getWeakMode(L, mt) else WeakMode{ .keys = false, .vals = false };
-                // Mark array part
-                if (!mode.vals) {
-                    if (t.array.items.len > 0) {
-                        for (t.array.items) |val| {
-                            try markValue(L, &gray_list, val);
-                        }
-                    }
-                }
-                // Mark hash part
-                for (t.node.items) |nd| {
-                    if (nd.val != .nil) {
-                        if (!mode.keys) {
-                            try markValue(L, &gray_list, nd.key);
-                        }
-                        if (!mode.vals) {
-                            try markValue(L, &gray_list, nd.val);
-                        }
-                    }
-                }
-                // Mark metatable
-                if (t.metatable) |mt| {
-                    if (getGCObject(g, mt)) |mt_gc| {
-                        try markObject(L, mt_gc, &gray_list);
-                    }
-                }
-            },
-            .closure => |cl| {
-                switch (cl.*) {
-                    .c => |cc| {
-                        for (cc.upvals) |uv| {
-                            try markValue(L, &gray_list, uv);
-                        }
-                    },
-                    .lua => |lc| {
-                        // Mark prototype
-                        if (getGCObject(g, lc.p)) |proto_gc| {
-                            try markObject(L, proto_gc, &gray_list);
-                        }
-                        // Mark upvalues
-                        for (lc.upvals) |opt_uv| {
-                            if (opt_uv) |uv| {
-                                if (getGCObject(g, uv)) |uv_gc| {
-                                    try markObject(L, uv_gc, &gray_list);
-                                }
-                            }
-                        }
-                    },
-                }
-            },
-            .upval => |uv| {
-                if (uv.v == &uv.value) {
-                    try markValue(L, &gray_list, uv.value);
-                } else {
-                    const addr = @intFromPtr(uv.v);
-                    const base = @intFromPtr(L.stack.ptr);
-                    const top_addr = base + L.top * @sizeOf(TValue);
-                    if (addr >= base and addr < top_addr) {
-                        try markValue(L, &gray_list, uv.v.*);
-                    }
-                }
-            },
-            .proto => |p| {
-                if (p.source) |src| try markString(L, &gray_list, src);
-                // Mark upvalue names
-                for (p.upvalues) |uvd| {
-                    if (uvd.name) |name| try markString(L, &gray_list, name);
-                }
-                // Mark local variable names
-                for (p.locvars) |lv| {
-                    if (lv.varname) |name| try markString(L, &gray_list, name);
-                }
-                // Mark constants
-                for (p.k) |val| {
-                    try markValue(L, &gray_list, val);
-                }
-                // Mark nested prototypes
-                for (p.p) |sub_p| {
-                    if (getGCObject(g, sub_p)) |sub_gc| {
-                        try markObject(L, sub_gc, &gray_list);
-                    }
-                }
-            },
-            .userdata => |ud| {
-                for (ud.uv) |val| {
-                    try markValue(L, &gray_list, val);
-                }
-                if (ud.metatable) |mt| {
-                    if (getGCObject(g, mt)) |mt_gc| {
-                        try markObject(L, mt_gc, &gray_list);
-                    }
-                }
-            },
-            // Strings (external) have no outgoing references to traverse.
-            .string => {},
-        }
+        try traverseGrayObject(L, &gray_list, gc);
     }
 
     // 4.5 Clear weak tables
@@ -4453,12 +4472,72 @@ pub fn luaC_collectgarbage(L: *lua_State) !void {
     luaS_clearcache(L);
 
     // 5. Sweep phase: free white objects
+    // Pre-pass: identify objects with an unrun __gc finalizer and keep their
+    // metatables alive (mark them gray and traverse), so the sweep can
+    // safely inspect __gc and the finalizer call has a live metatable.
+    var pending = std.ArrayList(*VMGCObject).empty;
+    defer pending.deinit(L.allocator);
+    {
+        var pp = g.allgc;
+        while (pp) |gc| : (pp = gc.next) {
+            if (gc.color != .white or gc.finalized) continue;
+            const mt = metatableOf(L, gc);
+            if (mt) |m| {
+                if (getGCObject(g, m)) |mt_gc| {
+                    const fin = rawHasFinalizer(L, m);
+                    if (fin) {
+                        try pending.append(L.allocator, gc);
+                        gc.pending_fin = true;
+                        if (mt_gc.color == .white) {
+                            mt_gc.color = .gray;
+                            try gray_list.append(L.allocator, mt_gc);
+                        }
+                    }
+                }
+            }
+        }
+        // Traverse the metatables just kept alive (so __gc and friends survive).
+        while (gray_list.pop()) |gc| {
+            if (gc.color == .black) continue;
+            gc.color = .black;
+            try traverseGrayObject(L, &gray_list, gc);
+        }
+    }
+
     var prev_gc: ?*VMGCObject = null;
     var sweep_curr = g.allgc;
     g.gc_count = 0;
     while (sweep_curr) |gc| {
         const next_gc = gc.next;
         if (gc.color == .white) {
+            if (gc.finalized) {
+                // Finalizer already ran last cycle; now free it.
+                if (prev_gc) |prev| {
+                    prev.next = next_gc;
+                } else {
+                    g.allgc = next_gc;
+                }
+                freeGCObject(L, gc);
+                sweep_curr = next_gc;
+                continue;
+            }
+            // Objects with an unrun __gc finalizer (flagged by the pre-pass)
+            // are kept for one cycle and finalized after the sweep; next
+            // collection frees them.
+            if (gc.pending_fin) {
+                gc.pending_fin = false;
+                // Unlink from allgc and link into the pending-finalization list.
+                if (prev_gc) |prev| {
+                    prev.next = next_gc;
+                } else {
+                    g.allgc = next_gc;
+                }
+                gc.next = g.finobj;
+                g.finobj = gc;
+                gc.color = .white;
+                sweep_curr = next_gc;
+                continue;
+            }
             // Unlink from allgc
             if (prev_gc) |prev| {
                 prev.next = next_gc;
@@ -4507,6 +4586,101 @@ pub fn luaC_collectgarbage(L: *lua_State) !void {
         }
         L.allocator.destroy(ts);
     }
+
+    // 6. Run pending finalizers. Each object's fields are marked (so the
+    // objects they reference survive during the __gc call), the finalizer
+    // runs, and the object is linked back into allgc as finalized so the next
+    // collection frees it without re-running __gc.
+    while (g.finobj) |fobj| {
+        g.finobj = fobj.next;
+        try callFinalizer(L, fobj);
+    }
+}
+
+/// True if `gc` is a table/userdata whose metatable defines a `__gc` field.
+/// Requires the metatable to still be alive (not swept).
+fn hasFinalizer(L: *lua_State, gc: *VMGCObject) bool {
+    const g = G(L);
+    const mt = metatableOf(L, gc) orelse return false;
+    if (getGCObject(g, mt)) |mt_gc| {
+        if (mt_gc.color == .white) return false;
+    }
+    return rawHasFinalizer(L, mt);
+}
+
+/// Check `__gc` in a metatable without any liveness guard (only safe before
+/// the sweep frees anything).
+fn rawHasFinalizer(L: *lua_State, mt: *lua_Table) bool {
+    const g = G(L);
+    if (g.tmname[@intFromEnum(ltm.TMS.GC)]) |gc_name| {
+        const tm = ltable.get(mt, TValue{ .string = gc_name });
+        if (tm == .function or tm == .table) return true;
+    }
+    return false;
+}
+
+/// Metatable of a table/userdata GC object, if any.
+fn metatableOf(L: *lua_State, gc: *VMGCObject) ?*lua_Table {
+    _ = L;
+    return switch (gc.val) {
+        .table => |t| t.metatable,
+        .userdata => |u| u.metatable,
+        else => null,
+    };
+}
+
+/// Mark an object's outgoing references, then invoke its `__gc` metamethod
+/// with the object as argument. The object is relinked into allgc as
+/// finalized so the next collection frees it.
+fn callFinalizer(L: *lua_State, gc: *VMGCObject) !void {
+    const g = G(L);
+    // Mark this object and its references so they survive the finalizer call.
+    var gray_list = std.ArrayList(*VMGCObject).empty;
+    defer gray_list.deinit(L.allocator);
+    gc.color = .gray;
+    try gray_list.append(L.allocator, gc);
+    while (gray_list.pop()) |c| {
+        if (c.color == .black) continue;
+        c.color = .black;
+        try traverseGrayObject(L, &gray_list, c);
+    }
+
+    const obj_val: TValue = switch (gc.val) {
+        .table => |t| TValue{ .table = t },
+        .userdata => |u| TValue{ .userdata = u },
+        else => unreachable,
+    };
+    const mt: *lua_Table = switch (gc.val) {
+        .table => |t| t.metatable.?,
+        .userdata => |u| u.metatable.?,
+        else => unreachable,
+    };
+    const tm = ltable.get(mt, TValue{ .string = g.tmname[@intFromEnum(ltm.TMS.GC)].? });
+    if (tm == .function or tm == .table) {
+        if (L.top + 2 < L.stack.len) {
+            L.stack[L.top] = tm;
+            L.stack[L.top + 1] = obj_val;
+            L.top += 2;
+            const old_allowhook = L.allowhook;
+            L.allowhook = 0;
+            const old_fin = if (L.ci) |ci| blk: {
+                const o = ci.is_fin;
+                ci.is_fin = true;
+                break :blk o;
+            } else null;
+            _ = lua_pcallk(L, 1, 0, 0, 0, null) catch {};
+            if (L.ci) |ci| {
+                ci.is_fin = old_fin orelse false;
+            }
+            L.allowhook = old_allowhook;
+        }
+    }
+
+    // Relink into allgc; the next collection frees it (finalizer already ran).
+    gc.finalized = true;
+    gc.color = .white;
+    gc.next = g.allgc;
+    g.allgc = gc;
 }
 
 pub const LUA_GCSTOP: i32 = 0;
