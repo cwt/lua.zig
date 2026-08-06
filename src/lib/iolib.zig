@@ -517,7 +517,11 @@ fn g_write(L_: *L, p: *LStream, arg: i32) !i32 {
 
 fn io_write(L_: *L) !i32 {
     const p = getiofile(L_, IO_OUTPUT) catch return lauxlib.luaL_error(L_, "default output file is closed");
-    return g_write(L_, p, 1);
+    // Mirror the reference `io_write`: the current output file becomes
+    // argument 1 and the user's values follow it (so the write loop starts at
+    // index 2), and the file handle is returned on success.
+    lua.lua_insert(L_, 1);
+    return g_write(L_, p, 2);
 }
 
 fn f_write(L_: *L) !i32 {

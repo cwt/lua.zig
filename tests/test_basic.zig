@@ -2554,6 +2554,37 @@ test "io.flush flushes the default output file" {
     try std.testing.expectEqualStrings("|flushed-data", s.?);
 }
 
+test "io.write writes to the current output file without leaking the handle as an arg" {
+    if (@import("builtin").os.tag != .linux) return error.SkipZigTest;
+    const gpa = std.testing.allocator;
+    var L: lua.lua_State = undefined;
+    try lua.luaL_newstate(&L, gpa);
+    defer lua.lua_close(&L);
+
+    try lua.luaL_openlibs(&L);
+
+    // Regression test: `io.output(file)` must not leave the filename (nor the
+    // file handle) on the stack, otherwise the next `io.write` sees it as an
+    // extra argument and fails with "string expected, got FILE*".
+    const script =
+        \\local file = os.tmpname()
+        \\io.output(file)
+        \\io.write("hello")
+        \\io.write(" ", 42, "\n")
+        \\io.close()
+        \\local f = io.open(file, "r")
+        \\local content = f:read("*a")
+        \\f:close()
+        \\os.remove(file)
+        \\return content
+    ;
+    const status = try lua.luaL_dostring(&L, script, "=(test)");
+    try std.testing.expectEqual(@as(i32, lua.LUA_OK), status);
+    const s = lua.lua_tostring(&L, -1);
+    try std.testing.expect(s != null);
+    try std.testing.expectEqualStrings("hello 42\n", s.?);
+}
+
 test "file:read(\"*n\") parses integers, floats, hex and invalids" {
     if (@import("builtin").os.tag != .linux) return error.SkipZigTest;
     const gpa = std.testing.allocator;

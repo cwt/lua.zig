@@ -1472,31 +1472,31 @@ pub fn run(L: *lua.lua_State, active_ci: *lua.CallInfo) anyerror!void {
                 ci.nextraargs += @intCast(ccmt);
                 const cl_call = val.function.?;
                 switch (cl_call.*) {
-                    .c => |cc| {
-                        // Tail call to a C function reuses the current CallInfo.
-                        // Move the called function and its arguments down to the
-                        // frame base (mirroring the `.lua` branch below and PUC-Rio's
-                        // memmove of `ra` into `ci->func`). This discards the
-                        // tail-calling function's own frame so the C function's
-                        // results land exactly where the caller expects them
-                        // (`func_idx`), instead of above the discarded frame.
+                    .c => {
+                        // Tail call to a C function. Unlike the `.lua` branch,
+                        // we do NOT reuse the current CallInfo; instead we push
+                        // a fresh frame for the C function whose `previous` is
+                        // the tail-calling frame (mirroring PUC-Rio's `precallC`
+                        // inside `luaD_pretailcall`). This keeps
+                        // `L.ci->previous` pointing at the frame that contains
+                        // the TAILCALL instruction, so error name resolution
+                        // (e.g. "bad argument #1 to 'sin'") can find the called
+                        // function via `funcnamefromcall`.
                         const nparams1 = GETARG_C(instruction);
+                        // Run the C function via `precall`, which allocates a
+                        // fresh CallInfo, handles stack growth, `__call`, and
+                        // error unwinding. Its results are placed at `ra_idx`
+                        // (with L.top = ra_idx + nresults).
+                        _ = try lua.precall(L, ra_idx, -1);
+                        const num_returned = L.top - ra_idx;
+                        // Undo the PF_VAHID frame relocation before the final
+                        // poscall, so the results land at the original caller's
+                        // expected position (mirrors `ci->func.p -= delta`).
                         if (nparams1 != 0) {
-                            // Caller is PF_VAHID: buildhiddenargs relocated the
-                            // frame; undo it before re-pointing ci at ra_idx.
                             ci.func -= @as(usize, @intCast(@as(i32, @intCast(ci.nextraargs)) + nparams1));
+                            ci.base = ci.func + 1;
                         }
-                        var k2: usize = 0;
-                        while (k2 < @as(usize, @intCast(b))) : (k2 += 1) {
-                            L.stack[ci.func + k2] = L.stack[ra_idx + k2];
-                        }
-                        ci.base = ci.func + 1;
-                        L.top = ci.func + @as(usize, @intCast(b));
-                        ci.top = L.top + 20;
-                        const n = try cc.f(L);
-                        const num_returned = @as(usize, @intCast(n));
-                        const first_result = L.top - num_returned;
-                        try lua.poscall(L, ci, first_result, num_returned);
+                        try lua.poscall(L, ci, ra_idx, num_returned);
                         const old_ci = ci;
                         if (old_ci == active_ci) {
                             L.ci = old_ci.previous;

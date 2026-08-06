@@ -3522,7 +3522,15 @@ pub fn luaG_typeerrorPtr(L: *lua_State, o: *const TValue, op: []const u8) !void 
 
 pub fn luaG_callerror(L: *lua_State, o: TValue) !void {
     var fname: ?[]const u8 = null;
-    const kind = getfuncname(L, L.ci, &fname);
+    var kind: ?[]const u8 = null;
+    if (L.ci) |ci| {
+        if (ci.is_hooked) {
+            fname = "?";
+            kind = "hook";
+        } else {
+            kind = funcnamefromcall(L, ci, &fname);
+        }
+    }
     const t = ltm.luaT_objtypename(L, o);
     var msg: [320]u8 = undefined;
     if (kind) |k| {

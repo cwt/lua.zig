@@ -209,11 +209,9 @@ fn findfield(L: *lua.lua_State, objidx: i32, level: i32) anyerror!bool {
                 lua.lua_pop(L, 1);
                 return true;
             } else if (try findfield(L, objidx, level - 1)) {
-                lua.lua_replace(L, -3);
                 _ = lua.lua_pushstring(L, ".");
-                lua.lua_concat(L, 2);
-                lua.lua_replace(L, -2);
-                lua.lua_concat(L, 2);
+                lua.lua_replace(L, -3);
+                lua.lua_concat(L, 3);
                 return true;
             }
         }
