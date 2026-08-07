@@ -13,12 +13,12 @@ Phase A (DONE) --> Phase B (DONE) --> Phase C (DONE) --> Phase D (DONE) --> Phas
  Foundations       Tables           Front-End (loader)     VM               Runtime           Libs              Source compiler
 
                                                                                                                           v
-                                                                                                                   Phase H (NEXT)
+                                                                                                                Phase H (DONE)
                                                                                                               Drop-in replacement
                                                                                                               gap closure
 ```
 
-Work **top-down from the foundation**, validating each layer with tests before proceeding. Phases A–G are complete; **Phase H (drop-in replacement gap closure)** is the next planned work.
+Work **top-down from the foundation**, validating each layer with tests before proceeding. Phases A–G and H are **complete**; the full upstream `lua/testes/*.lua` suite passes (PASS 19, FAIL 0).
 
 ## Phase A -- Foundations (Complete)
 
@@ -141,7 +141,7 @@ All G.1–G.4 completed. Full Lua 5.5.0 lexer, recursive-descent parser, and cod
 
 See `docs/frontend.md` for architecture decisions and `AGENTS.md` §Phase G for details.
 
-## Phase H — Drop-in replacement gap closure (IN PROGRESS)
+## Phase H — Drop-in replacement gap closure ✅ COMPLETE (2026-08-07)
 
 Phases A–G built a working, self-hosting Lua interpreter. Phase H closes the gap between "working" and "drop-in replacement for Lua 5.5.0". The gaps were identified by a systematic audit comparing `luazig` against `lua/lua.h`, `lua/lauxlib.h`, and the standard library C sources.
 
@@ -235,11 +235,14 @@ Silent no-ops that produce wrong results:
 ### Verification
 Each H.x sub-phase must compile, pass all existing tests, and add focused tests for the new functionality.
 
-## Post-Phase H — Test-suite compatibility (IN PROGRESS, 2026-07-14/15)
+## Post-Phase H — Upstream test-suite conformance ✅ COMPLETE (2026-07-19, updated 2026-08-07)
 
-Phase H closed the C-API gap. The remaining work is making the Lua 5.5.0 test
-suite (`lua/testes/`) pass. Current status: 2 PASS, 23 FAIL, 1 TIMEOUT,
-7 SKIP, 1 CHECK (34 total).
+Phase H closed the C-API gap; the upstream `lua/testes/*.lua` suite now
+passes in full — **PASS 19, FAIL 0, CRASH 0, TIMEOUT 0, CHECK 0**. The
+remaining skipped files require the internal C test library `T` (a dev-only
+test library not shipped in production Lua), the `all.lua` harness, or are
+OOM stress tests (`heavy.lua`). See `docs/log.md` for the conformance and
+5.5.1 upgrade history.
 
 ### Major blockers addressed in current session
 - **Exit-code propagation**: `had_error` + `std.process.exit(1)` on uncaught

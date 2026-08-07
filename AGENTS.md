@@ -145,7 +145,7 @@ are available as a Git subrepo.
   have all been removed.
 - **juicy-main entry point** is in `src/luazig.zig` using `std.process.Init`.
 - **`build.zig`** builds exe (`luazig`) + library (`lua`). Test step works.
-- **125/127 passing tests** in `tests/test_basic.zig` covering nil/boolean/number/integer/
+- **131/131 passing tests** in `tests/test_basic.zig` covering nil/boolean/number/integer/
    string/table type checks, stack push/pop round-trip, string interning,
    table setfield/getfield, seti/geti + length, empty/remove length, hash-part
    string keys, `next` traversal, stack-key gettable/settable, bytecode loader,
@@ -184,6 +184,9 @@ are available as a Git subrepo.
    Ported `luaT_adjustvarargs`/`luaT_getvarargs`/`luaT_getvararg` into `src/ltm.zig` and wired `OP_VARARGPREP`/`OP_VARARG`/`OP_GETVARG` in `src/lvm.zig`. Vararg functions (`function f(a, ...) ... end`, `f(...)`, `select`, `{...}`) now execute correctly. Added `lua_Proto.flag` and `CallInfo.nextraargs`. The hidden-vararg frame is relocated by `buildhiddenargs` (matching the C reference) and restored on every return path: `.RETURN`, `.RETURN0`, `.RETURN1`, and `.TAILCALL` (`.lua`/`.c`) now correct `ci.func`/`ci.base`, and `luaK_finish` sets `SETARG_C(pc, numParams + 1)` on the `RETURN0`/`RETURN1` → `RETURN` conversion for `PF_VAHID` functions. Verified against the Lua 5.5.0 reference binary. **92+ tests pass.**
 
 - **Phase H.11 COMPLETE — Upstream test suite conformance (2026-07-19).**
+   Later updated to Lua 5.5.1 (2026-08-07): subrepo tracks `v5.5.1`; repeat-until
+   scoping, lazy vararg tables, GC-on-load, C-function cache, and an audit that
+   removed all error-swallowing `catch {}` (see `docs/log.md`).
    Systematic debugging against `lua/testes/*.lua` upstream test files reached
    **PASS 19, FAIL 0** — every file in the suite passes, including the final
    `locals.lua` (1228 lines). Key fixes in this session:
@@ -375,7 +378,7 @@ Phases A–F are **complete**: the port runs precompiled Lua 5.5.0 bytecode thro
 
 ## 8. What to work on next
 
-All phases A–G and H.1–H.11 are **done**. 128/128 unit tests passing.
+All phases A–G and H.1–H.11 are **done**. 131/131 unit tests passing.
 The port runs Lua source text directly.
 
 **Phase H.11 — Upstream test suite conformance is COMPLETE** (2026-07-19):
@@ -580,7 +583,7 @@ Each H.x sub-phase must compile, pass all existing tests, and add focused tests 
 ### H.11 — Upstream test suite conformance ✅ COMPLETE (2026-07-19)
 
 Systematic debugging of the upstream `lua/testes/*.lua` test suite is **done**:
-**PASS 19, FAIL 0, CRASH 0, TIMEOUT 0, CHECK 0**. `zig build test` → 128/128,
+**PASS 19, FAIL 0, CRASH 0, TIMEOUT 0, CHECK 0**. `zig build test` → 131/131,
 0 leaks. Key fixes applied:
 
 | Fix | Files | Description |
