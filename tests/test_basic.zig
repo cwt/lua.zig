@@ -4671,3 +4671,22 @@ test "H.11 io.open returns nil, message, errno and validates mode" {
     , "=(io)");
     try std.testing.expectEqual(@as(i32, lua.LUA_OK), status);
 }
+
+test "BUG-055: integer key moving from hash part to array part does not cause duplicate key or stale read" {
+    const gpa = std.testing.allocator;
+    var L: lua.lua_State = undefined;
+    try lua.luaL_newstate(&L, gpa);
+    defer lua.lua_close(&L);
+    try lua.luaL_openlibs(&L);
+
+    const status = try lua.luaL_dostring(&L,
+        \\local t = {}
+        \\t[1] = "one"
+        \\t[3] = "three"
+        \\t[2] = "two"
+        \\t[3] = "new_three"
+        \\t[3] = nil
+        \\assert(t[3] == nil)
+    , "=(bug055)");
+    try std.testing.expectEqual(@as(i32, lua.LUA_OK), status);
+}

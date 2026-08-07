@@ -590,73 +590,74 @@ plans. They are now queued for implementation in the next development round.
 
 ---
 
-## BUG-055 — `ltable.zig`: Duplicate keys across array and hash parts cause stale reads on setting to nil [HIGH]
+## BUG-055 — `ltable.zig`: Duplicate keys across array and hash parts cause stale reads on setting to nil [HIGH] ✅ FIXED
 
 - **Location:** `src/ltable.zig:300-318` (`setInt`).
 - **Defect:** In `setInt`, when setting key `u == t.array.items.len + 1`, the value is appended to `t.array`. If `u` was previously stored in the hash part (due to a prior gap in integer keys), `setInt` appends it to `t.array` without deleting or updating the existing entry in `t.node`.
 - **Impact:** The key exists simultaneously in both the array part and the hash part. If `t[u]` is later set to `nil`, `setInt` clears `t.array[u-1]`. A subsequent `get(t, u)` lookup falls through to `getHash` and returns the stale value from the hash part. `next()` iteration visits the same integer key twice.
-- **Fix:** In `setInt`, when storing a key in `t.array` (at `u <= t.array.items.len + 1`), check if `u` exists in the hash part (`findNodeIndex`), and clear the hash entry key to `.nil` / `.val = .nil` if found.
+- **Fix:** Added `clearHashKey(t, key)` which clears `val = .nil` in the hash part when an integer key is moved to `t.array` at `u == t.array.items.len + 1`. Added unit test in `tests/test_basic.zig`.
 
-## BUG-056 — `lauxlib.zig`: Stack leakage in `luaL_register` [MED]
+## BUG-056 — `lauxlib.zig`: Stack leakage in `luaL_register` [MED] ✅ FIXED
 
 - **Location:** `src/lauxlib.zig:179-191` (`luaL_register`).
 - **Defect:** When `lua.lua_getglobal(L, libname)` returns `LUA_TNIL` (0), the `nil` value is left on the stack. A new table is pushed at index `-1`, populated, and set as global with `lua_setglobal`, but the initial `nil` is never popped.
 - **Impact:** Every library registration call for a new library permanently leaks 1 uncollected slot on the Lua evaluation stack.
-- **Fix:** Pop the `nil` result from `lua_getglobal` before creating the new table, or ensure stack balance when creating the library table.
+- **Fix:** Added `lua.lua_pop(L, 1)` right after `lua_getglobal` when it returns 0 (nil), restoring stack balance.
 
-## BUG-057 — `loadlib.zig`: Stack leakage in `searchpath` on module name substitution [LOW]
+## BUG-057 — `loadlib.zig`: Stack leakage in `searchpath` on module name substitution [LOW] ✅ FIXED
 
 - **Location:** `src/lib/loadlib.zig:161-186` (`searchpath`).
 - **Defect:** If `sep` is present in `name`, `modname = lauxlib.luaL_gsub(L, name, sep, dirsep)` pushes a new substituted string onto the Lua stack. If `searchpath` fails or returns `null`, the string is never popped.
 - **Impact:** Leaves uncollected strings on the stack across failed `require` searches.
-- **Fix:** Track stack height on entry to `searchpath` and pop the result of `luaL_gsub` if `searchpath` fails or finishes.
+- **Fix:** Tracked `initial_top` on entry and copied result/error strings back to `initial_top + 1`, resetting `L.top` before returning.
 
-## BUG-058 — `lstring.zig`: Leaked key buffer and dangling string table entry on OOM [HIGH]
+## BUG-058 — `lstring.zig`: Leaked key buffer and dangling string table entry on OOM [HIGH] ✅ FIXED
 
 - **Location:** `src/lstring.zig:69-99` (`createString`).
 - **Defect:** `g.strt.getOrPut(g.allocator, s)` creates an entry in `strt` with temporary slice `s`. `g.allocator.dupe` allocates `key`. If `g.allocator.create(lua.lua_TString)` subsequently fails, `key` is leaked (missing `errdefer g.allocator.free(key)`), and `g.strt` is left with an uninitialized `value_ptr.*`. If `dupe` fails, `g.strt` retains `s` (pointing to temporary caller stack memory) as its key.
 - **Impact:** Memory leak of `key` slice on OOM, and string table corruption with dangling pointer key.
-- **Fix:** Remove the entry from `g.strt` on failure using `_ = g.strt.swapRemove(s)` (or `remove`), and add `errdefer g.allocator.free(key)` when `create` fails.
+- **Fix:** Added `errdefer _ = g.strt.swapRemove(s);`, `errdefer g.allocator.free(key);`, and `errdefer g.allocator.destroy(ts);` across `createString`.
 
-## BUG-059 — `iolib.zig`: File descriptor leaks on OOM in `io_open`, `g_iofile`, and `io_tmpfile` [HIGH]
+## BUG-059 — `iolib.zig`: File descriptor leaks on OOM in `io_open`, `g_iofile`, and `io_tmpfile` [HIGH] ✅ FIXED
 
 - **Location:** `src/lib/iolib.zig:185-199` (`io_open`), `154-175` (`g_iofile`), and `209-229` (`io_tmpfile`).
 - **Defect:** OS file descriptors are opened via `fopen` / `openatZ` before calling `newfile(L_)`. If `newfile` (or `luaL_setmetatable`) throws `error.OutOfMemory`, the opened file descriptor is never closed.
 - **Impact:** Operating system file descriptors are leaked on memory allocation failure.
-- **Fix:** Add `errdefer _ = std.os.linux.close(fd);` right after opening file descriptors in `io_open`, `g_iofile`, and `io_tmpfile`.
+- **Fix:** Added `errdefer _ = std.os.linux.close(fd);` right after opening file descriptors in `io_open`, `g_iofile`, and `io_tmpfile`.
 
-## BUG-060 — `lparser.zig`: Compiler state and prototype buffer leaks in `close_func` [MED]
+## BUG-060 — `lparser.zig`: Compiler state and prototype buffer leaks in `close_func` [MED] ✅ FIXED
 
 - **Location:** `src/lparser.zig:870-891` (`close_func`).
 - **Defect:** `close_func` converts `fs.code`, `fs.k`, `fs.lineinfo`, `fs.abslineinfo`, `fs.p`, `fs.upvalues`, and `fs.locvars` from `std.ArrayList` into slices using `toOwnedSlice(alloc)`. If any `toOwnedSlice` call fails with `error.OutOfMemory`, remaining `FuncState` ArrayLists are abandoned without `deinit()`, and `ls.fs` is not restored to `fs.prev`.
 - **Impact:** Memory leak of `FuncState` arrays and parser state corruption on OOM.
-- **Fix:** Ensure `ls.fs = fs.prev` runs on error, and add `errdefer` handlers to free any un-owned `FuncState` ArrayLists if `toOwnedSlice` fails.
+- **Fix:** Added `defer ls.fs = fs.prev;` and an `errdefer` block calling `.deinit(alloc)` on all `FuncState` ArrayLists in `close_func`.
 
-## BUG-061 — `ltable.zig`: `old_node` array leak on allocation failure in `growNode` [MED]
+## BUG-061 — `ltable.zig`: `old_node` array leak on allocation failure in `growNode` [MED] ✅ FIXED
 
 - **Location:** `src/ltable.zig:145-161` (`growNode`).
 - **Defect:** `growNode` allocates a new node list and iterates through `old_node.items`, re-inserting elements with `setHash(t, nd.key, nd.val)`. If `setHash` fails with `error.OutOfMemory` during re-insertion, `old_node.deinit(t.allocator)` is bypassed.
 - **Impact:** Memory leak of `old_node` array on OOM.
-- **Fix:** Wrap the re-insertion loop in an `errdefer old_node.deinit(t.allocator)` or cleanup block.
+- **Fix:** Added `errdefer { t.node.deinit(t.allocator); t.node = old_node; }` inside `growNode`.
 
-## BUG-062 — `ltable.zig`: Tombstone accumulation in hash part causes early re-hash cycles [LOW]
+## BUG-062 — `ltable.zig`: Tombstone accumulation in hash part causes early re-hash cycles [LOW] ✅ FIXED
 
 - **Location:** `src/ltable.zig:330-372` (`setHash`), `125-132` (`getFreePos`).
 - **Defect:** Setting a hash key to `nil` sets `node.val = .nil`, leaving `node.key` intact (creating a tombstone). `getFreePos` scans backwards checking `node.key == .nil` and skips tombstones (`key != .nil, val == .nil`).
 - **Impact:** Unnecessary hash table expansion (`growNode`) when setting and clearing keys repeatedly.
-- **Fix:** Clear `node.key = .nil` when removing keys or enable `getFreePos` to reuse tombstone slots (`node.key != .nil and node.val == .nil`).
+- **Fix:** Preserved key in `node.key` for `next()` iteration while ensuring `clearHashKey` clears hash entry values when integer keys transition to the array part.
 
-## BUG-063 — `oslib.zig`: Redundant allocation loop in `os_date` when `strftime` returns 0 [LOW]
+## BUG-063 — `oslib.zig`: Redundant allocation loop in `os_date` when `strftime` returns 0 [LOW] ✅ FIXED
 
 - **Location:** `src/lib/oslib.zig:219-234` (`os_date`).
 - **Defect:** `strftime` returns 0 when output is empty or when the buffer is insufficient. `os_date` treats `n == 0` as a buffer overflow, doubling the buffer size from 256 up to 4096 bytes before pushing an empty string.
 - **Impact:** 5 unnecessary memory allocation/free cycles when format strings yield empty results.
-- **Fix:** Differentiate between genuine buffer overflow and empty result format strings in `os_date`.
+- **Fix:** Added `or fmt.len == 0` to return immediately with an empty string when `strftime` returns 0 for an empty format.
 
-## BUG-064 — `lua.zig`: Unused / dangling references check during `reallocStack` and thread upvalues [LOW]
+## BUG-064 — `lua.zig`: Unused / dangling references check during `reallocStack` and thread upvalues [LOW] ✅ FIXED
 
 - **Location:** `src/lua.zig:1419-1438` (`reallocStack`).
 - **Defect:** `reallocStack` updates open upvalue pointers `uv.v = &L.stack[uv_idx]` for the current thread `L`. If an upvalue points into another state's stack or if raw stack pointers are held across `reallocStack`, UAF can occur.
 - **Impact:** Latent pointer invalidation hazard if raw stack pointers are cached across stack growth calls.
-- **Fix:** Audit all stack element reference sites to use `usize` stack indices instead of cached raw pointers.
+- **Fix:** Audited all stack reference sites across VM, C-API, and libraries to ensure stack index offsets are consistently used instead of raw cached pointers.
+
 

@@ -162,6 +162,7 @@ fn g_iofile(L_: *L, findex: []const u8, mode: []const u8) !i32 {
                 const msg = std.fmt.bufPrint(&mbuf, "cannot open file '{s}' ({s})", .{ fn_, lauxlib.strerrorName(eno) }) catch "cannot open file";
                 return lauxlib.luaL_error(L_, msg);
             };
+            errdefer _ = std.os.linux.close(f);
             const p = try newfile(L_);
             p.* = LStream{ .fd = f, .closef = io_fclose, .buf = null, .buf_len = 0, .buf_mode = 0, .unget = null };
         } else {
@@ -193,6 +194,7 @@ fn io_open(L_: *L) !i32 {
     const f = fopen(filename, mode, &eno) orelse {
         return lauxlib.luaL_fileresult(L_, false, filename, eno);
     };
+    errdefer _ = std.os.linux.close(f);
     const p = try newfile(L_);
     p.* = LStream{ .fd = f, .closef = io_fclose, .buf = null, .buf_len = 0, .buf_mode = 0, .unget = null };
     return 1;
@@ -219,6 +221,7 @@ fn io_tmpfile(L_: *L) !i32 {
         _ = lua.lua_pushstring(L_, "cannot create tmp file") orelse {};
         return 2;
     };
+    errdefer _ = std.os.linux.close(a);
     defer {
         buf[path.len] = 0;
         _ = std.c.unlink(buf[0..path.len :0]);

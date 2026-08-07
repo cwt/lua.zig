@@ -221,7 +221,7 @@ fn os_date(L_: *L) !i32 {
         const buf = L_.allocator.alloc(u8, bufsize) catch return error.OutOfMemory;
         defer L_.allocator.free(buf);
         const n = strftime(@ptrCast(buf.ptr), bufsize, cfmt, &tm);
-        if (n > 0 and n < bufsize) {
+        if (n > 0 or fmt.len == 0) {
             _ = lua.lua_pushlstring(L_, buf[0..n], n);
             return 1;
         }

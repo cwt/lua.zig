@@ -178,6 +178,7 @@ pub const luaL_Reg = struct {
 
 pub fn luaL_register(L: *lua.lua_State, libname: []const u8, l: ?[]const luaL_Reg) !void {
     if (lua.lua_getglobal(L, libname) == 0) {
+        lua.lua_pop(L, 1);
         lua.lua_newtable(L);
     }
     if (l) |funcs| {

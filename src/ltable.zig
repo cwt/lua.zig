@@ -152,6 +152,10 @@ fn growNode(t: *Table) anyerror!void {
     newlist.appendNTimesAssumeCapacity(.{ .key = .{ .nil = {} }, .val = .{ .nil = {} }, .next = -1 }, newlen);
     t.node = newlist;
     t.lastfree = newlen;
+    errdefer {
+        t.node.deinit(t.allocator);
+        t.node = old_node;
+    }
     for (old_node.items) |nd| {
         if (nd.key != .nil and nd.val != .nil) {
             try setHash(t, nd.key, nd.val);
@@ -160,7 +164,12 @@ fn growNode(t: *Table) anyerror!void {
     old_node.deinit(t.allocator);
 }
 
-
+/// Remove a key's value from the hash part if present.
+fn clearHashKey(t: *Table, key: TValue) void {
+    if (findNodeIndex(t, key)) |idx| {
+        t.node.items[idx].val = .{ .nil = {} };
+    }
+}
 
 /// Find the node index holding `key` in the hash part, if any.
 fn findNodeIndex(t: *Table, key: TValue) ?usize {
@@ -305,6 +314,7 @@ pub fn setInt(t: *Table, k: i64, val: TValue) !void {
             return;
         }
         if (u == t.array.items.len + 1) {
+            clearHashKey(t, TValue{ .integer = k });
             try t.array.append(t.allocator, val);
             return;
         }
@@ -336,6 +346,7 @@ fn setHash(t: *Table, key: TValue, val: TValue) anyerror!void {
         if (next_idx < 0 or next_idx >= len) break;
         n = @intCast(next_idx);
     }
+
 
     if (val == .nil) {
         return;

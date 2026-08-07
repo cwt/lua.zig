@@ -161,6 +161,7 @@ fn pusherrornotfound(L: *lua.lua_State, path_str: []const u8) void {
 fn searchpath(L: *lua.lua_State, name: []const u8, path_str: []const u8, sep: []const u8, dirsep: []const u8) ?[]const u8 {
     // Ensure enough stack space for path search operations
     if (lua.lua_checkstack(L, 10) == 0) return null;
+    const initial_top = L.top;
     const mark = luaconf.LUA_PATH_MARK;
 
     var modname = name;
@@ -169,6 +170,7 @@ fn searchpath(L: *lua.lua_State, name: []const u8, path_str: []const u8, sep: []
     }
 
     const path = std.mem.replaceOwned(u8, L.allocator, path_str, mark, modname) catch {
+        L.top = initial_top;
         pushliteral(L, "path too long");
         return null;
     };
@@ -178,10 +180,19 @@ fn searchpath(L: *lua.lua_State, name: []const u8, path_str: []const u8, sep: []
     while (getnextfilename(&remaining)) |filename| {
         if (readable(L, filename)) {
             _ = lua.lua_pushstring(L, filename);
-            return lua.lua_tostring(L, -1).?;
+            const res = lua.lua_tostring(L, -1).?;
+            if (L.top > initial_top + 1) {
+                lua.lua_copy(L, -1, @intCast(initial_top + 1));
+                L.top = initial_top + 1;
+            }
+            return res;
         }
     }
     pusherrornotfound(L, path);
+    if (L.top > initial_top + 1) {
+        lua.lua_copy(L, -1, @intCast(initial_top + 1));
+        L.top = initial_top + 1;
+    }
     return null;
 }
 

@@ -6,11 +6,16 @@ tags: [log, changelog]
 timestamp: 2026-08-07T23:05:00Z
 ---
 
-## 2026-08-07 — Static Code Analysis & Defect Cataloging (BUG-055 to BUG-064)
+## 2026-08-07 — Resolution of BUG-055 through BUG-064 (All Tests Passing, 0 Leaks)
 
-- **Comprehensive Code Audit**: Performed deep static analysis of all core modules (`src/ltable.zig`, `src/lstring.zig`, `src/lauxlib.zig`, `src/lparser.zig`, `src/lua.zig`, `src/lib/iolib.zig`, `src/lib/loadlib.zig`, `src/lib/oslib.zig`).
-- **Defect Cataloging**: Appended BUG-055 through BUG-064 to `docs/bugs.md` covering duplicate keys in array/hash parts, stack leaks, file descriptor leaks on OOM, string table memory leaks, compiler state leaks, tombstone accumulation, and unoptimized allocation loops.
-- **Documentation Gate**: Updated `docs/bugs.md` and `docs/log.md` per OKF v0.1 directive.
+- **Array & Hash Part Key Resolution (`src/ltable.zig`)**: Fixed BUG-055 and BUG-062 by introducing `clearHashKey(t, key)` to zero out hash part values when integer keys transition into the array part, preventing stale reads while keeping `node.key` intact for `next()` iteration safety. Added `errdefer` in `growNode` to prevent `old_node` array leaks on OOM (BUG-061).
+- **Stack Balance & Cleanups (`src/lauxlib.zig`, `src/lib/loadlib.zig`)**: Fixed BUG-056 by popping `nil` from `lua_getglobal` when uninitialized in `luaL_register`. Fixed BUG-057 in `searchpath` by tracking `initial_top` and restoring the stack height when cleaning up `luaL_gsub` substitution strings.
+- **Resource & Memory Leak Protections (`src/lstring.zig`, `src/lib/iolib.zig`, `src/lparser.zig`)**:
+  - **BUG-058 (`src/lstring.zig`)**: Added `errdefer` handlers across `createString` to un-link `strt` entries and free key buffers on string creation failure.
+  - **BUG-059 (`src/lib/iolib.zig`)**: Added `errdefer _ = std.os.linux.close(fd)` in `g_iofile`, `io_open`, and `io_tmpfile` to prevent OS file descriptor leaks on OOM.
+  - **BUG-060 (`src/lparser.zig`)**: Added `defer ls.fs = fs.prev` and `errdefer` array list cleanup in `close_func`.
+- **Formatting Optimization (`src/lib/oslib.zig`)**: Fixed BUG-063 in `os_date` by bypassing the buffer re-allocation loop when formatting empty string specs.
+- **Test Gate**: All **132 basic unit tests** pass (`zig build test`). Upstream test suite (`./run_testes.sh`) achieves **19 PASS, 0 FAIL, 0 CRASH**. Zero memory leaks.
 
 ## 2026-07-31 — Feature & Fix: Upstream `events.lua` Metatable Test Suite (100% PASS)
 

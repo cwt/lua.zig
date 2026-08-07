@@ -869,16 +869,23 @@ fn open_func(ls: *llex.LexState, fs: *FuncState, bl: *BlockCnt) !void {
 
 fn close_func(ls: *llex.LexState) !void {
     const fs = ls.fs orelse return;
+    defer ls.fs = fs.prev;
     const f = fs.f;
     try lcode.luaK_ret(fs, luaY_nvarstack(fs), 0);
     try leaveblock(fs);
     std.debug.assert(fs.bl == null);
     try lcode.luaK_finish(fs);
-    // Transfer ownership of the generated arrays to the prototype. The
-    // FuncState's ArrayList metadata is stack-allocated and will be dropped
-    // (without freeing) when the function returns, leaving the buffers owned
-    // by the prototype.
+
     const alloc = ls.L.allocator;
+    errdefer {
+        fs.code.deinit(alloc);
+        fs.k.deinit(alloc);
+        fs.lineinfo.deinit(alloc);
+        fs.abslineinfo.deinit(alloc);
+        fs.p.deinit(alloc);
+        fs.upvalues.deinit(alloc);
+        fs.locvars.deinit(alloc);
+    }
     f.code = try fs.code.toOwnedSlice(alloc);
     f.k = try fs.k.toOwnedSlice(alloc);
     f.lineinfo = try fs.lineinfo.toOwnedSlice(alloc);
@@ -887,7 +894,6 @@ fn close_func(ls: *llex.LexState) !void {
     f.upvalues = try fs.upvalues.toOwnedSlice(alloc);
     f.locvars = try fs.locvars.toOwnedSlice(alloc);
     f.isVarArg = (f.flag & (PF_VAHID | PF_VATAB)) != 0;
-    ls.fs = fs.prev;
 }
 
 fn setvararg(fs: *FuncState) void {
