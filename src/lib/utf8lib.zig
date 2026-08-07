@@ -332,5 +332,5 @@ pub fn openutf8lib(L: *lua.lua_State) !void {
     _ = lua.lua_pushlstring(L, UTF8PATT, UTF8PATT.len);
     try lua.lua_setfield(L, -2, "charpattern");
 
-    lua.lua_setglobal(L, "utf8");
+    try lua.lua_setglobal(L, "utf8");
 }

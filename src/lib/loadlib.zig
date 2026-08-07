@@ -453,7 +453,7 @@ fn createsearcherstable(L: *lua.lua_State) !void {
     for (searchers, 1..) |s, i| {
         lua.lua_pushvalue(L, -2);
         lua.lua_pushcclosure(L, s, 1);
-        lua.lua_rawseti(L, -2, @intCast(i));
+        try lua.lua_rawseti(L, -2, @intCast(i));
     }
     try lua.lua_setfield(L, -2, "searchers");
 }
@@ -504,12 +504,12 @@ pub fn openloadlib(L: *lua.lua_State) !void {
 
     // Set _G["package"] = package
     lua.lua_pushvalue(L, -1);
-    lua.lua_setglobal(L, "package");
+    try lua.lua_setglobal(L, "package");
 
     // Set _G["require"] = ll_require
     lua.lua_pushvalue(L, -1);
     lua.lua_pushcclosure(L, ll_require, 1);
-    lua.lua_setglobal(L, "require");
+    try lua.lua_setglobal(L, "require");
 
     // Pop the package table to keep the stack balanced.
     lua.lua_pop(L, 1);

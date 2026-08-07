@@ -2710,3 +2710,48 @@ No §0.1 rule violations introduced. Allocator threaded; errors via `!void`/
 conversions; no C strings, varargs, or `@ptrCast` beyond the syscall
 boundary; unmanaged containers (`std.AutoHashMapUnmanaged`) with explicit
 allocators.
+
+## 2026-08-07 — Zig best-practices audit: eliminate error-swallowing `catch {}`
+
+Audited the port against the Zig 0.16.0 idioms (error unions over
+setjmp/longjmp, capability-as-parameter allocator/Io, unmanaged containers,
+`@bitCast` only for bit-identical reinterpretation, no `@cImport`, juicy
+`main(init: std.process.Init)`). The architecture was already sound; the one
+systematic violation was a category of `catch {}` that silently discarded
+errors — exactly the "old C pain" Zig's error unions exist to eliminate.
+
+### Fixed (functions now `!T` + `try`; errors propagate instead of being dropped)
+- **`lua_arith`** (void→!void): metamethod arithmetic errors
+  ("attempt to perform arithmetic on a table value") now raise instead of
+  silently no-op'ing. Verified via a C-API test.
+- **`lua_setglobal`**, **`lua_rawseti`**, **`lua_rawsetp`** (void→!void):
+  table OOM now propagates. `lua_register`, `luaL_ref` (i32→!i32),
+  `luaL_unref`, `lua_concat` (void→!void), and 60+ library callers updated
+  with `try`.
+- **`lua_concat`** (void→!void): buffer OOM and the concat metamethod raise
+  now propagate (previously produced truncated strings / dropped errors).
+- **Compiler paths** `fixjump`/`luaK_concat`/`luaK_patchlist`/
+  `luaK_patchtohere`/`luaK_finish`/`luaK_setreturns` (→!void): "control
+  structure too long" and "multiple results" compile errors now abort
+  compilation via `error.SyntaxError` instead of emitting wrong bytecode.
+
+### Reviewed as legitimate (kept `catch {}`, all best-effort contexts)
+stderr writes in the CLI error handler; `luaG_errormsg` re-raise prevention in
+the error-handler dispatch; finalizer pcall; GC cond-collection OOM; cfunc
+cache inserts; registry teardown in `defer`; the `luaG_runerror(...) catch {}
+then return error.RuntimeError` pattern (side-effect call, error re-raised);
+debug line-info; `__tostring` result validation.
+
+### Housekeeping
+- Deleted stale `src/*.zig.orig` backup files (lua, lvm, lauxlib, ltable,
+  ltm, iolib, debug).
+
+### Verification
+- `zig build test` → 131/131 pass, 0 leaks.
+- `./run_testes.sh` → PASS 19, FAIL 0.
+
+### §0.1 self-audit
+No §0.1 rule violations introduced. Errors propagate via `!void`/`try`
+(no `catch {}` swallowing where an error can propagate); allocator threaded;
+bounded slices; `@intCast` for conversions; unmanaged containers with
+explicit allocators.

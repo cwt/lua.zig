@@ -619,7 +619,7 @@ test "bitwise shift operations with negative and large shift" {
     // 8 << 2
     lua.lua_pushnumber(&L, 8.0);
     lua.lua_pushnumber(&L, 2.0);
-    lua.lua_arith(&L, lua.LUA_OPSHL);
+    try lua.lua_arith(&L, lua.LUA_OPSHL);
     const r1 = lua.lua_tonumber(&L, -1) orelse return error.TestFailed;
     try std.testing.expectEqual(@as(f64, 32.0), r1);
     lua.lua_pop(&L, 1);
@@ -627,7 +627,7 @@ test "bitwise shift operations with negative and large shift" {
     // 8 >> 2 = 2
     lua.lua_pushnumber(&L, 8.0);
     lua.lua_pushnumber(&L, 2.0);
-    lua.lua_arith(&L, lua.LUA_OPSHR);
+    try lua.lua_arith(&L, lua.LUA_OPSHR);
     const r2 = lua.lua_tonumber(&L, -1) orelse return error.TestFailed;
     try std.testing.expectEqual(@as(f64, 2.0), r2);
     lua.lua_pop(&L, 1);
@@ -635,7 +635,7 @@ test "bitwise shift operations with negative and large shift" {
     // Negative shift: 1 << -1 => 1 >> 1 = 0
     lua.lua_pushnumber(&L, 1.0);
     lua.lua_pushnumber(&L, -1.0);
-    lua.lua_arith(&L, lua.LUA_OPSHL);
+    try lua.lua_arith(&L, lua.LUA_OPSHL);
     const r3 = lua.lua_tonumber(&L, -1) orelse return error.TestFailed;
     try std.testing.expectEqual(@as(f64, 0.0), r3);
     lua.lua_pop(&L, 1);
@@ -679,7 +679,7 @@ test "__add arithmetic metamethod via C API" {
     lua.lua_pushvalue(&L, t2_idx);
 
     // Call lua_arith(L, LUA_OPADD)
-    lua.lua_arith(&L, lua.LUA_OPADD);
+    try lua.lua_arith(&L, lua.LUA_OPADD);
 
     // Expect the result to be 123.0 on top of the stack
     const v = lua.lua_tonumber(&L, -1) orelse return error.TestFailed;
@@ -721,7 +721,7 @@ test "BUG-FIX #1/#2: luaT_callTMres passes both operands to binary metamethod" {
 
     lua.lua_pushvalue(&L, t1_idx);
     lua.lua_pushvalue(&L, t2_idx);
-    lua.lua_arith(&L, lua.LUA_OPADD);
+    try lua.lua_arith(&L, lua.LUA_OPADD);
     const v = lua.lua_tonumber(&L, -1) orelse return error.TestFailed;
     try std.testing.expectEqual(@as(f64, 99.0), v);
 }
@@ -2135,8 +2135,8 @@ test "table library: create/insert/remove/pack/unpack/concat/move/sort" {
     try lua.luaL_openlibs(&L);
 
     const testfn = struct {
-        fn setTestTab(Ls: *lua.lua_State) void {
-            lua.lua_setglobal(Ls, "_tabtest");
+        fn setTestTab(Ls: *lua.lua_State) !void {
+            try lua.lua_setglobal(Ls, "_tabtest");
         }
         fn getTestTab(Ls: *lua.lua_State) void {
             _ = lua.lua_getglobal(Ls, "_tabtest");
@@ -2156,7 +2156,7 @@ test "table library: create/insert/remove/pack/unpack/concat/move/sort" {
             // ----- table.insert at end -----
             lua.lua_settop(Ls, 0);
             lua.lua_createtable(Ls, 1, 0);
-            setTestTab(Ls);
+            try setTestTab(Ls);
             _ = lua.lua_getglobal(Ls, "table");
             _ = try lua.lua_getfield(Ls, -1, "insert");
             lua.lua_remove(Ls, -2);
@@ -2172,10 +2172,10 @@ test "table library: create/insert/remove/pack/unpack/concat/move/sort" {
             lua.lua_settop(Ls, 0);
             lua.lua_createtable(Ls, 2, 0);
             _ = lua.lua_pushinteger(Ls, 10);
-            lua.lua_rawseti(Ls, -2, 1);
+            try lua.lua_rawseti(Ls, -2, 1);
             _ = lua.lua_pushinteger(Ls, 20);
-            lua.lua_rawseti(Ls, -2, 2);
-            setTestTab(Ls);
+            try lua.lua_rawseti(Ls, -2, 2);
+            try setTestTab(Ls);
             _ = lua.lua_getglobal(Ls, "table");
             _ = try lua.lua_getfield(Ls, -1, "insert");
             lua.lua_remove(Ls, -2);
@@ -2194,10 +2194,10 @@ test "table library: create/insert/remove/pack/unpack/concat/move/sort" {
             lua.lua_settop(Ls, 0);
             lua.lua_createtable(Ls, 2, 0);
             _ = lua.lua_pushinteger(Ls, 10);
-            lua.lua_rawseti(Ls, -2, 1);
+            try lua.lua_rawseti(Ls, -2, 1);
             _ = lua.lua_pushinteger(Ls, 20);
-            lua.lua_rawseti(Ls, -2, 2);
-            setTestTab(Ls);
+            try lua.lua_rawseti(Ls, -2, 2);
+            try setTestTab(Ls);
             _ = lua.lua_getglobal(Ls, "table");
             _ = try lua.lua_getfield(Ls, -1, "remove");
             lua.lua_remove(Ls, -2);
@@ -2229,9 +2229,9 @@ test "table library: create/insert/remove/pack/unpack/concat/move/sort" {
             lua.lua_settop(Ls, 0);
             lua.lua_createtable(Ls, 2, 0);
             _ = lua.lua_pushinteger(Ls, 10);
-            lua.lua_rawseti(Ls, -2, 1);
+            try lua.lua_rawseti(Ls, -2, 1);
             _ = lua.lua_pushinteger(Ls, 20);
-            lua.lua_rawseti(Ls, -2, 2);
+            try lua.lua_rawseti(Ls, -2, 2);
             _ = lua.lua_getglobal(Ls, "table");
             _ = try lua.lua_getfield(Ls, -1, "unpack");
             lua.lua_remove(Ls, -2);
@@ -2245,11 +2245,11 @@ test "table library: create/insert/remove/pack/unpack/concat/move/sort" {
             lua.lua_settop(Ls, 0);
             lua.lua_createtable(Ls, 3, 0);
             _ = lua.lua_pushstring(Ls, "a");
-            lua.lua_rawseti(Ls, -2, 1);
+            try lua.lua_rawseti(Ls, -2, 1);
             _ = lua.lua_pushstring(Ls, "b");
-            lua.lua_rawseti(Ls, -2, 2);
+            try lua.lua_rawseti(Ls, -2, 2);
             _ = lua.lua_pushstring(Ls, "c");
-            lua.lua_rawseti(Ls, -2, 3);
+            try lua.lua_rawseti(Ls, -2, 3);
             _ = lua.lua_getglobal(Ls, "table");
             _ = try lua.lua_getfield(Ls, -1, "concat");
             lua.lua_remove(Ls, -2);
@@ -2262,11 +2262,11 @@ test "table library: create/insert/remove/pack/unpack/concat/move/sort" {
             lua.lua_settop(Ls, 0);
             lua.lua_createtable(Ls, 3, 0);
             _ = lua.lua_pushstring(Ls, "a");
-            lua.lua_rawseti(Ls, -2, 1);
+            try lua.lua_rawseti(Ls, -2, 1);
             _ = lua.lua_pushstring(Ls, "b");
-            lua.lua_rawseti(Ls, -2, 2);
+            try lua.lua_rawseti(Ls, -2, 2);
             _ = lua.lua_pushstring(Ls, "c");
-            lua.lua_rawseti(Ls, -2, 3);
+            try lua.lua_rawseti(Ls, -2, 3);
             _ = lua.lua_getglobal(Ls, "table");
             _ = try lua.lua_getfield(Ls, -1, "concat");
             lua.lua_remove(Ls, -2);
@@ -2280,12 +2280,12 @@ test "table library: create/insert/remove/pack/unpack/concat/move/sort" {
             lua.lua_settop(Ls, 0);
             lua.lua_createtable(Ls, 3, 0);
             _ = lua.lua_pushinteger(Ls, 3);
-            lua.lua_rawseti(Ls, -2, 1);
+            try lua.lua_rawseti(Ls, -2, 1);
             _ = lua.lua_pushinteger(Ls, 1);
-            lua.lua_rawseti(Ls, -2, 2);
+            try lua.lua_rawseti(Ls, -2, 2);
             _ = lua.lua_pushinteger(Ls, 2);
-            lua.lua_rawseti(Ls, -2, 3);
-            setTestTab(Ls);
+            try lua.lua_rawseti(Ls, -2, 3);
+            try setTestTab(Ls);
             _ = lua.lua_getglobal(Ls, "table");
             _ = try lua.lua_getfield(Ls, -1, "sort");
             lua.lua_remove(Ls, -2);
@@ -2304,10 +2304,10 @@ test "table library: create/insert/remove/pack/unpack/concat/move/sort" {
             lua.lua_settop(Ls, 0);
             lua.lua_createtable(Ls, 4, 0);
             _ = lua.lua_pushinteger(Ls, 10);
-            lua.lua_rawseti(Ls, -2, 1);
+            try lua.lua_rawseti(Ls, -2, 1);
             _ = lua.lua_pushinteger(Ls, 20);
-            lua.lua_rawseti(Ls, -2, 2);
-            setTestTab(Ls);
+            try lua.lua_rawseti(Ls, -2, 2);
+            try setTestTab(Ls);
             _ = lua.lua_getglobal(Ls, "table");
             _ = try lua.lua_getfield(Ls, -1, "move");
             lua.lua_remove(Ls, -2);
@@ -3359,7 +3359,7 @@ fn h1_testLen(L: *lua.lua_State) !i32 {
 fn h1_testClose(L: *lua.lua_State) !i32 {
     // Mark that __close ran by setting a global flag.
     lua.lua_pushboolean(L, 1);
-    lua.lua_setglobal(L, "__closed_ran");
+    try lua.lua_setglobal(L, "__closed_ran");
     return 0;
 }
 
@@ -3392,7 +3392,7 @@ test "H.1 lua_concat concatenates strings and numbers" {
     _ = lua.lua_pushstring(&L, "ab");
     _ = lua.lua_pushstring(&L, "cd");
     _ = lua.lua_pushstring(&L, "ef");
-    lua.lua_concat(&L, 3);
+    try lua.lua_concat(&L, 3);
     const s = lua.lua_tostring(&L, -1) orelse return error.TestFailed;
     try std.testing.expectEqualSlices(u8, "abcdef", s);
 
@@ -3400,13 +3400,13 @@ test "H.1 lua_concat concatenates strings and numbers" {
     lua.lua_settop(&L, 0);
     lua.lua_pushinteger(&L, 42);
     _ = lua.lua_pushstring(&L, "xyz");
-    lua.lua_concat(&L, 2);
+    try lua.lua_concat(&L, 2);
     const s2 = lua.lua_tostring(&L, -1) orelse return error.TestFailed;
     try std.testing.expectEqualSlices(u8, "42xyz", s2);
 
     // empty concat yields empty string
     lua.lua_settop(&L, 0);
-    lua.lua_concat(&L, 0);
+    try lua.lua_concat(&L, 0);
     const s3 = lua.lua_tostring(&L, -1) orelse return error.TestFailed;
     try std.testing.expectEqualSlices(u8, "", s3);
 }
@@ -3428,7 +3428,7 @@ test "H.1 lua_len pushes length (string/table/__len)" {
     var i: i32 = 1;
     while (i <= 3) : (i += 1) {
         lua.lua_pushinteger(&L, @as(i64, @intCast(i * 10)));
-        lua.lua_rawseti(&L, -2, @as(i64, @intCast(i)));
+        try lua.lua_rawseti(&L, -2, @as(i64, @intCast(i)));
     }
     try lua.lua_len(&L, -1);
     try std.testing.expectEqual(@as(f64, 3.0), lua.lua_tonumber(&L, -1));
@@ -3454,7 +3454,7 @@ test "H.1 luaL_len returns integer length via __len" {
     var i: i32 = 1;
     while (i <= 4) : (i += 1) {
         lua.lua_pushinteger(&L, @as(i64, @intCast(i)));
-        lua.lua_rawseti(&L, -2, @as(i64, @intCast(i)));
+        try lua.lua_rawseti(&L, -2, @as(i64, @intCast(i)));
     }
     const len = try lua.luaL_len(&L, -1);
     try std.testing.expectEqual(@as(i64, 4), len);
@@ -3736,13 +3736,13 @@ test "H.4 luaL_ref stores a value and returns a reference" {
 
     // Store a string value
     _ = lua.lua_pushstring(&L, "hello") orelse unreachable;
-    const ref1 = lauxlib.luaL_ref(&L, t);
+    const ref1 = try lauxlib.luaL_ref(&L, t);
     try std.testing.expect(ref1 >= 0);
     try std.testing.expectEqual(@as(i32, 2), ref1); // first ref should be 2 (t[1]=0, so rawlen=1, ref=2)
 
     // Store a boolean
     lua.lua_pushboolean(&L, 1);
-    const ref2 = lauxlib.luaL_ref(&L, t);
+    const ref2 = try lauxlib.luaL_ref(&L, t);
     try std.testing.expect(ref2 >= 0);
     try std.testing.expectEqual(@as(i32, 3), ref2); // second sequential ref should be 3
 
@@ -3759,7 +3759,7 @@ test "H.4 luaL_ref returns LUA_REFNIL for nil" {
     const t = lua.lua_gettop(&L);
 
     lua.lua_pushnil(&L);
-    const ref = lauxlib.luaL_ref(&L, t);
+    const ref = try lauxlib.luaL_ref(&L, t);
     try std.testing.expectEqual(@as(i32, lauxlib.LUA_REFNIL), ref);
 
     lua.lua_settop(&L, 0);
@@ -3776,15 +3776,15 @@ test "H.4 luaL_unref frees a reference for reuse" {
 
     // Store two values
     _ = lua.lua_pushstring(&L, "first") orelse unreachable;
-    const ref1 = lauxlib.luaL_ref(&L, t);
+    const ref1 = try lauxlib.luaL_ref(&L, t);
     _ = lua.lua_pushstring(&L, "second") orelse unreachable;
-    const ref2 = lauxlib.luaL_ref(&L, t);
+    const ref2 = try lauxlib.luaL_ref(&L, t);
 
     try std.testing.expectEqual(@as(i32, 2), ref1);
     try std.testing.expectEqual(@as(i32, 3), ref2);
 
     // Free ref1 — it should go back into the free list
-    lauxlib.luaL_unref(&L, t, ref1);
+    try lauxlib.luaL_unref(&L, t, ref1);
 
     // Push a new value — it should reuse ref1 (2)
     _ = lua.lua_pushstring(&L, "third") orelse unreachable;
@@ -3804,7 +3804,7 @@ test "H.4 luaL_ref stores and retrieves via rawgeti" {
     const t = lua.lua_gettop(&L);
 
     _ = lua.lua_pushstring(&L, "stored_value") orelse unreachable;
-    const ref = lauxlib.luaL_ref(&L, t);
+    const ref = try lauxlib.luaL_ref(&L, t);
 
     // Retrieve the stored value via rawgeti
     const typ = lua.lua_rawgeti(&L, t, @intCast(ref));
@@ -3825,12 +3825,12 @@ test "H.4 luaL_unref on LUA_REFNIL is a no-op" {
     const t = lua.lua_gettop(&L);
 
     // unref with negative value should be a no-op
-    lauxlib.luaL_unref(&L, t, lauxlib.LUA_REFNIL);
-    lauxlib.luaL_unref(&L, t, lauxlib.LUA_NOREF);
+    try lauxlib.luaL_unref(&L, t, lauxlib.LUA_REFNIL);
+    try lauxlib.luaL_unref(&L, t, lauxlib.LUA_NOREF);
 
     // Should still be able to create references
     _ = lua.lua_pushstring(&L, "ok") orelse unreachable;
-    const ref = lauxlib.luaL_ref(&L, t);
+    const ref = try lauxlib.luaL_ref(&L, t);
     try std.testing.expectEqual(@as(i32, 2), ref);
 
     lua.lua_settop(&L, 0);
@@ -4489,7 +4489,7 @@ test "H.7 convenience macros (insert, remove, newtable, register, pushglobaltabl
             return 1;
         }
     }.call;
-    lua.lua_register(&L, "my_test_fn", myFn);
+    try lua.lua_register(&L, "my_test_fn", myFn);
     _ = lua.lua_getglobal(&L, "my_test_fn");
     try std.testing.expectEqual(@as(i32, lua.LUA_TFUNCTION), lua.lua_type(&L, -1));
     lua.lua_pop(&L, 1);

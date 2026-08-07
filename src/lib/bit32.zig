@@ -227,5 +227,5 @@ pub fn openbit32(L: *lua.lua_State) !void {
     lua.lua_pushcfunction(L, bit_replace);
     try lua.lua_setfield(L, -2, "replace");
 
-    lua.lua_setglobal(L, "bit32");
+    try lua.lua_setglobal(L, "bit32");
 }

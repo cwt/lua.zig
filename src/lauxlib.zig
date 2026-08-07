@@ -186,7 +186,7 @@ pub fn luaL_register(L: *lua.lua_State, libname: []const u8, l: ?[]const luaL_Re
             lua.lua_setfield(L, -2, reg.name);
         }
     }
-    lua.lua_setglobal(L, libname);
+    try lua.lua_setglobal(L, libname);
 }
 
 // ===================================================================
@@ -196,7 +196,7 @@ pub fn luaL_register(L: *lua.lua_State, libname: []const u8, l: ?[]const luaL_Re
 pub fn luaL_error(L: *lua.lua_State, msg: []const u8) anyerror {
     luaL_where(L, 1);
     _ = lua.lua_pushstring(L, msg);
-    lua.lua_concat(L, 2);
+    try lua.lua_concat(L, 2);
     return lua.lua_error(L);
 }
 
@@ -211,7 +211,7 @@ fn findfield(L: *lua.lua_State, objidx: i32, level: i32) anyerror!bool {
             } else if (try findfield(L, objidx, level - 1)) {
                 _ = lua.lua_pushstring(L, ".");
                 lua.lua_replace(L, -3);
-                lua.lua_concat(L, 3);
+                try lua.lua_concat(L, 3);
                 return true;
             }
         }
@@ -551,7 +551,7 @@ pub const LUA_REFNIL: i32 = -1;
 /// Creates a reference in table `t` for the value at the top of the stack.
 /// Pops the value from the stack (unless it's nil, in which case LUA_REFNIL
 /// is returned and the stack is still popped).
-pub fn luaL_ref(L: *lua.lua_State, t: i32) i32 {
+pub fn luaL_ref(L: *lua.lua_State, t: i32) !i32 {
     // If the top value is nil, return the fixed nil reference.
     if (lua.lua_isnil(L, -1) != 0) {
         lua.lua_pop(L, 1);
@@ -568,7 +568,7 @@ pub fn luaL_ref(L: *lua.lua_State, t: i32) i32 {
     else blk: {
         // First access: initialize empty free list (t[1] = 0).
         lua.lua_pushinteger(L, 0);
-        lua.lua_rawseti(L, abs_t, 1);
+        try lua.lua_rawseti(L, abs_t, 1);
         break :blk 0;
     };
     lua.lua_pop(L, 1); // Remove t[1] from the stack.
@@ -577,7 +577,7 @@ pub fn luaL_ref(L: *lua.lua_State, t: i32) i32 {
         // Pop the next free slot from the list.
         // t[ref] holds the next free index; move it to t[1].
         _ = lua.lua_rawgeti(L, abs_t, free_head);
-        lua.lua_rawseti(L, abs_t, 1); // t[1] = t[ref]
+        try lua.lua_rawseti(L, abs_t, 1); // t[1] = t[ref]
         break :blk free_head;
     } else blk: {
         // No free slots: allocate a new one past the end of the table.
@@ -586,21 +586,21 @@ pub fn luaL_ref(L: *lua.lua_State, t: i32) i32 {
     };
 
     // Store the value (currently on top of stack) at the reference slot.
-    lua.lua_rawseti(L, abs_t, ref);
+    try lua.lua_rawseti(L, abs_t, ref);
 
     return @as(i32, @intCast(ref));
 }
 
 /// Releases a reference previously created by `luaL_ref`.
 /// The freed slot is added to the free list and will be reused.
-pub fn luaL_unref(L: *lua.lua_State, t: i32, ref: i32) void {
+pub fn luaL_unref(L: *lua.lua_State, t: i32, ref: i32) !void {
     if (ref < 0) return;
     const abs_t = lua.lua_absindex(L, t);
     // Push the current free-list head (t[1]) and link the freed slot.
     _ = lua.lua_rawgeti(L, abs_t, 1); // push t[1] (old head)
-    lua.lua_rawseti(L, abs_t, @intCast(ref)); // t[ref] = old head
+    try lua.lua_rawseti(L, abs_t, @intCast(ref)); // t[ref] = old head
     lua.lua_pushinteger(L, @intCast(ref));
-    lua.lua_rawseti(L, abs_t, 1); // t[1] = ref (new head)
+    try lua.lua_rawseti(L, abs_t, 1); // t[1] = ref (new head)
 }
 
 // ===================================================================
@@ -757,7 +757,7 @@ pub fn luaL_requiref(L: *lua.lua_State, modname: []const u8, openf: lua.lua_CFun
     lua.lua_remove(L, -2);
     if (glb != 0) {
         lua.lua_pushvalue(L, -1);
-        lua.lua_setglobal(L, modname);
+        try lua.lua_setglobal(L, modname);
     }
 }
 

@@ -168,7 +168,7 @@ fn g_iofile(L_: *L, findex: []const u8, mode: []const u8) !i32 {
             _ = try tostream(L_, 1);
             lua.lua_pushvalue(L_, 1);
         }
-        lua.lua_rawsetp(L_, lua.LUA_REGISTRYINDEX, @constCast(@ptrCast(findex.ptr)));
+        try lua.lua_rawsetp(L_, lua.LUA_REGISTRYINDEX, @constCast(@ptrCast(findex.ptr)));
     }
     _ = lua.lua_rawgetp(L_, lua.LUA_REGISTRYINDEX, @ptrCast(findex.ptr));
     return 1;
@@ -676,7 +676,7 @@ fn createstdfile(L_: *L, fd: i32, k: ?[]const u8, fname: ?[]const u8, cf: ?lua.l
     try lauxlib.luaL_setmetatable(L_, LUA_FILEHANDLE);
     if (k) |key| {
         lua.lua_pushvalue(L_, -1);
-        lua.lua_rawsetp(L_, lua.LUA_REGISTRYINDEX, @constCast(@ptrCast(key.ptr)));
+        try lua.lua_rawsetp(L_, lua.LUA_REGISTRYINDEX, @constCast(@ptrCast(key.ptr)));
     }
     if (fname) |name| {
         try lua.lua_setfield(L_, -2, name);

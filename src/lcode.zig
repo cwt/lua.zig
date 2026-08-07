@@ -113,18 +113,17 @@ fn getjump(fs: *FuncState, pc: i32) i32 {
     return (pc + 1) + offset;
 }
 
-fn fixjump(fs: *FuncState, pc: i32, dest: i32) void {
+fn fixjump(fs: *FuncState, pc: i32, dest: i32) !void {
     const jmp = &fs.code.items[@as(usize, @intCast(pc))];
     const offset = dest - (pc + 1);
     if (!((-lvm.OFFSET_sJ <= offset) and (offset <= lvm.MAXARG_sJ - lvm.OFFSET_sJ))) {
-        _ = llex.luaX_syntaxerror(fs.ls, "control structure too long") catch {};
-        return;
+        return llex.luaX_syntaxerror(fs.ls, "control structure too long");
     }
     std.debug.assert(lvm.GET_OPCODE(jmp.*) == .JMP);
     lvm.SETARG_sJ(jmp, offset);
 }
 
-pub fn luaK_concat(fs: *FuncState, l1: *i32, l2: i32) void {
+pub fn luaK_concat(fs: *FuncState, l1: *i32, l2: i32) !void {
     if (l2 == NO_JUMP) return;
     if (l1.* == NO_JUMP) {
         l1.* = l2;
@@ -135,7 +134,7 @@ pub fn luaK_concat(fs: *FuncState, l1: *i32, l2: i32) void {
             if (next == NO_JUMP) break;
             list = next;
         }
-        fixjump(fs, list, l2);
+        try fixjump(fs, list, l2);
     }
 }
 
@@ -190,26 +189,26 @@ fn removevalues(fs: *FuncState, list: i32) void {
     }
 }
 
-fn patchlistaux(fs: *FuncState, list: i32, vtarget: i32, reg: i32, dtarget: i32) void {
+fn patchlistaux(fs: *FuncState, list: i32, vtarget: i32, reg: i32, dtarget: i32) !void {
     var l = list;
     while (l != NO_JUMP) {
         const next = getjump(fs, l);
         if (patchtestreg(fs, l, reg) != 0)
-            fixjump(fs, l, vtarget)
+            try fixjump(fs, l, vtarget)
         else
-            fixjump(fs, l, dtarget);
+            try fixjump(fs, l, dtarget);
         l = next;
     }
 }
 
-pub fn luaK_patchlist(fs: *FuncState, list: i32, target: i32) void {
+pub fn luaK_patchlist(fs: *FuncState, list: i32, target: i32) !void {
     std.debug.assert(target <= @as(i32, @intCast(fs.code.items.len)));
-    patchlistaux(fs, list, target, lvm.NO_REG, target);
+    try patchlistaux(fs, list, target, lvm.NO_REG, target);
 }
 
-pub fn luaK_patchtohere(fs: *FuncState, list: i32) void {
+pub fn luaK_patchtohere(fs: *FuncState, list: i32) !void {
     const hr = luaK_getlabel(fs);
-    luaK_patchlist(fs, list, hr);
+    try luaK_patchlist(fs, list, hr);
 }
 
 fn savelineinfo(fs: *FuncState, line: i32) !void {
@@ -457,7 +456,7 @@ fn const2exp(v: *lua.TValue, e: *expdesc) void {
 
 pub fn luaK_setreturns(fs: *FuncState, e: *expdesc, nresults: i32) !void {
     const pc = &fs.code.items[@as(usize, @intCast(e.u.info))];
-    _ = lparser.luaY_checklimit(fs, nresults + 1, lvm.MAXARG_C, "multiple results") catch {};
+    try lparser.luaY_checklimit(fs, nresults + 1, lvm.MAXARG_C, "multiple results");
     const c = @min(nresults + 1, lvm.MAXARG_C);
     if (e.k == .VCALL) {
         lvm.SETARG_C(pc, c);
@@ -608,10 +607,10 @@ fn need_value(fs: *FuncState, list: i32) bool {
     return false;
 }
 
-fn exp2reg(fs: *FuncState, e: *expdesc, reg: i32) void {
+fn exp2reg(fs: *FuncState, e: *expdesc, reg: i32) !void {
     discharge2reg(fs, e, reg);
     if (e.k == .VJMP)
-        luaK_concat(fs, &e.t, e.u.info);
+        try luaK_concat(fs, &e.t, e.u.info);
     if (hasjumps(e)) {
         var final: i32 = 0;
         var p_f: i32 = NO_JUMP;
@@ -620,11 +619,11 @@ fn exp2reg(fs: *FuncState, e: *expdesc, reg: i32) void {
             const fj = if (e.k == .VJMP) NO_JUMP else luaK_jump(fs);
             p_f = code_loadbool(fs, reg, .LFALSESKIP);
             p_t = code_loadbool(fs, reg, .LOADTRUE);
-            luaK_patchtohere(fs, fj);
+            try luaK_patchtohere(fs, fj);
         }
         final = luaK_getlabel(fs);
-        patchlistaux(fs, e.f, final, reg, p_f);
-        patchlistaux(fs, e.t, final, reg, p_t);
+        try patchlistaux(fs, e.f, final, reg, p_f);
+        try patchlistaux(fs, e.t, final, reg, p_t);
     }
     e.f = NO_JUMP;
     e.t = NO_JUMP;
@@ -636,7 +635,7 @@ pub fn luaK_exp2nextreg(fs: *FuncState, e: *expdesc) !void {
     luaK_dischargevars(fs, e);
     freeexp(fs, e);
     try luaK_reserveregs(fs, 1);
-    exp2reg(fs, e, fs.freereg - 1);
+    try exp2reg(fs, e, fs.freereg - 1);
 }
 
 pub fn luaK_exp2anyreg(fs: *FuncState, e: *expdesc) !i32 {
@@ -645,7 +644,7 @@ pub fn luaK_exp2anyreg(fs: *FuncState, e: *expdesc) !i32 {
         if (!hasjumps(e))
             return e.u.info;
         if (e.u.info >= lparser.luaY_nvarstack(fs)) {
-            exp2reg(fs, e, e.u.info);
+            try exp2reg(fs, e, e.u.info);
             return e.u.info;
         }
     }
@@ -712,7 +711,7 @@ pub fn luaK_storevar(fs: *FuncState, vp: *expdesc, ex: *expdesc) !void {
     switch (vp.k) {
         .VLOCAL => {
             freeexp(fs, ex);
-            exp2reg(fs, ex, vp.u.uv.ridx);
+            try exp2reg(fs, ex, vp.u.uv.ridx);
             return;
         },
         .VUPVAL => {
@@ -775,8 +774,8 @@ pub fn luaK_goiftrue(fs: *FuncState, e: *expdesc) !void {
             pc = try jumponcond(fs, e, 0);
         },
     }
-    luaK_concat(fs, &e.f, pc);
-    luaK_patchtohere(fs, e.t);
+    try luaK_concat(fs, &e.f, pc);
+    try luaK_patchtohere(fs, e.t);
     e.t = NO_JUMP;
 }
 
@@ -794,8 +793,8 @@ fn luaK_goiffalse(fs: *FuncState, e: *expdesc) !void {
             pc = try jumponcond(fs, e, 1);
         },
     }
-    luaK_concat(fs, &e.t, pc);
-    luaK_patchtohere(fs, e.f);
+    try luaK_concat(fs, &e.t, pc);
+    try luaK_patchtohere(fs, e.f);
     e.f = NO_JUMP;
 }
 
@@ -1173,12 +1172,12 @@ pub fn luaK_posfix(fs: *FuncState, opr: lparser.BinOpr, e1: *expdesc, e2: *expde
     if (constfolding(fs, @intFromEnum(opr) + lua.LUA_OPADD, e1, e2)) return;
     switch (opr) {
         .OPR_AND => {
-            luaK_concat(fs, &e2.f, e1.f);
+            try luaK_concat(fs, &e2.f, e1.f);
             e1.* = e2.*;
         },
         .OPR_OR => {
             std.debug.assert(e1.f == NO_JUMP);
-            luaK_concat(fs, &e2.t, e1.t);
+            try luaK_concat(fs, &e2.t, e1.t);
             e1.* = e2.*;
         },
         .OPR_CONCAT => {
@@ -1283,7 +1282,7 @@ fn finaltarget(code: []Instruction, i: i32) i32 {
     return idx;
 }
 
-pub fn luaK_finish(fs: *FuncState) void {
+pub fn luaK_finish(fs: *FuncState) !void {
     const p = fs.f;
     if ((p.flag & lparser.PF_VATAB) != 0)
         p.flag &= ~@as(u8, lparser.PF_VAHID);
@@ -1315,7 +1314,7 @@ pub fn luaK_finish(fs: *FuncState) void {
             },
             .JMP => {
                 const target = finaltarget(fs.code.items, @intCast(i));
-                fixjump(fs, @intCast(i), target);
+                try fixjump(fs, @intCast(i), target);
             },
             else => {},
         }

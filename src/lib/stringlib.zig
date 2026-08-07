@@ -244,7 +244,7 @@ fn tonum(L: *lua.lua_State, arg: i32) bool {
 
 fn arith(L: *lua.lua_State, op: i32, mtkey: []const u8, opname: []const u8) !i32 {
     if (tonum(L, 1) and tonum(L, 2)) {
-        lua.lua_arith(L, op);
+        try lua.lua_arith(L, op);
         return 1;
     } else {
         return try trymt(L, mtkey, opname);

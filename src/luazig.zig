@@ -225,7 +225,7 @@ fn doLibrary(L: *lua.lua_State, io: std.Io, name: []const u8) !bool {
     _ = lua.lua_pushstring(L, name);
     const status = pcallWithHandler(L, 1);
     if (status == lua.LUA_OK) {
-        lua.lua_setglobal(L, name);
+        try lua.lua_setglobal(L, name);
         return false;
     }
     printError(L, io);

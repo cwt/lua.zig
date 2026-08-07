@@ -53,7 +53,7 @@ pub fn openbaselib(L: *lua.lua_State) !void {
 
 pub fn opencorolib(L: *lua.lua_State) !void {
     try corolib.opencorolib(L);
-    lua.lua_setglobal(L, "coroutine");
+    try lua.lua_setglobal(L, "coroutine");
     try registerLoaded(L, "coroutine");
 }
 
@@ -63,7 +63,7 @@ pub fn opencorolib(L: *lua.lua_State) !void {
 
 pub fn opentablib(L: *lua.lua_State) !void {
     _ = try tablib.opentablib(L);
-    lua.lua_setglobal(L, "table");
+    try lua.lua_setglobal(L, "table");
     try registerLoaded(L, "table");
 }
 
@@ -73,7 +73,7 @@ pub fn opentablib(L: *lua.lua_State) !void {
 
 pub fn openstringlib(L: *lua.lua_State) !void {
     _ = try stringlib.openstringlib(L);
-    lua.lua_setglobal(L, "string");
+    try lua.lua_setglobal(L, "string");
     try registerLoaded(L, "string");
 }
 
@@ -92,7 +92,7 @@ pub fn openmathlib(L: *lua.lua_State) !void {
 
 pub fn openoslib(L: *lua.lua_State) !void {
     try oslib.openoslib(L);
-    lua.lua_setglobal(L, "os");
+    try lua.lua_setglobal(L, "os");
     try registerLoaded(L, "os");
 }
 
@@ -102,7 +102,7 @@ pub fn openoslib(L: *lua.lua_State) !void {
 
 pub fn openio(L: *lua.lua_State) !void {
     try iolib.openio(L);
-    lua.lua_setglobal(L, "io");
+    try lua.lua_setglobal(L, "io");
     try registerLoaded(L, "io");
 }
 
@@ -123,7 +123,7 @@ pub fn openloadlib(L: *lua.lua_State) !void {
 
 pub fn opendbalib(L: *lua.lua_State) !void {
     try debug.opendbalib(L);
-    lua.lua_setglobal(L, "debug");
+    try lua.lua_setglobal(L, "debug");
     try registerLoaded(L, "debug");
 }
 

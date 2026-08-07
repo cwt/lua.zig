@@ -56,7 +56,7 @@ fn luaB_auxwrap(L: *lua.lua_State) anyerror!i32 {
         if (stat != lua.LUA_ERRMEM and lua.lua_type(L, -1) == lua.LUA_TSTRING) {
             lauxlib.luaL_where(L, 1);
             lua.lua_insert(L, -2);
-            lua.lua_concat(L, 2);
+            try lua.lua_concat(L, 2);
         }
         return lua.lua_error(L);
     }

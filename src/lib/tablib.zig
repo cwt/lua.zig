@@ -152,7 +152,7 @@ fn tpack(L: *lua.lua_State) anyerror!i32 {
     lua.lua_insert(L, 1);
     var i: i64 = @intCast(n);
     while (i >= 1) : (i -= 1) {
-        lua.lua_rawseti(L, 1, i);
+        try lua.lua_rawseti(L, 1, i);
     }
     lua.lua_pushinteger(L, @intCast(n));
     try lua.lua_setfield(L, 1, "n");

@@ -390,5 +390,5 @@ pub fn openmathlib(L: *lua.lua_State) !void {
     lua.lua_pushinteger(L, lua.LUA_MININTEGER);
     try lua.lua_setfield(L, -2, "mininteger");
 
-    lua.lua_setglobal(L, "math");
+    try lua.lua_setglobal(L, "math");
 }

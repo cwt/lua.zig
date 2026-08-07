@@ -17,103 +17,103 @@ const lauxlib = @import("../lauxlib.zig");
 pub fn openbaselib(L: *lua.lua_State) !void {
     // Set the global `_G` to the globals table (as in the reference luaopen_base).
     lua.lua_pushglobaltable(L);
-    lua.lua_setglobal(L, "_G");
+    try lua.lua_setglobal(L, "_G");
 
     // assert(cond [, message])
     lua.lua_pushcfunction(L, assert);
-    lua.lua_setglobal(L, "assert");
+    try lua.lua_setglobal(L, "assert");
 
     // collectgarbage(option [, vararg])
     lua.lua_pushcfunction(L, collectgarbage);
-    lua.lua_setglobal(L, "collectgarbage");
+    try lua.lua_setglobal(L, "collectgarbage");
 
     // dofile(filename)
     lua.lua_pushcfunction(L, dofile);
-    lua.lua_setglobal(L, "dofile");
+    try lua.lua_setglobal(L, "dofile");
 
     // error(message [, level])
     lua.lua_pushcfunction(L, error_fn);
-    lua.lua_setglobal(L, "error");
+    try lua.lua_setglobal(L, "error");
 
     // getmetatable(object)
     lua.lua_pushcfunction(L, getmetatable);
-    lua.lua_setglobal(L, "getmetatable");
+    try lua.lua_setglobal(L, "getmetatable");
 
     // ipairs(table)
     lua.lua_pushcfunction(L, ipairs);
-    lua.lua_setglobal(L, "ipairs");
+    try lua.lua_setglobal(L, "ipairs");
 
     // loadfile(filename [, mode])
     lua.lua_pushcfunction(L, loadfile);
-    lua.lua_setglobal(L, "loadfile");
+    try lua.lua_setglobal(L, "loadfile");
 
     // load(file [, chunkname [, mode [, env]]])
     lua.lua_pushcfunction(L, load);
-    lua.lua_setglobal(L, "load");
+    try lua.lua_setglobal(L, "load");
 
     // next(table [, index])
     lua.lua_pushcfunction(L, next_fn);
-    lua.lua_setglobal(L, "next");
+    try lua.lua_setglobal(L, "next");
 
     // pairs(table)
     lua.lua_pushcfunction(L, pairs);
-    lua.lua_setglobal(L, "pairs");
+    try lua.lua_setglobal(L, "pairs");
 
     // pcall(function, vararg)
     lua.lua_pushcfunction(L, pcall);
-    lua.lua_setglobal(L, "pcall");
+    try lua.lua_setglobal(L, "pcall");
 
     // print(vararg)
     lua.lua_pushcfunction(L, print);
-    lua.lua_setglobal(L, "print");
+    try lua.lua_setglobal(L, "print");
 
     // warn(vararg)
     lua.lua_pushcfunction(L, warn);
-    lua.lua_setglobal(L, "warn");
+    try lua.lua_setglobal(L, "warn");
 
     // rawequal(x, y)
     lua.lua_pushcfunction(L, rawequal);
-    lua.lua_setglobal(L, "rawequal");
+    try lua.lua_setglobal(L, "rawequal");
 
     // rawlen(v)
     lua.lua_pushcfunction(L, rawlen);
-    lua.lua_setglobal(L, "rawlen");
+    try lua.lua_setglobal(L, "rawlen");
 
     // rawget(table, key)
     lua.lua_pushcfunction(L, rawget);
-    lua.lua_setglobal(L, "rawget");
+    try lua.lua_setglobal(L, "rawget");
 
     // rawset(table, key, value)
     lua.lua_pushcfunction(L, rawset);
-    lua.lua_setglobal(L, "rawset");
+    try lua.lua_setglobal(L, "rawset");
 
     // select(index_or_# [, vararg])
     lua.lua_pushcfunction(L, select);
-    lua.lua_setglobal(L, "select");
+    try lua.lua_setglobal(L, "select");
 
     // setmetatable(table, metatable)
     lua.lua_pushcfunction(L, setmetatable);
-    lua.lua_setglobal(L, "setmetatable");
+    try lua.lua_setglobal(L, "setmetatable");
 
     // tonumber(v [, base])
     lua.lua_pushcfunction(L, tonumber);
-    lua.lua_setglobal(L, "tonumber");
+    try lua.lua_setglobal(L, "tonumber");
 
     // tostring(v)
     lua.lua_pushcfunction(L, tostring);
-    lua.lua_setglobal(L, "tostring");
+    try lua.lua_setglobal(L, "tostring");
 
     // type(v)
     lua.lua_pushcfunction(L, type_fn);
-    lua.lua_setglobal(L, "type");
+    try lua.lua_setglobal(L, "type");
 
     // xpcall(function, errfunc, vararg)
     lua.lua_pushcfunction(L, xpcall);
-    lua.lua_setglobal(L, "xpcall");
+    try lua.lua_setglobal(L, "xpcall");
 
     // Set _VERSION global (matching C luaL_openlibs behaviour)
     _ = lua.lua_pushstring(L, lua.LUA_VERSION);
-    lua.lua_setglobal(L, "_VERSION");
+    try lua.lua_setglobal(L, "_VERSION");
 }
 
 // ===================================================================
@@ -153,7 +153,7 @@ fn assert(L: *lua.lua_State) anyerror!i32 {
     if (lua.lua_type(L, 1) == lua.LUA_TSTRING) {
         lauxlib.luaL_where(L, 1);
         lua.lua_pushvalue(L, 1);
-        lua.lua_concat(L, 2);
+        try lua.lua_concat(L, 2);
     }
     return lua.lua_error(L);
 }
@@ -223,7 +223,7 @@ fn error_fn(L: *lua.lua_State) anyerror!i32 {
     if (lua.lua_type(L, 1) == lua.LUA_TSTRING and level > 0) {
         lauxlib.luaL_where(L, level);
         lua.lua_pushvalue(L, 1);
-        lua.lua_concat(L, 2);
+        try lua.lua_concat(L, 2);
     }
     return lua.lua_error(L);
 }

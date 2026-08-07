@@ -1471,9 +1471,9 @@ pub inline fn lua_isnoneornil(L: *lua_State, idx: i32) bool {
 
 /// Register a C function as a global. Equivalent to
 /// `lua_pushcfunction(L, f); lua_setglobal(L, n)`.
-pub inline fn lua_register(L: *lua_State, name: []const u8, func: lua_CFunction) void {
+pub inline fn lua_register(L: *lua_State, name: []const u8, func: lua_CFunction) !void {
     lua_pushcfunction(L, func);
-    lua_setglobal(L, name);
+    try lua_setglobal(L, name);
 }
 
 /// Push the global environment table onto the stack. Equivalent to
@@ -1757,7 +1757,7 @@ pub fn toNumeric(v: TValue) ?TValue {
     };
 }
 
-pub fn lua_arith(L: *lua_State, op: i32) void {
+pub fn lua_arith(L: *lua_State, op: i32) !void {
     if (op < 0 or op > 13) return;
     const is_unary = (op == LUA_OPUNM or op == LUA_OPBNOT);
     if (is_unary) {
@@ -1783,7 +1783,7 @@ pub fn lua_arith(L: *lua_State, op: i32) void {
                 LUA_OPBNOT => .BNOT,
                 else => unreachable,
             };
-            ltm.luaT_trybinTM(L, &p1, &p1, L.top - 1, event) catch {};
+            try ltm.luaT_trybinTM(L, &p1, &p1, L.top - 1, event);
         }
     } else {
         if (L.top < 2) return;
@@ -1861,7 +1861,7 @@ pub fn lua_arith(L: *lua_State, op: i32) void {
                 LUA_OPSHR => .SHR,
                 else => unreachable,
             };
-            ltm.luaT_trybinTM(L, &p1, &p2, L.top - 2, event) catch {};
+            try ltm.luaT_trybinTM(L, &p1, &p2, L.top - 2, event);
             L.top -= 1;
         }
     }
@@ -2899,7 +2899,7 @@ fn collectvalidlines(L: *lua_State, cl: *lua_Closure) !void {
                 while (i < p.lineinfo.len) {
                     currentline = nextline(p, currentline, @intCast(i));
                     lua_pushboolean(L, 1);
-                    lua_rawseti(L, -2, currentline);
+                    try lua_rawseti(L, -2, currentline);
                     i += 1;
                 }
             }
@@ -3250,7 +3250,7 @@ pub inline fn lua_getuservalue(L: *lua_State, idx: i32) i32 {
     return lua_getiuservalue(L, idx, 1);
 }
 
-pub fn lua_setglobal(L: *lua_State, name: []const u8) void {
+pub fn lua_setglobal(L: *lua_State, name: []const u8) !void {
     const g = G(L);
     // Extract the registry table from g.registry (a TValue)
     const registry: *lua_Table = switch (g.registry) {
@@ -3277,8 +3277,8 @@ pub fn lua_setglobal(L: *lua_State, name: []const u8) void {
     };
     const val = L.stack[L.top - 1];
     L.top -= 1;
-    const key = TValue{ .string = lstring.luaS_new(L, name) catch null };
-    ltable.set(globals, key, val) catch {};
+    const ts = try lstring.luaS_new(L, name);
+    try ltable.set(globals, TValue{ .string = ts }, val);
 }
 
 pub fn lua_settable(L: *lua_State, idx: i32) !void {
@@ -3345,23 +3345,23 @@ pub fn lua_rawset(L: *lua_State, idx: i32) !void {
 }
 
 /// Raw (no metamethod) integer-key set.
-pub fn lua_rawseti(L: *lua_State, idx: i32, n: lua_Integer) void {
+pub fn lua_rawseti(L: *lua_State, idx: i32, n: lua_Integer) !void {
     const t = getTable(L, idx) orelse {
         L.top -= 1;
         return;
     };
     const val = L.stack[L.top - 1];
-    ltable.setInt(t, n, val) catch {};
+    try ltable.setInt(t, n, val);
     L.top -= 1;
 }
 
-pub fn lua_rawsetp(L: *lua_State, idx: i32, p: ?*anyopaque) void {
+pub fn lua_rawsetp(L: *lua_State, idx: i32, p: ?*anyopaque) !void {
     const t = getTable(L, idx) orelse {
         L.top -= 1;
         return;
     };
     const val = L.stack[L.top - 1];
-    ltable.set(t, TValue{ .lightud = @constCast(p) }, val) catch {};
+    try ltable.set(t, TValue{ .lightud = @constCast(p) }, val);
     L.top -= 1;
 }
 
@@ -5261,7 +5261,7 @@ pub fn lua_next(L: *lua_State, idx: i32) anyerror!i32 {
     return 0;
 }
 
-pub fn lua_concat(L: *lua_State, n: i32) void {
+pub fn lua_concat(L: *lua_State, n: i32) !void {
     if (n <= 0) {
         _ = lua_pushstring(L, "");
         return;
@@ -5274,29 +5274,26 @@ pub fn lua_concat(L: *lua_State, n: i32) void {
     while (k < @as(usize, @intCast(n))) : (k += 1) {
         const val = L.stack[start + k];
         switch (val) {
-            .string => |s| list.appendSlice(L.allocator, s.?.s) catch {},
+            .string => |s| try list.appendSlice(L.allocator, s.?.s),
             .number => |num| {
                 var buf: [64]u8 = undefined;
-                const slice = std.fmt.bufPrint(&buf, "{d}", .{num}) catch "";
-                list.appendSlice(L.allocator, slice) catch {};
+                const slice = try std.fmt.bufPrint(&buf, "{d}", .{num});
+                try list.appendSlice(L.allocator, slice);
             },
             .integer => |num| {
                 var buf: [32]u8 = undefined;
-                const slice = std.fmt.bufPrint(&buf, "{d}", .{num}) catch "";
-                list.appendSlice(L.allocator, slice) catch {};
+                const slice = try std.fmt.bufPrint(&buf, "{d}", .{num});
+                try list.appendSlice(L.allocator, slice);
             },
             else => {
                 const p1 = if (k > 0) L.stack[start + k - 1] else val;
                 const p2 = val;
-                ltm.luaT_trybinTM(L, &p1, &p2, start, .CONCAT) catch {};
+                try ltm.luaT_trybinTM(L, &p1, &p2, start, .CONCAT);
                 return;
             },
         }
     }
-    const ts = lstring.luaS_new(L, list.items) catch {
-        _ = lua_pushstring(L, "");
-        return;
-    };
+    const ts = try lstring.luaS_new(L, list.items);
     L.stack[start] = .{ .string = ts };
     L.top = start + 1;
 }
@@ -5709,14 +5706,14 @@ pub fn createargtable(L: *lua_State, args: []const []const u8) !void {
     lua_createtable(L, 0, 0);
     if (args.len >= 2) {
         _ = lua_pushstring(L, args[1]);
-        lua_rawseti(L, -2, 0);
+        try lua_rawseti(L, -2, 0);
         var i: usize = 2;
         while (i < args.len) : (i += 1) {
             _ = lua_pushstring(L, args[i]);
-            lua_rawseti(L, -2, @as(i64, @intCast(i - 1)));
+            try lua_rawseti(L, -2, @as(i64, @intCast(i - 1)));
         }
     }
-    lua_setglobal(L, "arg");
+    try lua_setglobal(L, "arg");
 }
 
 pub fn luaL_dostring(L: *lua_State, s: []const u8, name: []const u8) !i32 {

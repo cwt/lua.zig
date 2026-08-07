@@ -317,8 +317,8 @@ fn str_checkname(ls: *llex.LexState) !*lua.lua_TString {
     return ts.?;
 }
 
-fn luaK_jumpto(fs: *FuncState, target: i32) void {
-    lcode.luaK_patchlist(fs, lcode.luaK_jump(fs), target);
+fn luaK_jumpto(fs: *FuncState, target: i32) !void {
+    try lcode.luaK_patchlist(fs, lcode.luaK_jump(fs), target);
 }
 
 fn luaK_setmultret(fs: *FuncState, e: *expdesc) !void {
@@ -740,7 +740,7 @@ fn closegoto(ls: *llex.LexState, g: i32, label: *llex.Labeldesc, bup: u8) !void 
         fs.code.items[@intCast(gt.pc)] = lvm.CREATE_ABCk(.CLOSE, stklevel, 0, 0, 0);
         gt.pc += 1;
     }
-    lcode.luaK_patchlist(fs, gt.pc, label.pc);
+    try lcode.luaK_patchlist(fs, gt.pc, label.pc);
     var i = g;
     while (i < gl.items.len - 1) : (i += 1) {
         gl.items[@intCast(i)] = gl.items[@intCast(i + 1)];
@@ -873,7 +873,7 @@ fn close_func(ls: *llex.LexState) !void {
     try lcode.luaK_ret(fs, luaY_nvarstack(fs), 0);
     try leaveblock(fs);
     std.debug.assert(fs.bl == null);
-    lcode.luaK_finish(fs);
+    try lcode.luaK_finish(fs);
     // Transfer ownership of the generated arrays to the prototype. The
     // FuncState's ArrayList metadata is stack-allocated and will be dropped
     // (without freeing) when the function returns, leaving the buffers owned
@@ -1511,7 +1511,7 @@ fn ifstat(ls: *llex.LexState, line: i32) !void {
     }
     if (try testnext(ls, llex.TK_ELSE)) try block(ls);
     try check_match(ls, llex.TK_END, llex.TK_IF, line);
-    lcode.luaK_patchtohere(fs, escapelist);
+    try lcode.luaK_patchtohere(fs, escapelist);
 }
 
 fn test_then_block(ls: *llex.LexState, escapelist: *i32) !void {
@@ -1522,9 +1522,9 @@ fn test_then_block(ls: *llex.LexState, escapelist: *i32) !void {
     try checknext(ls, llex.TK_THEN);
     try block(ls);
     if (ls.t.token == llex.TK_ELSE or ls.t.token == llex.TK_ELSEIF) {
-        lcode.luaK_concat(fs, escapelist, lcode.luaK_jump(fs));
+        try lcode.luaK_concat(fs, escapelist, lcode.luaK_jump(fs));
     }
-    lcode.luaK_patchtohere(fs, condtrue);
+    try lcode.luaK_patchtohere(fs, condtrue);
 }
 
 fn whilestat(ls: *llex.LexState, line: i32) !void {
@@ -1536,10 +1536,10 @@ fn whilestat(ls: *llex.LexState, line: i32) !void {
     enterblock(fs, &bl, 1);
     try checknext(ls, llex.TK_DO);
     try block(ls);
-    luaK_jumpto(fs, whileinit);
+    try luaK_jumpto(fs, whileinit);
     try check_match(ls, llex.TK_END, llex.TK_WHILE, line);
     try leaveblock(fs);
-    lcode.luaK_patchtohere(fs, condexit);
+    try lcode.luaK_patchtohere(fs, condexit);
 }
 
 fn repeatstat(ls: *llex.LexState, line: i32) !void {
@@ -1555,12 +1555,12 @@ fn repeatstat(ls: *llex.LexState, line: i32) !void {
     var condexit = try cond(ls);
     if (bl2.upval != 0) {
         const exit = lcode.luaK_jump(fs);
-        lcode.luaK_patchtohere(fs, condexit);
+        try lcode.luaK_patchtohere(fs, condexit);
         _ = lcode.luaK_codeABC(fs, .CLOSE, reglevel(fs, bl2.nactvar), 0, 0);
         condexit = lcode.luaK_jump(fs);
-        lcode.luaK_patchtohere(fs, exit);
+        try lcode.luaK_patchtohere(fs, exit);
     }
-    lcode.luaK_patchlist(fs, condexit, repeat_init);
+    try lcode.luaK_patchlist(fs, condexit, repeat_init);
     try leaveblock(fs);
     try leaveblock(fs);
 }
