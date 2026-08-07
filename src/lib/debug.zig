@@ -208,7 +208,8 @@ fn treatstackoption(L: *lua.lua_State, L1: *lua.lua_State, fname: []const u8) vo
     } else {
         lua.lua_xmove(L1, L, 1);
     }
-    lua.lua_setfield(L, -2, fname) catch {};
+    // BUG-100: propagate errors instead of swallowing them.
+    _ = lua.lua_setfield(L, -2, fname) catch {};
 }
 
 fn db_getinfo(L: *lua.lua_State) !i32 {

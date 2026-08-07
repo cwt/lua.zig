@@ -284,8 +284,9 @@ fn project(ran: u64, n: u64, state: *[4]u64) u64 {
     var lim = n;
     var sh: u32 = 1;
     while ((lim & (lim +% 1)) != 0) {
-        lim |= (lim >> @as(u6, @intCast(sh)));
+        lim |= (lim >> @as(u6, @intCast(@min(sh, 63))));
         sh *= 2;
+        if (sh >= 64) break; // cap: shifting by >= 64 is undefined for u64
     }
     r &= lim;
     while (r > n) {

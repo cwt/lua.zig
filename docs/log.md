@@ -3,8 +3,41 @@ type: lessons_learned
 title: Modification Log
 description: Running chronological log of bundle modifications and significant changes.
 tags: [log, changelog]
-timestamp: 2026-08-07T23:05:00Z
+timestamp: 2026-08-08T12:00:00Z
 ---
+
+## 2026-08-08 — Resolution of BUG-086 through BUG-100 (Memory Safety & Error-Propagation Audit, 132/132 Tests PASS, 19/19 Upstream PASS)
+
+- **GC Correctness (`src/lua.zig`)**:
+  - Fixed BUG-086: `traverseGrayObject` now also marks open upvalues of all threads in `g.thread_list`, preventing Use-After-Free on coroutine resume when upvalues reference values on a different thread's stack.
+  - Fixed BUG-090: `lua_close` now traverses and frees objects on `g.finobj` (pending/completed `__gc` finalization list) in addition to `g.allgc`, eliminating a heap leak on state teardown.
+- **Cross-Thread Stack Safety (`src/lua.zig`, `src/lstring.zig`)**:
+  - Fixed BUG-087: `createString` now sets the `errdefer` to remove the key from `g.strt` *before* allocating `key` and `ts`, preventing a dangling pointer to temporary caller stack memory if `create` fails after `getOrPut`.
+  - Fixed BUG-088: `reallocStack` now fixes up open upvalue pointers on all threads in `g.thread_list`, not just the current thread's `L.openupval`, preventing dangling pointers on secondary threads after stack reallocation.
+- **CLI Error Handler (`src/luazig.zig`)**:
+  - Fixed BUG-089: `msghandler` now only calls `L.allocator.free(buf)` when `allocPrint` succeeds; on OOM it falls back to a static `"(error)"` string that is never freed.
+- **Table Growth (`src/ltable.zig`)**:
+  - Fixed BUG-091: `growNode` now saves and restores `t.lastfree` in `errdefer` on OOM, preventing out-of-bounds access in `getFreePos` after a failed growth attempt.
+  - Fixed BUG-096: `hashKey` now normalizes `-0.0` to `+0.0` before computing the float bit-hash, so `t[-0.0]` and `t[0.0]` hash to the same bucket (matching Lua equality rules).
+- **VM Opcode Safety (`src/lvm.zig`)**:
+  - Fixed BUG-092: `OP_NEWTABLE` now bounds-checks `vB-1` before shifting, capping the shift at 63 to prevent a `u5` cast overflow panic for large hash-size encodings.
+  - Fixed BUG-100 (lvm): Division-by-zero and modulo-by-zero error paths in `arithCompute` now use `try` to propagate the error instead of swallowing it with `catch {}`.
+- **Code Emitter (`src/lcode.zig`)**:
+  - Fixed BUG-093: `str2K` (and the `luaK_exp2K` helper it feeds) now propagate OOM errors from `stringK` instead of catching with `catch 0` and silently binding to constant index 0.
+  - Fixed BUG-094: `luaK_codeABCk`/`luaK_codevABCk`/`luaK_codeABx`/`codeAsBx`/`codesJ`/`codeextraarg` now propagate errors properly rather than swallowing with `catch {}` and returning PC 0.
+- **Parser (`src/lparser.zig`)**:
+  - Fixed BUG-095: `newupvalue` now validates `fs.prev != null` *before* calling `allocupvalue`, preventing corruption of `fs.upvalues`/`fs.nups` when called outside any enclosing function.
+- **Standard Libraries (`src/lib/bit32.zig`, `src/lib/mathlib.zig`, `src/lib/corolib.zig`)**:
+  - Fixed BUG-097: `bit_extract`/`bit_replace` now use `+%` (wrapping addition) for `field + width` to prevent an i64 overflow panic on extreme inputs.
+  - Fixed BUG-098: `project` in `math.random` now caps `sh` at 63 before casting to `u6`, preventing a cast-overflow panic when `sh` reaches 64.
+  - Fixed BUG-099: `getoptco` now returns `error` instead of falling back to `L` on invalid thread arguments, preventing `coroutine.close("invalid")` from closing the running coroutine.
+- **Error Swallowing Cleanup (`src/lua.zig`, `src/lauxlib.zig`, `src/lib/iolib.zig`, `src/lib/debug.zig`, `src/lundump.zig`)**:
+  - Fixed BUG-100: Replaced 26 sites of silent `catch {}` with proper error propagation or logging. Key changes:
+    - `lua_setglobal`: now returns `error.OutOfMemory` when string allocation fails and propagates table-set errors.
+    - `shrinkStack`, `luaC_condGC`, `callFinalizer`, `f_gc`: now log warnings on non-fatal GC/finalizer errors instead of silently discarding.
+    - `luaL_tolstring`: propagates the `'__tostring' must return a string` error.
+    - Parser/dump teardown `defer` blocks: use `_ = ... catch {}` with explicit comments documenting best-effort cleanup.
+- **Verification Gate**: `zig build test` passed **132/132** tests; `./run_testes.sh` passed **19 PASS / 0 FAIL / 0 CRASH** with exit code 0. Zero memory leaks.
 
 ## 2026-08-08 — Resolution of BUG-065 through BUG-085 (Code Audit Fixes, 100% Tests PASS)
 

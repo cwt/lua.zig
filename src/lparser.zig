@@ -453,8 +453,10 @@ fn allocupvalue(fs: *FuncState) !*lua.Upvaldesc {
 }
 
 fn newupvalue(fs: *FuncState, name: *lua.lua_TString, v: *expdesc) !i32 {
+    // BUG-095: validate fs.prev *before* mutating fs.upvalues.
+    if (fs.prev == null) return llex.luaX_syntaxerror(fs.ls, "no enclosing function");
     const up = try allocupvalue(fs);
-    const prev = fs.prev orelse return llex.luaX_syntaxerror(fs.ls, "no enclosing function");
+    const prev = fs.prev.?;
     if (v.k == .VLOCAL) {
         up.instack = 1;
         up.idx = v.u.uv.ridx;
@@ -1899,7 +1901,9 @@ pub fn luaD_protectedparser(
     defer {
         if (L.l_G) |g| {
             if (g.registry.table) |reg| {
-                ltable.set(reg, .{ .lightud = @ptrCast(anchor_tab) }, .{ .nil = {} }) catch {};
+                // BUG-100: best-effort cleanup on parser teardown; an error
+                // here is non-fatal (the parser is already unwinding).
+                _ = ltable.set(reg, .{ .lightud = @ptrCast(anchor_tab) }, .{ .nil = {} }) catch {};
             }
         }
     }

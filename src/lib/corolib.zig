@@ -109,13 +109,13 @@ fn luaB_costatus(L: *lua.lua_State) anyerror!i32 {
     return 1;
 }
 
-fn getoptco(L: *lua.lua_State) *lua.lua_State {
+fn getoptco(L: *lua.lua_State) !*lua.lua_State {
     if (lua.lua_isnone(L, 1) != 0) return L;
-    return getco(L) catch L;
+    return try getco(L);
 }
 
 fn luaB_yieldable(L: *lua.lua_State) anyerror!i32 {
-    const co = getoptco(L);
+    const co = try getoptco(L);
     lua.lua_pushboolean(L, lua.lua_isyieldable(co));
     return 1;
 }
@@ -127,7 +127,7 @@ fn luaB_corunning(L: *lua.lua_State) anyerror!i32 {
 }
 
 fn luaB_close(L: *lua.lua_State) anyerror!i32 {
-    const co = getoptco(L);
+    const co = try getoptco(L);
     const st = auxstatus(L, co);
     switch (st) {
         COS_DEAD, COS_YIELD => {

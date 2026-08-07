@@ -94,9 +94,13 @@ fn msghandler(L: *lua.lua_State) anyerror!i32 {
             lua.lua_pop(L, 1); // discard a non-string __tostring result
         }
         const tname = lauxlib.luaL_typename(L, 1) catch "?";
-        const buf = std.fmt.allocPrint(L.allocator, "(error object is a {s} value)", .{tname}) catch "(error)";
-        defer L.allocator.free(buf);
-        try lauxlib.luaL_traceback(L, L, buf, 1);
+        const buf = std.fmt.allocPrint(L.allocator, "(error object is a {s} value)", .{tname}) catch null;
+        if (buf) |b| {
+            defer L.allocator.free(b);
+            try lauxlib.luaL_traceback(L, L, b, 1);
+        } else {
+            try lauxlib.luaL_traceback(L, L, "(error)", 1);
+        }
     } else {
         try lauxlib.luaL_traceback(L, L, msg.?, 1);
     }

@@ -87,6 +87,7 @@ fn createString(L: *lua.lua_State, s: []const u8) !*lua.lua_TString {
         if (gop.found_existing) {
             return gop.value_ptr.*;
         }
+        errdefer _ = g.strt.swapRemove(s);
         const key = try g.allocator.dupe(u8, s);
         errdefer g.allocator.free(key);
         const ts = try g.allocator.create(lua.lua_TString);
@@ -97,7 +98,6 @@ fn createString(L: *lua.lua_State, s: []const u8) !*lua.lua_TString {
         };
         gop.key_ptr.* = key;
         gop.value_ptr.* = ts;
-        errdefer _ = g.strt.swapRemove(key);
         g.gc_count += 1;
         return ts;
     } else {

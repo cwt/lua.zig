@@ -345,7 +345,8 @@ pub fn loadBinaryChunk(L: *lua.lua_State, reader: lua.lua_Reader, dt: ?*anyopaqu
     defer {
         if (L.l_G) |g| {
             if (g.registry.table) |reg| {
-                ltable.set(reg, .{ .lightud = @ptrCast(anchor_tab) }, .{ .nil = {} }) catch {};
+                // BUG-100: best-effort cleanup on unloader teardown.
+                _ = ltable.set(reg, .{ .lightud = @ptrCast(anchor_tab) }, .{ .nil = {} }) catch {};
             }
         }
     }

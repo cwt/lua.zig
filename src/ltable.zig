@@ -93,7 +93,12 @@ inline fn hashKey(key: TValue, len: usize) usize {
     if (len == 0) return 0;
     const mask = len - 1;
     const h: usize = switch (key) {
-        .number => |n| hashBits(@bitCast(n)),
+        .number => |n| blk: {
+            // BUG-096: normalize -0.0 to 0.0 so t[-0.0] and t[0.0] hash to
+            // the same bucket (they are equal as keys in Lua).
+            const normalized: f64 = if (n == 0.0 and @as(u64, @bitCast(n)) == 0x8000000000000000) 0.0 else n;
+            break :blk hashBits(@bitCast(normalized));
+        },
         .integer => |n| hashBits(@bitCast(@as(f64, @floatFromInt(n)))),
         .string => |ts| if (ts) |s| s.hash else 0,
         .boolean => |b| if (b) 1 else 0,
@@ -147,6 +152,7 @@ fn growNode(t: *Table) anyerror!void {
     var newlen = ceilPow2(active_count);
     if (newlen < 4) newlen = 4;
     var old_node = t.node;
+    const old_lastfree = t.lastfree;
     var newlist = std.ArrayList(Node).empty;
     try newlist.ensureTotalCapacityPrecise(t.allocator, newlen);
     newlist.appendNTimesAssumeCapacity(.{ .key = .{ .nil = {} }, .val = .{ .nil = {} }, .next = -1 }, newlen);
@@ -155,6 +161,7 @@ fn growNode(t: *Table) anyerror!void {
     errdefer {
         t.node.deinit(t.allocator);
         t.node = old_node;
+        t.lastfree = old_lastfree;
     }
     for (old_node.items) |nd| {
         if (nd.key != .nil and nd.val != .nil) {

@@ -193,7 +193,9 @@ fn floatforloop(ra_idx: usize, L: *lua.lua_State) bool {
 fn arithCompute(L: *lua.lua_State, op: i32, n1: lua.TValue, n2: lua.TValue) !lua.TValue {
     if (n1 == .integer and n2 == .integer) {
         if ((op == lua.LUA_OPIDIV) and n2.integer == 0) {
-            lua.luaG_runerror(L, "attempt to divide by zero") catch {};
+            // BUG-100: the error function itself must not swallow its own
+            // error; propagate it so the caller handles it properly.
+            try lua.luaG_runerror(L, "attempt to divide by zero");
             return error.RuntimeError;
         }
         return switch (op) {
@@ -204,7 +206,8 @@ fn arithCompute(L: *lua.lua_State, op: i32, n1: lua.TValue, n2: lua.TValue) !lua
                 const ib = n1.integer;
                 const ic = n2.integer;
                 if (ic == 0) {
-                    lua.luaG_runerror(L, "attempt to perform 'n%0'") catch {};
+                    // BUG-100: propagate instead of swallowing.
+                    try lua.luaG_runerror(L, "attempt to perform 'n%0'");
                     return error.RuntimeError;
                 }
                 const r: i64 = if (ic == -1) 0 else @rem(ib, ic);
@@ -834,7 +837,13 @@ pub fn run(L: *lua.lua_State, active_ci: *lua.CallInfo) anyerror!void {
                     ci.savedpc += 1;
                     narr += @as(usize, @intCast(GETARG_Ax(extra))) * 1024;
                 }
-                const nrec = if (vB > 0) @as(usize, 1) << @as(u5, @intCast(vB - 1)) else 0;
+                const nrec = if (vB > 0) blk: {
+                    // BUG-092: vB-1 is a u6 field; casting to u5 can panic if
+                    // vB-1 >= 32.  Shift the usize literal by up to 6 bits at
+                    // a time (u6 -> 64 = 2^6) to stay within u5 width.
+                    const shift = @as(u3, @intCast(@min(vB - 1, 63)));
+                    break :blk @as(usize, 1) << @as(u6, @intCast(shift));
+                } else 0;
                 const tab = try ltable.createTable(L.allocator, narr, nrec);
                 try lua.registerGC(L, tab);
                 L.stack[ra_idx] = .{ .table = tab };

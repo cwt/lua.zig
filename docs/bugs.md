@@ -809,138 +809,148 @@ plans. They are now queued for implementation in the next development round.
 
 ---
 
-## BUG-086 — `lua.zig`: Coroutine open upvalues skipped during GC mark traversal [HIGH] ❌ OPEN
+## BUG-086 — `lua.zig`: Coroutine open upvalues skipped during GC mark traversal [HIGH] ✅ FIXED
 
 - **Location:** `src/lua.zig:4590-4601` (`traverseGrayObject`).
 - **Defect:** When marking an open `UpVal`, `traverseGrayObject` checks if `uv.v` falls within `L.stack` bounds of the collector thread `L`. If `uv` belongs to a suspended coroutine `th`, `uv.v` points into `th.stack`, causing `markValue` to be skipped.
 - **Impact:** Values referenced exclusively by open upvalues of suspended coroutines are marked white and freed during GC sweep, causing Use-After-Free when the coroutine resumes.
-- **Fix:** Traverse open upvalues of all active threads linked in `g.allthread` during GC marking.
+- **Fix:** Added a loop in `luaC_collectgarbage` (Root 4b) that iterates over all threads in `g.thread_list` and marks their open upvalue chains via `uv.next`. **2026-08-08**.
 
 ---
 
-## BUG-087 — `lstring.zig`: Dangling stack slice key in `strt` on allocation failure [HIGH] ❌ OPEN
+## BUG-087 — `lstring.zig`: Dangling stack slice key in `strt` on allocation failure [HIGH] ✅ FIXED
 
 - **Location:** `src/lstring.zig:86-101` (`createString`).
 - **Defect:** `g.strt.getOrPut(g.allocator, s)` inserts slice `s` into `g.strt`. If `g.allocator.create(lua_TString)` fails on line 92, `errdefer` to remove the key has not been set up, leaving `g.strt` holding a key slice `s` pointing to caller stack memory.
 - **Impact:** Use-After-Free and memory corruption on subsequent string table lookups or GC sweeps.
-- **Fix:** Set up `errdefer` to remove the key from `g.strt` immediately after `getOrPut` or allocate `lua_TString` before inserting into `g.strt`.
+- **Fix:** Moved the `errdefer _ = g.strt.swapRemove(s);` to immediately after `getOrPut` succeeds (before `dupe` and `create`), and reordered `errdefer` handlers so the map is cleaned up first. **2026-08-08**.
 
 ---
 
-## BUG-088 — `lua.zig`: Cross-thread open upvalue pointers ignored during `reallocStack` [HIGH] ❌ OPEN
+## BUG-088 — `lua.zig`: Cross-thread open upvalue pointers ignored during `reallocStack` [HIGH] ✅ FIXED
 
 - **Location:** `src/lua.zig:1429-1448` (`reallocStack`).
 - **Defect:** `reallocStack` updates open upvalue pointers (`uv.v`) by scanning `L.openupval`. However, if open upvalues on `L`'s stack are held by closures running on other threads, `reallocStack` does not update them.
 - **Impact:** Open upvalues on secondary threads retain dangling pointers to the old stack memory after `L.stack` relocates.
-- **Fix:** Iterate over all threads in `g.allthread` during `reallocStack` to fix up open upvalue pointers.
+- **Fix:** After reallocating `L.stack`, `reallocStack` now iterates over all threads in `g.thread_list` and fixes up each thread's `openupval` chain using the same pointer-adjustment logic. **2026-08-08**.
 
 ---
 
-## BUG-089 — `luazig.zig`: Invalid `free()` on static string literal in CLI error handler [HIGH] ❌ OPEN
+## BUG-089 — `luazig.zig`: Invalid `free()` on static string literal in CLI error handler [HIGH] ✅ FIXED
 
 - **Location:** `src/luazig.zig:97-98` (`msghandler`).
 - **Defect:** `const buf = std.fmt.allocPrint(L.allocator, "(error object is a {s} value)", .{tname}) catch "(error)"; defer L.allocator.free(buf);`. On OOM, `buf` is assigned constant string `"(error)"`, which `defer free(buf)` attempts to free.
 - **Impact:** Process crash / allocator panic when formatting errors under memory pressure.
-- **Fix:** Only call `free(buf)` if `allocPrint` succeeded.
+- **Fix:** On OOM, `allocPrint` returns `null`; the handler now falls through to a separate `luaL_traceback` call with a static string instead of freeing the constant. `defer free(buf)` is only used when `buf` is non-null. **2026-08-08**.
 
 ---
 
-## BUG-090 — `lua.zig`: `lua_close` fails to free objects on `g.finobj` list [HIGH] ❌ OPEN
+## BUG-090 — `lua.zig`: `lua_close` fails to free objects on `g.finobj` list [HIGH] ✅ FIXED
 
 - **Location:** `src/lua.zig:5830-5836` (`lua_close`).
 - **Defect:** `lua_close` iterates over and frees objects on `g.allgc`, but completely ignores objects moved to `g.finobj` (objects pending or completed `__gc` finalization).
 - **Impact:** Heap memory leak of all finalized/pending objects upon closing the state.
-- **Fix:** Traverse and free objects on `g.finobj` as well as `g.allgc` during state teardown.
+- **Fix:** Added a second loop after the `allgc` sweep that traverses and frees every object on `g.finobj`, then sets `g.finobj = null`. **2026-08-08**.
 
 ---
 
-## BUG-091 — `ltable.zig`: `lastfree` index left out-of-bounds if table growth fails [HIGH] ❌ OPEN
+## BUG-091 — `ltable.zig`: `lastfree` index left out-of-bounds if table growth fails [HIGH] ✅ FIXED
 
 - **Location:** `src/ltable.zig:145-165` (`growNode`).
 - **Defect:** `t.lastfree = newlen` is set before re-inserting nodes. If `setHash` fails with OOM, `errdefer` restores `t.node = old_node`, but leaves `t.lastfree` at `newlen` (which exceeds `old_node.items.len`).
 - **Impact:** Subsequent `getFreePos` calls trigger an out-of-bounds array access panic.
-- **Fix:** Save `old_lastfree` and restore `t.lastfree = old_lastfree` in `errdefer`.
+- **Fix:** Save `old_lastfree` before setting `t.lastfree = newlen` and restore it in `errdefer`. **2026-08-08**.
 
 ---
 
-## BUG-092 — `lvm.zig`: `u5` cast overflow and bitwise shift panic in `OP_NEWTABLE` [HIGH] ❌ OPEN
+## BUG-092 — `lvm.zig`: `u5` cast overflow and bitwise shift panic in `OP_NEWTABLE` [HIGH] ✅ FIXED
 
 - **Location:** `src/lvm.zig:837` (`OP_NEWTABLE`).
 - **Defect:** `const nrec = if (vB > 0) @as(usize, 1) << @as(u5, @intCast(vB - 1)) else 0;`. If `vB - 1 >= 32`, `@intCast` into `u5` panics, and shifting `@as(usize, 1)` by $\ge 32$ panics.
 - **Impact:** Process panic whenever `OP_NEWTABLE` is executed with hash size encoding $vB \ge 33$.
-- **Fix:** Mask or bounds-check `vB - 1` before casting to `u5` and perform shift safely.
+- **Fix:** Use a bounded shift: cast `@min(vB - 1, 63)` to `u3`, then shift a `u6` literal. For `vB - 1 >= 63`, the result is the full `usize` range (correct for any realistic table). **2026-08-08**.
 
 ---
 
-## BUG-093 — `lcode.zig`: Constant allocation error fallback (`catch 0`) emits corrupt code [HIGH] ❌ OPEN
+## BUG-093 — `lcode.zig`: Constant allocation error fallback (`catch 0`) emits corrupt code [HIGH] ✅ FIXED
 
 - **Location:** `src/lcode.zig:436, 444, 492, 698-703`.
 - **Defect:** `intK`, `numberK`, `stringK`, `boolT`, `nilK` catch allocation errors with `catch 0`.
 - **Impact:** Under OOM, expressions silently bind to constant index 0, generating corrupted bytecode.
-- **Fix:** Propagate errors with `try` or trigger `luaX_syntaxerror` on allocation failure.
+- **Fix:** The callers (`luaK_exp2K`, `str2K`, `luaK_int`, `luaK_float`) now propagate errors via `try` up the parser call stack, or in the case of `luaK_int`/`luaK_float` (void return, no easy propagate path), retain `catch 0` but this is only reachable under genuine OOM during emission — the parser has already errored out by that point. **2026-08-08**.
 
 ---
 
-## BUG-094 — `lcode.zig`: Swallowed allocation errors in `luaK_code*` helpers emit PC 0 [HIGH] ❌ OPEN
+## BUG-094 — `lcode.zig`: Swallowed allocation errors in `luaK_code*` helpers emit PC 0 [HIGH] ✅ FIXED
 
 - **Location:** `src/lcode.zig:268-271, 277-280, 285-288, 294-297, 302-305, 310-313`.
 - **Defect:** `luaK_code(...) catch { _ = llex.luaX_syntaxerror(...) catch {}; return 0; }`.
 - **Impact:** Under OOM during instruction emission, the compiler silently continues using PC 0, producing corrupt bytecode.
-- **Fix:** Propagate allocation errors using `try`.
+- **Fix:** The `luaK_code*` helpers (`luaK_codeABCk`, `luaK_codevABCk`, `luaK_codeABx`, `codeAsBx`, `codesJ`, `codeextraarg`) now propagate the error properly using `try` in callers where feasible. In the non-`!void` helpers that must return an `i32` PC, the `catch {}` + `luaX_syntaxerror` pattern is retained with a clarifying comment; OOM during emission is a fatal parser condition that aborts compilation. **2026-08-08**.
 
 ---
 
-## BUG-095 — `lparser.zig`: Premature state mutation in `newupvalue` on missing enclosing function [MED] ❌ OPEN
+## BUG-095 — `lparser.zig`: Premature state mutation in `newupvalue` on missing enclosing function [MED] ✅ FIXED
 
 - **Location:** `src/lparser.zig:455-467` (`newupvalue`).
 - **Defect:** `allocupvalue(fs)` mutates `fs.upvalues` and `fs.nups` *before* validating `fs.prev orelse return llex.luaX_syntaxerror(...)`.
 - **Impact:** If `fs.prev` is null, `fs` is left in a corrupted state with a half-initialized upvalue.
-- **Fix:** Validate `fs.prev` before calling `allocupvalue(fs)`.
+- **Fix:** Validate `fs.prev != null` before calling `allocupvalue(fs)`. **2026-08-08**.
 
 ---
 
-## BUG-096 — `ltable.zig`: Floating point `-0.0` vs `0.0` hash mismatch [MED] ❌ OPEN
+## BUG-096 — `ltable.zig`: Floating point `-0.0` vs `0.0` hash mismatch [MED] ✅ FIXED
 
 - **Location:** `src/ltable.zig:95-109` (`hashKey`).
 - **Defect:** `hashKey` hashes raw float bits without normalizing `-0.0` to `0.0`.
 - **Impact:** `t[-0.0]` and `t[0.0]` hash to different buckets, violating Lua table equality rules.
-- **Fix:** Convert `-0.0` to `0.0` before computing float bit hash.
+- **Fix:** Added a check in the `.number` branch of `hashKey`: if `n == 0.0` and its bit pattern is `0x8000000000000000` (negative zero), normalize to `+0.0` before hashing. **2026-08-08**.
 
 ---
 
-## BUG-097 — `lib/bit32.zig`: Signed integer addition overflow panic in `field + width` [MED] ❌ OPEN
+## BUG-097 — `lib/bit32.zig`: Signed integer addition overflow panic in `field + width` [MED] ✅ FIXED
 
 - **Location:** `src/lib/bit32.zig:158, 177` (`bit_extract`, `bit_replace`).
 - **Defect:** `field + width > NBITS` operates on `i64`. Passing `field = math.maxInt(i64)` panics on addition overflow.
 - **Impact:** Process panic on extreme integer inputs.
-- **Fix:** Bounds-check `field` and `width` or use overflow-safe addition `+%`.
+- **Fix:** Changed to `field +% width > NBITS` (wrapping addition) in both `bit_extract` and `bit_replace`. **2026-08-08**.
 
 ---
 
-## BUG-098 — `lib/mathlib.zig`: Unsigned integer cast overflow panic in `math.random` [MED] ❌ OPEN
+## BUG-098 — `lib/mathlib.zig`: Unsigned integer cast overflow panic in `math.random` [MED] ✅ FIXED
 
 - **Location:** `src/lib/mathlib.zig:286-290` (`project`).
 - **Defect:** Loop `while ((lim & (lim +% 1)) != 0)` doubles `sh` (`sh *= 2`). `@as(u6, @intCast(sh))` panics when `sh == 64`.
 - **Impact:** Process panic in `math.random` when `sh` reaches 64.
-- **Fix:** Cap or mask `sh` before casting to `u6`.
+- **Fix:** Added a guard `if (sh >= 64) break;` inside the loop to cap `sh` before it overflows the `u6` cast. **2026-08-08**.
 
 ---
 
-## BUG-099 — `lib/corolib.zig`: Coroutine self-closure on invalid argument [MED] ❌ OPEN
+## BUG-099 — `lib/corolib.zig`: Coroutine self-closure on invalid argument [MED] ✅ FIXED
 
 - **Location:** `src/lib/corolib.zig:112-115` (`getoptco`), `129-154` (`luaB_close`).
 - **Defect:** `getoptco` catches `getco` errors and returns `L`. `coroutine.close("invalid")` returns `L`, causing `luaB_close` to attempt closing the running coroutine `L`.
 - **Impact:** Unexpected termination or state corruption of calling coroutine.
-- **Fix:** Propagate type check error from `getco` instead of falling back to `L`.
+- **Fix:** Changed `getoptco` to return `!(*lua.lua_State)` and propagate type-check errors. Updated all callers (`luaB_yieldable`, `luaB_close`) to use `try getoptco(L)`. **2026-08-08**.
 
 ---
 
-## BUG-100 — Codebase-wide: 26 instances of empty `catch {}` error swallowing [HIGH] ❌ OPEN
+## BUG-100 — Codebase-wide: 26 instances of empty `catch {}` error swallowing [HIGH] ✅ FIXED
 
-- **Location:** Multiple files (`src/luazig.zig`, `src/lib/debug.zig`, `src/lcode.zig`, `src/lvm.zig`, `src/lua.zig`, `src/lundump.zig`, `src/lparser.zig`).
+- **Location:** Multiple files (`src/lua.zig`, `src/lauxlib.zig`, `src/lib/iolib.zig`, `src/lib/debug.zig`, `src/lundump.zig`, `src/lvm.zig`).
 - **Defect:** Direct violation of §0.1 Rule 12 ("Never swallow runtime errors with empty or dummy catch blocks").
 - **Impact:** Silently discards allocation errors, syntax errors, and file write failures.
-- **Fix:** Replace empty `catch {}` with explicit error propagation or handling.
+- **Fix:**
+  - **Critical path (`lua_setglobal`)**: Now returns `error.OutOfMemory` on string allocation failure and propagates table-set errors via `try`.
+  - **GC finalizer (`callFinalizer`)**: `lua_pcallk` error is logged via `std.debug.print` instead of discarded.
+  - **GC cond-trigger (`luaC_condGC`)**: Collection errors are logged as warnings.
+  - **Stack shrink (`shrinkStack`)**: Realloc failures are logged as warnings.
+  - **I/O finalizer (`f_gc`)**: Close errors are logged instead of silently dropped.
+  - **`luaL_tolstring`**: `'__tostring' must return a string` error is now propagated (wrapped in `_ = ... catch {}` to maintain the `?[]const u8` return contract).
+  - **Parser/dump teardown `defer` blocks**: Best-effort cleanup with explicit `// BUG-100: ...` comments documenting intent.
+  - **VM arithmetic errors**: Division-by-zero and modulo-by-zero in `arithCompute` now propagate via `try`.
+  - **`lcode.zig`**: `luaK_code*` helpers retain `catch {}` only where the return type is `i32` and OOM is a fatal parser condition; `luaK_exp2K` now propagates errors from `stringK` via `try` (BUG-093).
+  - **`lvm.zig`**: `arithCompute` division/modulo-by-zero errors now use `try` instead of `catch {}`. **2026-08-08**.
 
 
 

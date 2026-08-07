@@ -122,7 +122,10 @@ fn io_close(L_: *L) !i32 {
 fn f_gc(L_: *L) !i32 {
     const p = try tostream(L_, 1);
     if (p.closef != null) {
-        _ = f_close(L_, p) catch {};
+        // BUG-100: log warning instead of silently swallowing close errors.
+        _ = f_close(L_, p) catch |e| {
+            std.debug.print("io: __gc close failed: {any}\n", .{e});
+        };
     }
     return 0;
 }

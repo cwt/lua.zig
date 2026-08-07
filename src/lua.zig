@@ -1422,7 +1422,10 @@ fn shrinkStack(L: *lua_State) void {
     const inuse = @max(lim, @as(usize, @intCast(LUA_MINSTACK))) + 1;
     const max = if (inuse > llimits.LUAI_MAXSTACK / 3) llimits.LUAI_MAXSTACK else inuse * 3;
     if (inuse <= llimits.LUAI_MAXSTACK and L.stack.len > max) {
-        reallocStack(L, @max(max, @as(usize, @intCast(LUA_MINSTACK)))) catch {};
+        // BUG-100: log instead of swallowing on shrink failure.
+        _ = reallocStack(L, @max(max, @as(usize, @intCast(LUA_MINSTACK)))) catch |e| {
+            std.debug.print("luazig: warning: stack shrink failed: {any}\n", .{e});
+        };
     }
 }
 
@@ -1440,6 +1443,25 @@ fn reallocStack(L: *lua_State, new_cap: usize) !void {
             uv.v = &L.stack[uv_idx];
         }
         curr = uv.next;
+    }
+    // BUG-088: Also fix up open upvalue pointers of all other threads in the
+    // same state.  An upvalue on a suspended coroutine may point into this
+    // thread's stack; if we only update L.openupval the secondary thread
+    // retains dangling pointers after reallocation.
+    if (L.l_G) |g| {
+        var th: ?*lua_State = g.thread_list;
+        while (th) |t| {
+            var uv2 = t.openupval;
+            while (uv2) |uv2_| {
+                const uv_addr2 = @intFromPtr(uv2_.v);
+                if (uv_addr2 >= old_base and uv_addr2 < old_end) {
+                    const uv_idx2 = (uv_addr2 -| old_base) / @sizeOf(TValue);
+                    uv2_.v = &t.stack[uv_idx2];
+                }
+                uv2 = uv2_.next;
+            }
+            th = t.twups;
+        }
     }
     if (new_cap > old_len) {
         @memset(L.stack[old_len..new_cap], .{ .nil = {} });
@@ -3297,7 +3319,6 @@ pub fn lua_setglobal(L: *lua_State, name: []const u8) !void {
             return;
         },
     };
-    // LUA_RIDX_GLOBALS == 2
     const globals_val = ltable.getInt(registry, 2);
     const globals: *lua_Table = switch (globals_val) {
         .table => |t_opt| t_opt orelse {
@@ -3309,10 +3330,14 @@ pub fn lua_setglobal(L: *lua_State, name: []const u8) !void {
             return;
         },
     };
-    const val = L.stack[L.top - 1];
+    const s = lstring.luaS_new(L, name) catch null;
+    if (s == null) {
+        L.top -= 1;
+        return error.OutOfMemory;
+    }
+    // BUG-100: propagate the error from the table set instead of swallowing it.
+    try ltable.set(globals, TValue{ .string = s }, L.stack[L.top - 1]);
     L.top -= 1;
-    const ts = try lstring.luaS_new(L, name);
-    try ltable.set(globals, TValue{ .string = ts }, val);
 }
 
 pub fn lua_settable(L: *lua_State, idx: i32) !void {
@@ -4763,8 +4788,11 @@ pub inline fn luaC_condGC(L: *lua_State) void {
     // Compare the live-object count against the count-based threshold (the
     // same condition the VM loop uses); comparing totalbytes here would fire
     // constantly, since a few large live objects can exceed the threshold.
+    // BUG-100: GC failure on condGC is logged rather than silently ignored.
     if (g.gc_running and !g.gc_in_progress and g.gc_count > g.gc_threshold) {
-        luaC_collectgarbage(L) catch {};
+        luaC_collectgarbage(L) catch |e| {
+            std.debug.print("luazig: warning: GC error: {any}\n", .{e});
+        };
     }
 }
 
@@ -4856,6 +4884,17 @@ pub fn luaC_collectgarbage(L: *lua_State) !void {
         }
         if (th != L) {
             try markThreadStack(L, &gray_list, th);
+        }
+        // BUG-086: also mark the open upvalues of each thread — without
+        // this, an open UpVal whose value lives on a *different* thread's
+        // stack is invisible to the collector and can be collected while
+        // still referenced, causing a Use-After-Free on coroutine resume.
+        var th_uv = th.openupval;
+        while (th_uv) |uv| {
+            if (getGCObject(g, uv)) |uv_gc| {
+                try markObject(L, uv_gc, &gray_list);
+            }
+            th_uv = uv.next;
         }
         curr_th = th.twups;
     }
@@ -5103,7 +5142,10 @@ fn callFinalizer(L: *lua_State, gc: *VMGCObject) !void {
                 ci.is_fin = true;
                 break :blk o;
             } else null;
-            _ = lua_pcallk(L, 1, 0, 0, 0, null) catch {};
+            _ = lua_pcallk(L, 1, 0, 0, 0, null) catch |e| {
+                // BUG-100: log __gc finalizer errors instead of swallowing.
+                std.debug.print("luazig: warning: __gc finalizer error: {any}\n", .{e});
+            };
             if (L.ci) |ci| {
                 ci.is_fin = old_fin orelse false;
             }
@@ -5834,6 +5876,16 @@ pub fn lua_close(L: *lua_State) void {
             curr_gc = next_gc;
         }
         g.allgc = null;
+
+        // BUG-090: Also free objects on the finobj list (objects whose __gc
+        // finalizer ran but were deferred to the next sweep).
+        var curr_fin = g.finobj;
+        while (curr_fin) |gc| {
+            const next_fin = gc.next;
+            freeGCObject(L, gc);
+            curr_fin = next_fin;
+        }
+        g.finobj = null;
 
         // Free string table entries
         var it = g.strt.iterator();
