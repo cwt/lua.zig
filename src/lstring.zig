@@ -14,7 +14,20 @@ const llimits = @import("llimits.zig");
 /// matters here; we use FNV-1a over the bytes.
 pub fn luaS_hash(str: []const u8, seed: usize) u32 {
     var h: u32 = @as(u32, @truncate(seed)) ^ 0x9e3779b9;
-    for (str) |c| {
+    var ptr = str.ptr;
+    var len = str.len;
+    while (len >= 8) : (len -= 8) {
+        const u = std.mem.readInt(u64, ptr[0..8], .little);
+        const low: u32 = @truncate(u);
+        const high: u32 = @truncate(u >> 32);
+        h ^= low;
+        h *%= 16777619;
+        h ^= high;
+        h *%= 16777619;
+        ptr += 8;
+    }
+    const rem = str[str.len - len ..];
+    for (rem) |c| {
         h ^= c;
         h *%= 16777619;
     }

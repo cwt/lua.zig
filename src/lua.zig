@@ -203,21 +203,31 @@ pub const TValue = union(enum) {
     upval: ?*UpVal,
     proto: ?*lua_Proto,
 
-    pub fn typ(self: TValue) i32 {
-        return switch (self) {
-            .nil => LUA_TNIL,
-            .boolean => LUA_TBOOLEAN,
-            .lightud => LUA_TLIGHTUSERDATA,
-            .integer => LUA_TNUMBER,
-            .number => LUA_TNUMBER,
-            .string => LUA_TSTRING,
-            .table => LUA_TTABLE,
-            .function => LUA_TFUNCTION,
-            .userdata => LUA_TUSERDATA,
-            .thread => LUA_TTHREAD,
-            .upval => LUA_TUPVAL,
-            .proto => LUA_TFUNCTION,
-        };
+    const type_map = blk: {
+        const Tag = std.meta.Tag(TValue);
+        const tags = std.enums.values(Tag);
+        var table: [tags.len]i32 = undefined;
+        for (tags) |t| {
+            table[@intFromEnum(t)] = switch (t) {
+                .nil => LUA_TNIL,
+                .boolean => LUA_TBOOLEAN,
+                .lightud => LUA_TLIGHTUSERDATA,
+                .integer => LUA_TNUMBER,
+                .number => LUA_TNUMBER,
+                .string => LUA_TSTRING,
+                .table => LUA_TTABLE,
+                .function => LUA_TFUNCTION,
+                .userdata => LUA_TUSERDATA,
+                .thread => LUA_TTHREAD,
+                .upval => LUA_TUPVAL,
+                .proto => LUA_TFUNCTION,
+            };
+        }
+        break :blk table;
+    };
+
+    pub inline fn typ(self: TValue) i32 {
+        return type_map[@intFromEnum(self)];
     }
 
     fn toBoolean(self: TValue) bool {

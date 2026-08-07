@@ -1077,7 +1077,10 @@ pub fn run(L: *lua.lua_State, active_ci: *lua.CallInfo) anyerror!void {
                 const rb = L.stack[ci.base + @as(usize, @intCast(GETARG_B(instruction)))];
                 const rc = L.stack[ci.base + @as(usize, @intCast(GETARG_C(instruction)))];
                 if (rb == .integer and rc == .integer) {
-                    if (rc.integer == 0) return lua.luaG_runerror(L, "attempt to perform 'n%0'");
+                    if (rc.integer == 0) {
+                        @branchHint(.unlikely);
+                        return lua.luaG_runerror(L, "attempt to perform 'n%0'");
+                    }
                     const r: i64 = if (rc.integer == -1) 0 else @rem(rb.integer, rc.integer);
                     L.stack[ra] = .{ .integer = if (r != 0 and (r ^ rc.integer) < 0) r + rc.integer else r };
                     ci.savedpc += 1;

@@ -257,27 +257,21 @@ pub inline fn getHash(t: *Table, key: TValue) TValue {
 /// counterpart of C Lua's `luaH_getshortstr`).
 inline fn getStr(t: *Table, key: *const TString) TValue {
     const len = t.node.items.len;
-    if (len == 0) return TValue{ .nil = {} };
+    if (len == 0) {
+        @branchHint(.unlikely);
+        return TValue{ .nil = {} };
+    }
     const mp = @as(usize, key.hash) & (len - 1);
     var n = mp;
     while (true) {
         const k = t.node.items[n].key;
         if (k == .string) {
             if (k.string) |ks| {
-                // Interned strings are unique per content, so pointer identity
-                // (the fast path) suffices for them and for a repeat lookup of
-                // the very same external string. External strings
-                // (lua_pushexternalstring) are distinct objects that may share
-                // content, so fall back to a content comparison -- but only
-                // when at least one side is external, to keep interned-key
-                // lookups (the dominant case) free of per-node memcmp.
                 if (ks == key) return t.node.items[n].val;
-                // Non-interned or externally-owned strings need a content
-                // comparison when pointers differ. Interned strings are
-                // always caught by the pointer-equal fast path above, so
-                // this fallback only costs memcmp for the rare cases where
-                // strings are not interned.
-                if (std.mem.eql(u8, ks.s, key.s)) return t.node.items[n].val;
+                if (std.mem.eql(u8, ks.s, key.s)) {
+                    @branchHint(.unlikely);
+                    return t.node.items[n].val;
+                }
             }
         }
         const next_idx = t.node.items[n].next;

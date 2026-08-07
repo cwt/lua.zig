@@ -6,6 +6,13 @@ tags: [log, changelog]
 timestamp: 2026-08-07T23:05:00Z
 ---
 
+## 2026-08-07 — Zig 0.16.0 Performance Optimization Suite
+
+- **`TValue.typ()` Comptime Array Mapping (`src/lua.zig`)**: Replaced tagged union `switch` branching in `typ()` with a `comptime` lookup table (`type_map[@intFromEnum(self)]`), mapping active tags to Lua C type constants in a single array lookup instruction.
+- **8-Byte Chunked FNV-1a String Hashing (`src/lstring.zig`)**: Accelerated `luaS_hash` string hashing by reading unaligned `u64` chunks (`std.mem.readInt(u64, ptr[0..8], .little)`), processing 8 bytes per iteration for short and long string interning.
+- **`@branchHint(.unlikely)` Pipeline Branch Optimization (`src/lvm.zig`, `src/ltable.zig`)**: Applied `@branchHint(.unlikely)` to error checks and fallback branches across VM instruction loops and table field lookups (`getStr`), guiding LLVM code generation to keep hot loop instructions linearly contiguous.
+- **Verification Gate**: Passed all **132 basic unit tests** (`zig build test`) and **19/19** upstream tests (`./run_testes.sh`).
+
 ## 2026-08-07 — VM Execution Fast-Paths (Idiomatic Zig Unboxing & Comparison Optics)
 
 - **Idiomatic Zig Unboxing (`src/lvm.zig`)**: Introduced inline `asFloat` pattern-matching helper to perform direct float conversion without repeated `isNumberValue()` and `toFloat()` tag switches on hot arithmetic opcodes (`.ADD`, `.SUB`, `.MUL`, `.DIV`, `.MOD`, `.POW`).
