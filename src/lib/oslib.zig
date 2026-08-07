@@ -1,7 +1,7 @@
 const std = @import("std");
 const lua = @import("../lua.zig");
 const lauxlib = @import("../lauxlib.zig");
-const linux = std.os.linux;
+
 
 const L = lua.lua_State;
 const luaL_Reg = lauxlib.luaL_Reg;
@@ -29,6 +29,9 @@ extern "c" fn gmtime_r(timer: *const TimeT, result: *Tm) ?*Tm;
 extern "c" fn mktime(timeptr: *Tm) TimeT;
 extern "c" fn strftime(s: [*:0]u8, maxsize: usize, format: [*:0]const u8, timeptr: *const Tm) usize;
 extern "c" fn time(timer: ?*TimeT) TimeT;
+extern "c" fn remove(filename: [*:0]const u8) c_int;
+extern "c" fn rename(old: [*:0]const u8, new: [*:0]const u8) c_int;
+extern "c" fn clock() std.c.clock_t;
 
 fn os_execute(L_: *L) !i32 {
     // No command: report whether a shell is available.
@@ -93,8 +96,7 @@ fn os_remove(L_: *L) !i32 {
         return 1;
     };
     defer L_.allocator.free(filename);
-    const urc = linux.unlink(filename);
-    if (urc != 0) {
+    if (remove(filename) != 0) {
         lua.lua_pushboolean(L_, 0);
         return 1;
     }
@@ -109,7 +111,7 @@ fn os_rename(L_: *L) !i32 {
     defer L_.allocator.free(from);
     const to = L_.allocator.dupeZ(u8, to_s) catch return luaL_error(L_, "out of memory");
     defer L_.allocator.free(to);
-    if (linux.rename(from, to) != 0) {
+    if (rename(from, to) != 0) {
         lua.lua_pushboolean(L_, 0);
         return 1;
     }
@@ -117,18 +119,15 @@ fn os_rename(L_: *L) !i32 {
     return 1;
 }
 
+var tmpname_counter: u64 = 0;
+
 fn os_tmpname(L_: *L) !i32 {
-    var buf: [@as(usize, 1) + 6 + 6]u8 = undefined;
-    buf[0] = '/';
-    buf[1..7].* = "tmp/lu"[0..6].*;
-    _ = linux.getrandom(buf[7..], 6, 0);
-    const hex = "0123456789abcdef";
-    for (buf[7..], 0..) |*b, i| {
-        b.* = hex[b.* % 16];
-        _ = i;
-    }
-    const name = lua.lua_pushlstring(L_, &buf, buf.len) orelse return 1;
-    _ = name;
+    var buf: [64]u8 = undefined;
+    const count = @atomicRmw(u64, &tmpname_counter, .Add, 1, .monotonic);
+    var t: TimeT = 0;
+    _ = time(&t);
+    const path = std.fmt.bufPrint(&buf, "/tmp/lua_{x}_{x}", .{ t, count }) catch "/tmp/lua_tmp";
+    _ = lua.lua_pushlstring(L_, path, path.len);
     return 1;
 }
 
@@ -151,9 +150,8 @@ fn os_getenv(L_: *L) !i32 {
 }
 
 fn os_clock(L_: *L) !i32 {
-    var ts: linux.timespec = undefined;
-    _ = linux.clock_gettime(linux.CLOCK.PROCESS_CPUTIME_ID, &ts);
-    const secs = @as(f64, @floatFromInt(ts.sec)) + @as(f64, @floatFromInt(ts.nsec)) / 1.0e9;
+    const ticks = clock();
+    const secs = @as(f64, @floatFromInt(ticks)) / 1000000.0;
     lua.lua_pushnumber(L_, secs);
     return 1;
 }
@@ -266,9 +264,9 @@ fn os_time(L_: *L) !i32 {
         lua.lua_pushinteger(L_, @intCast(t));
         return 1;
     }
-    var ts: linux.timespec = undefined;
-    _ = linux.clock_gettime(linux.CLOCK.REALTIME, &ts);
-    lua.lua_pushinteger(L_, @intCast(ts.sec));
+    var t: TimeT = 0;
+    _ = time(&t);
+    lua.lua_pushinteger(L_, @intCast(t));
     return 1;
 }
 

@@ -34,8 +34,19 @@ fi
 echo "=== Lua test suite runner ==="
 echo "Interpreter: $LUA_BIN"
 
-# Fallback for macOS which lacks the `timeout` command
-if command -v timeout &>/dev/null; then
+# Fallback for macOS where GNU timeout causes SIGSYS in sandbox environments
+if [[ "$(uname)" == "Darwin" ]]; then
+    run_with_timeout() {
+        local t=$1; shift
+        perl -e 'alarm shift; exec @ARGV or die "exec: $!"' "$t" "$@" &
+        local pid=$!
+        wait $pid 2>/dev/null || true
+        local rc=$?
+        if [[ $rc -gt 128 ]]; then return 124; fi
+        if [[ $rc -eq 127 ]]; then return 1; fi
+        return $rc
+    }
+elif command -v timeout &>/dev/null; then
     run_with_timeout() { timeout "$@"; }
 elif command -v gtimeout &>/dev/null; then
     run_with_timeout() { gtimeout "$@"; }
@@ -44,10 +55,8 @@ else
         local t=$1; shift
         perl -e 'alarm shift; exec @ARGV or die "exec: $!"' "$t" "$@" &
         local pid=$!
-        set +e
-        wait $pid 2>/dev/null
+        wait $pid 2>/dev/null || true
         local rc=$?
-        set -e
         if [[ $rc -gt 128 ]]; then return 124; fi
         if [[ $rc -eq 127 ]]; then return 1; fi
         return $rc

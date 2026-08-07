@@ -48,7 +48,7 @@ fn checkmode(mode: []const u8) bool {
 fn fopen(name: []const u8, mode: []const u8, eno_out: ?*i32) ?i32 {
     if (name.len == 0) return null;
     const first = if (mode.len > 0) mode[0] else 'r';
-    var flags: std.os.linux.O = .{};
+    var flags: std.c.O = .{};
     switch (first) {
         'r' => flags.ACCMODE = .RDONLY,
         'w' => {
@@ -63,20 +63,17 @@ fn fopen(name: []const u8, mode: []const u8, eno_out: ?*i32) ?i32 {
         },
         else => return null,
     }
-    const mode_bits: std.os.linux.mode_t = switch (first) {
+    const mode_bits: std.c.mode_t = switch (first) {
         'w', 'a' => 0o666,
         else => 0,
     };
-    // The syscall needs a null-terminated path; Lua strings are bounded slices
-    // (possibly without a trailing NUL), so copy here (the C ABI boundary).
-    var buf: [std.fs.max_path_bytes]u8 = undefined;
+    var buf: [std.fs.max_path_bytes:0]u8 = undefined;
     if (name.len >= buf.len) return null;
     @memcpy(buf[0..name.len], name);
     buf[name.len] = 0;
-    const rc = std.os.linux.openat(std.os.linux.AT.FDCWD, @ptrCast(&buf), flags, mode_bits);
-    const err = std.os.linux.errno(rc);
-    if (err != .SUCCESS) {
-        if (eno_out) |p| p.* = @intFromEnum(err);
+    const rc = std.c.open(&buf, flags, mode_bits);
+    if (rc < 0) {
+        if (eno_out) |p| p.* = @intCast(std.c._errno().*);
         return null;
     }
     return @intCast(rc);
@@ -86,7 +83,7 @@ fn doClose(L_: *L, p: *LStream) !i32 {
     // Flush any pending buffered output before releasing the fd.
     _ = flushBuffer(p);
     if (p.fd >= 0) {
-        _ = std.os.linux.close(p.fd);
+        _ = std.c.close(p.fd);
         p.fd = -1;
     }
     if (p.buf) |b| {
@@ -162,7 +159,7 @@ fn g_iofile(L_: *L, findex: []const u8, mode: []const u8) !i32 {
                 const msg = std.fmt.bufPrint(&mbuf, "cannot open file '{s}' ({s})", .{ fn_, lauxlib.strerrorName(eno) }) catch "cannot open file";
                 return lauxlib.luaL_error(L_, msg);
             };
-            errdefer _ = std.os.linux.close(f);
+            errdefer _ = std.c.close(f);
             const p = try newfile(L_);
             p.* = LStream{ .fd = f, .closef = io_fclose, .buf = null, .buf_len = 0, .buf_mode = 0, .unget = null };
         } else {
@@ -194,7 +191,7 @@ fn io_open(L_: *L) !i32 {
     const f = fopen(filename, mode, &eno) orelse {
         return lauxlib.luaL_fileresult(L_, false, filename, eno);
     };
-    errdefer _ = std.os.linux.close(f);
+    errdefer _ = std.c.close(f);
     const p = try newfile(L_);
     p.* = LStream{ .fd = f, .closef = io_fclose, .buf = null, .buf_len = 0, .buf_mode = 0, .unget = null };
     return 1;
@@ -221,7 +218,7 @@ fn io_tmpfile(L_: *L) !i32 {
         _ = lua.lua_pushstring(L_, "cannot create tmp file") orelse {};
         return 2;
     };
-    errdefer _ = std.os.linux.close(a);
+    errdefer _ = std.c.close(a);
     defer {
         buf[path.len] = 0;
         _ = std.c.unlink(buf[0..path.len :0]);
@@ -464,10 +461,9 @@ fn f_read(L_: *L) !i32 {
 fn rawWrite(fd: i32, data: []const u8) bool {
     var off: usize = 0;
     while (off < data.len) {
-        const rc = std.os.linux.write(fd, data.ptr + off, data.len - off);
-        if (rc == 0 and data.len > 0) return false;
-        if (rc > std.math.maxInt(isize)) return false;
-        off += rc;
+        const rc = std.c.write(fd, data.ptr + off, data.len - off);
+        if (rc <= 0 and data.len > 0) return false;
+        off += @intCast(rc);
     }
     return true;
 }
@@ -584,10 +580,10 @@ fn f_seek(L_: *L) !i32 {
     const p = try tostream(L_, 1);
     const whence_s = lua.lua_tostring(L_, 2) orelse "cur";
     const offset = lua.lua_tointeger(L_, 3) orelse 0;
-    const whence: usize = if (std.mem.eql(u8, whence_s, "set")) 0 else if (std.mem.eql(u8, whence_s, "end")) 2 else 1;
-    const result = std.os.linux.lseek(p.fd, offset, whence);
-    if (result != std.math.maxInt(usize)) {
-        lua.lua_pushinteger(L_, @intCast(@as(i64, @intCast(result))));
+    const whence: c_int = if (std.mem.eql(u8, whence_s, "set")) 0 else if (std.mem.eql(u8, whence_s, "end")) 2 else 1;
+    const result = std.c.lseek(p.fd, offset, whence);
+    if (result >= 0) {
+        lua.lua_pushinteger(L_, @intCast(result));
         return 1;
     }
     lua.lua_pushboolean(L_, 0);

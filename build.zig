@@ -59,9 +59,10 @@ pub fn build(b: *std.Build) void {
     });
 
     // LTO is only enabled for Release builds: the Debug+LTO codegen path
-    // triggers an LLVM backend crash in this toolchain. ReleaseFast/ReleaseSmall
-    // LTO works correctly and yields the optimized interpreter.
-    const use_lto = optimize != .Debug;
+    // triggers an LLVM backend crash in this toolchain.
+    // Additionally, on Darwin (macOS), Zig's native Mach-O linker does not support LTO
+    // and LLD for Mach-O is unsupported in Zig 0.16.
+    const use_lto = (optimize != .Debug) and !target.result.os.tag.isDarwin();
 
     const exe = b.addExecutable(.{
         .name = "luazig",
