@@ -38,9 +38,10 @@ echo "Interpreter: $LUA_BIN"
 if [[ "$(uname)" == "Darwin" ]]; then
     run_with_timeout() {
         local t=$1; shift
+        set +e
         perl -e 'alarm shift; exec @ARGV or die "exec: $!"' "$t" "$@" &
         local pid=$!
-        wait $pid 2>/dev/null || true
+        wait $pid 2>/dev/null
         local rc=$?
         if [[ $rc -gt 128 ]]; then return 124; fi
         if [[ $rc -eq 127 ]]; then return 1; fi
@@ -53,9 +54,10 @@ elif command -v gtimeout &>/dev/null; then
 else
     run_with_timeout() {
         local t=$1; shift
+        set +e
         perl -e 'alarm shift; exec @ARGV or die "exec: $!"' "$t" "$@" &
         local pid=$!
-        wait $pid 2>/dev/null || true
+        wait $pid 2>/dev/null
         local rc=$?
         if [[ $rc -gt 128 ]]; then return 124; fi
         if [[ $rc -eq 127 ]]; then return 1; fi

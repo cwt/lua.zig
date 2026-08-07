@@ -42,7 +42,9 @@ pub fn getLibm() Libm {
 }
 
 fn resolve() ?Libm {
-    var handle = std.DynLib.open("libm.so.6") catch return null;
+    const builtin = @import("builtin");
+    const lib_name = if (builtin.os.tag.isDarwin()) "libSystem.dylib" else "libm.so.6";
+    var handle = std.DynLib.open(lib_name) catch return null;
     const lib = &handle;
     const sin = lib.lookup(*const fn (f64) callconv(.c) f64, "sin") orelse return null;
     const cos = lib.lookup(*const fn (f64) callconv(.c) f64, "cos") orelse return null;
@@ -107,8 +109,9 @@ fn fbExp(x: f64) callconv(.c) f64 {
 fn fbPow(x: f64, y: f64) callconv(.c) f64 {
     return std.math.pow(f64, x, y);
 }
+const c_fmod = @extern(*const fn (f64, f64) callconv(.c) f64, .{ .name = "fmod" });
 fn fbFmod(x: f64, y: f64) callconv(.c) f64 {
-    return @mod(x, y);
+    return c_fmod(x, y);
 }
 fn fbFrexp(x: f64, exp: *i32) callconv(.c) f64 {
     const r = std.math.frexp(x);

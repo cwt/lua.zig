@@ -9,9 +9,9 @@ timestamp: 2026-08-07T23:05:00Z
 ## 2026-08-07 — macOS Platform Porting & Test Runner Fixes
 
 - **Mach-O LTO Linker Fix (`build.zig`)**: Disabled LTO (`use_lto`) when targeting Darwin (`target.result.os.tag.isDarwin()`). In Zig 0.16.0, Mach-O LTO requires LLD which is unsupported for Mach-O targets on macOS.
-- **Cross-Platform POSIX / C Lib I/O & OS Migration (`src/lib/iolib.zig`, `src/lib/oslib.zig`)**: Replaced Linux-only `std.os.linux` syscalls with portable `std.c` and `std.posix` standard library functions (`open`, `close`, `write`, `lseek`, `remove`, `rename`, `time`, `clock`). Resolves `SIGSYS` (Bad System Call) runtime crashes on macOS.
-- **`run_testes.sh` macOS & `set -e` Fixes (`run_testes.sh`)**: Added macOS Darwin detection to use the `perl` alarm signal runner instead of GNU `timeout` (which triggers `SIGSYS` under macOS sandbox restrictions). Removed `set -e` inside `run_with_timeout` to prevent test exit codes from terminating script execution.
-- **Verification Gate**: `zig build test` passed **132/132** tests; `./run_testes.sh` passed **18 PASS / 0 FAIL / 0 CRASH** with exit code 0 on macOS.
+- **Cross-Platform POSIX / C Lib I/O & OS Migration (`src/lib/iolib.zig`, `src/lib/oslib.zig`, `src/libm.zig`)**: Replaced Linux-only `std.os.linux` syscalls with portable `std.c` and `std.posix` standard library functions (`open`, `close`, `write`, `lseek`, `remove`, `rename`, `time`, `clock`). Resolved `libm` dynamic symbol resolution on Darwin (`libSystem.dylib`) and fixed fallback `fmod` floating-point modulo. Resolves `SIGSYS` (Bad System Call) runtime crashes on macOS and math module test assertions.
+- **`run_testes.sh` macOS & `set -e` Fixes (`run_testes.sh`)**: Added macOS Darwin detection to use the `perl` alarm signal runner instead of GNU `timeout` (which triggers `SIGSYS` under macOS sandbox restrictions). Removed `set -e` and swallowed exit codes inside `run_with_timeout` so standard script exit codes are accurately captured and reported.
+- **Verification Gate**: `zig build test` passed **132/132** tests; `./run_testes.sh` passed **19 PASS / 0 FAIL / 0 CHECK / 0 CRASH** with exit code 0 on macOS.
 
 ## 2026-08-07 — Zig 0.16.0 Performance Optimization Suite
 
