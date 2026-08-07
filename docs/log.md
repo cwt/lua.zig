@@ -3,8 +3,14 @@ type: lessons_learned
 title: Modification Log
 description: Running chronological log of bundle modifications and significant changes.
 tags: [log, changelog]
-timestamp: 2026-07-18T13:58:00Z
+timestamp: 2026-08-07T23:05:00Z
 ---
+
+## 2026-08-07 — Static Code Analysis & Defect Cataloging (BUG-055 to BUG-064)
+
+- **Comprehensive Code Audit**: Performed deep static analysis of all core modules (`src/ltable.zig`, `src/lstring.zig`, `src/lauxlib.zig`, `src/lparser.zig`, `src/lua.zig`, `src/lib/iolib.zig`, `src/lib/loadlib.zig`, `src/lib/oslib.zig`).
+- **Defect Cataloging**: Appended BUG-055 through BUG-064 to `docs/bugs.md` covering duplicate keys in array/hash parts, stack leaks, file descriptor leaks on OOM, string table memory leaks, compiler state leaks, tombstone accumulation, and unoptimized allocation loops.
+- **Documentation Gate**: Updated `docs/bugs.md` and `docs/log.md` per OKF v0.1 directive.
 
 ## 2026-07-31 — Feature & Fix: Upstream `events.lua` Metatable Test Suite (100% PASS)
 
