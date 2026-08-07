@@ -1588,9 +1588,25 @@ pub fn run(L: *lua.lua_State, active_ci: *lua.CallInfo) anyerror!void {
             },
             .RETURN => {
                 const ra_idx = ci.base + @as(usize, @intCast(GETARG_A(instruction)));
-                var n = GETARG_B(instruction) - 1;
-                if (n < 0) {
-                    n = @intCast(L.top - ra_idx);
+                var n: i32 = undefined;
+                if (ci.clsret) {
+                    // Re-execution after a __close metamethod yielded: reuse
+                    // the return count saved before the interrupted poscall.
+                    // Keep clsret set (it is cleared when poscall completes).
+                    n = ci.nres_saved;
+                } else {
+                    n = GETARG_B(instruction) - 1;
+                    if (n < 0) {
+                        n = @intCast(L.top - ra_idx);
+                    }
+                    if (L.tbclist.items.len > 0) {
+                        // poscall's closeupvals may yield (a __close metamethod
+                        // can yield); save the return count so a re-executed
+                        // RETURN can complete the pending poscall (mirrors the
+                        // reference's ci->u2.nres / CIST_CLSRET).
+                        ci.nres_saved = n;
+                        ci.clsret = true;
+                    }
                 }
                 const nparams1 = GETARG_C(instruction);
                 if (nparams1 != 0) {
@@ -1598,7 +1614,18 @@ pub fn run(L: *lua.lua_State, active_ci: *lua.CallInfo) anyerror!void {
                     ci.base = ci.func + 1;
                 }
                 const old_ci = ci;
-                try lua.poscall(L, old_ci, ra_idx, @intCast(n));
+                lua.poscall(L, old_ci, ra_idx, @intCast(n)) catch |e| {
+                    if (e == error.Yield) {
+                        // A __close metamethod yielded during this return. On
+                        // resume the VM continues the metamethod; when it
+                        // returns, this RETURN must run again to complete the
+                        // poscall, so rewind savedpc to point at it.
+                        ci.savedpc = @intCast(ci.savedpc - 1);
+                        return error.Yield;
+                    }
+                    return e;
+                };
+                ci.clsret = false;
                 if (old_ci == active_ci) {
                     L.ci = old_ci.previous;
                     lua.freeCallInfo(L, old_ci);
