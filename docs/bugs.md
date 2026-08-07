@@ -807,5 +807,141 @@ plans. They are now queued for implementation in the next development round.
 - **Impact:** Redundant loop execution.
 - **Fix:** Remove the duplicate initialization loop.
 
+---
+
+## BUG-086 — `lua.zig`: Coroutine open upvalues skipped during GC mark traversal [HIGH] ❌ OPEN
+
+- **Location:** `src/lua.zig:4590-4601` (`traverseGrayObject`).
+- **Defect:** When marking an open `UpVal`, `traverseGrayObject` checks if `uv.v` falls within `L.stack` bounds of the collector thread `L`. If `uv` belongs to a suspended coroutine `th`, `uv.v` points into `th.stack`, causing `markValue` to be skipped.
+- **Impact:** Values referenced exclusively by open upvalues of suspended coroutines are marked white and freed during GC sweep, causing Use-After-Free when the coroutine resumes.
+- **Fix:** Traverse open upvalues of all active threads linked in `g.allthread` during GC marking.
+
+---
+
+## BUG-087 — `lstring.zig`: Dangling stack slice key in `strt` on allocation failure [HIGH] ❌ OPEN
+
+- **Location:** `src/lstring.zig:86-101` (`createString`).
+- **Defect:** `g.strt.getOrPut(g.allocator, s)` inserts slice `s` into `g.strt`. If `g.allocator.create(lua_TString)` fails on line 92, `errdefer` to remove the key has not been set up, leaving `g.strt` holding a key slice `s` pointing to caller stack memory.
+- **Impact:** Use-After-Free and memory corruption on subsequent string table lookups or GC sweeps.
+- **Fix:** Set up `errdefer` to remove the key from `g.strt` immediately after `getOrPut` or allocate `lua_TString` before inserting into `g.strt`.
+
+---
+
+## BUG-088 — `lua.zig`: Cross-thread open upvalue pointers ignored during `reallocStack` [HIGH] ❌ OPEN
+
+- **Location:** `src/lua.zig:1429-1448` (`reallocStack`).
+- **Defect:** `reallocStack` updates open upvalue pointers (`uv.v`) by scanning `L.openupval`. However, if open upvalues on `L`'s stack are held by closures running on other threads, `reallocStack` does not update them.
+- **Impact:** Open upvalues on secondary threads retain dangling pointers to the old stack memory after `L.stack` relocates.
+- **Fix:** Iterate over all threads in `g.allthread` during `reallocStack` to fix up open upvalue pointers.
+
+---
+
+## BUG-089 — `luazig.zig`: Invalid `free()` on static string literal in CLI error handler [HIGH] ❌ OPEN
+
+- **Location:** `src/luazig.zig:97-98` (`msghandler`).
+- **Defect:** `const buf = std.fmt.allocPrint(L.allocator, "(error object is a {s} value)", .{tname}) catch "(error)"; defer L.allocator.free(buf);`. On OOM, `buf` is assigned constant string `"(error)"`, which `defer free(buf)` attempts to free.
+- **Impact:** Process crash / allocator panic when formatting errors under memory pressure.
+- **Fix:** Only call `free(buf)` if `allocPrint` succeeded.
+
+---
+
+## BUG-090 — `lua.zig`: `lua_close` fails to free objects on `g.finobj` list [HIGH] ❌ OPEN
+
+- **Location:** `src/lua.zig:5830-5836` (`lua_close`).
+- **Defect:** `lua_close` iterates over and frees objects on `g.allgc`, but completely ignores objects moved to `g.finobj` (objects pending or completed `__gc` finalization).
+- **Impact:** Heap memory leak of all finalized/pending objects upon closing the state.
+- **Fix:** Traverse and free objects on `g.finobj` as well as `g.allgc` during state teardown.
+
+---
+
+## BUG-091 — `ltable.zig`: `lastfree` index left out-of-bounds if table growth fails [HIGH] ❌ OPEN
+
+- **Location:** `src/ltable.zig:145-165` (`growNode`).
+- **Defect:** `t.lastfree = newlen` is set before re-inserting nodes. If `setHash` fails with OOM, `errdefer` restores `t.node = old_node`, but leaves `t.lastfree` at `newlen` (which exceeds `old_node.items.len`).
+- **Impact:** Subsequent `getFreePos` calls trigger an out-of-bounds array access panic.
+- **Fix:** Save `old_lastfree` and restore `t.lastfree = old_lastfree` in `errdefer`.
+
+---
+
+## BUG-092 — `lvm.zig`: `u5` cast overflow and bitwise shift panic in `OP_NEWTABLE` [HIGH] ❌ OPEN
+
+- **Location:** `src/lvm.zig:837` (`OP_NEWTABLE`).
+- **Defect:** `const nrec = if (vB > 0) @as(usize, 1) << @as(u5, @intCast(vB - 1)) else 0;`. If `vB - 1 >= 32`, `@intCast` into `u5` panics, and shifting `@as(usize, 1)` by $\ge 32$ panics.
+- **Impact:** Process panic whenever `OP_NEWTABLE` is executed with hash size encoding $vB \ge 33$.
+- **Fix:** Mask or bounds-check `vB - 1` before casting to `u5` and perform shift safely.
+
+---
+
+## BUG-093 — `lcode.zig`: Constant allocation error fallback (`catch 0`) emits corrupt code [HIGH] ❌ OPEN
+
+- **Location:** `src/lcode.zig:436, 444, 492, 698-703`.
+- **Defect:** `intK`, `numberK`, `stringK`, `boolT`, `nilK` catch allocation errors with `catch 0`.
+- **Impact:** Under OOM, expressions silently bind to constant index 0, generating corrupted bytecode.
+- **Fix:** Propagate errors with `try` or trigger `luaX_syntaxerror` on allocation failure.
+
+---
+
+## BUG-094 — `lcode.zig`: Swallowed allocation errors in `luaK_code*` helpers emit PC 0 [HIGH] ❌ OPEN
+
+- **Location:** `src/lcode.zig:268-271, 277-280, 285-288, 294-297, 302-305, 310-313`.
+- **Defect:** `luaK_code(...) catch { _ = llex.luaX_syntaxerror(...) catch {}; return 0; }`.
+- **Impact:** Under OOM during instruction emission, the compiler silently continues using PC 0, producing corrupt bytecode.
+- **Fix:** Propagate allocation errors using `try`.
+
+---
+
+## BUG-095 — `lparser.zig`: Premature state mutation in `newupvalue` on missing enclosing function [MED] ❌ OPEN
+
+- **Location:** `src/lparser.zig:455-467` (`newupvalue`).
+- **Defect:** `allocupvalue(fs)` mutates `fs.upvalues` and `fs.nups` *before* validating `fs.prev orelse return llex.luaX_syntaxerror(...)`.
+- **Impact:** If `fs.prev` is null, `fs` is left in a corrupted state with a half-initialized upvalue.
+- **Fix:** Validate `fs.prev` before calling `allocupvalue(fs)`.
+
+---
+
+## BUG-096 — `ltable.zig`: Floating point `-0.0` vs `0.0` hash mismatch [MED] ❌ OPEN
+
+- **Location:** `src/ltable.zig:95-109` (`hashKey`).
+- **Defect:** `hashKey` hashes raw float bits without normalizing `-0.0` to `0.0`.
+- **Impact:** `t[-0.0]` and `t[0.0]` hash to different buckets, violating Lua table equality rules.
+- **Fix:** Convert `-0.0` to `0.0` before computing float bit hash.
+
+---
+
+## BUG-097 — `lib/bit32.zig`: Signed integer addition overflow panic in `field + width` [MED] ❌ OPEN
+
+- **Location:** `src/lib/bit32.zig:158, 177` (`bit_extract`, `bit_replace`).
+- **Defect:** `field + width > NBITS` operates on `i64`. Passing `field = math.maxInt(i64)` panics on addition overflow.
+- **Impact:** Process panic on extreme integer inputs.
+- **Fix:** Bounds-check `field` and `width` or use overflow-safe addition `+%`.
+
+---
+
+## BUG-098 — `lib/mathlib.zig`: Unsigned integer cast overflow panic in `math.random` [MED] ❌ OPEN
+
+- **Location:** `src/lib/mathlib.zig:286-290` (`project`).
+- **Defect:** Loop `while ((lim & (lim +% 1)) != 0)` doubles `sh` (`sh *= 2`). `@as(u6, @intCast(sh))` panics when `sh == 64`.
+- **Impact:** Process panic in `math.random` when `sh` reaches 64.
+- **Fix:** Cap or mask `sh` before casting to `u6`.
+
+---
+
+## BUG-099 — `lib/corolib.zig`: Coroutine self-closure on invalid argument [MED] ❌ OPEN
+
+- **Location:** `src/lib/corolib.zig:112-115` (`getoptco`), `129-154` (`luaB_close`).
+- **Defect:** `getoptco` catches `getco` errors and returns `L`. `coroutine.close("invalid")` returns `L`, causing `luaB_close` to attempt closing the running coroutine `L`.
+- **Impact:** Unexpected termination or state corruption of calling coroutine.
+- **Fix:** Propagate type check error from `getco` instead of falling back to `L`.
+
+---
+
+## BUG-100 — Codebase-wide: 26 instances of empty `catch {}` error swallowing [HIGH] ❌ OPEN
+
+- **Location:** Multiple files (`src/luazig.zig`, `src/lib/debug.zig`, `src/lcode.zig`, `src/lvm.zig`, `src/lua.zig`, `src/lundump.zig`, `src/lparser.zig`).
+- **Defect:** Direct violation of §0.1 Rule 12 ("Never swallow runtime errors with empty or dummy catch blocks").
+- **Impact:** Silently discards allocation errors, syntax errors, and file write failures.
+- **Fix:** Replace empty `catch {}` with explicit error propagation or handling.
+
+
 
 
