@@ -93,7 +93,8 @@ fn os_remove(L_: *L) !i32 {
         return 1;
     };
     defer L_.allocator.free(filename);
-    if (linux.unlink(filename) != 0) {
+    const urc = linux.unlink(filename);
+    if (urc != 0) {
         lua.lua_pushboolean(L_, 0);
         return 1;
     }

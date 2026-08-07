@@ -557,7 +557,15 @@ pub fn luaX_newstring(ls: *LexState, str: []const u8) !*lua.lua_TString {
     const L = ls.L;
     const ts = try lstring.luaS_new(L, str);
     if (ls.anchor_tab) |tab| {
-        try @import("ltable.zig").set(tab, .{ .string = ts }, .{ .boolean = true });
+        // Deduplicate: reuse an existing string with the same content so that
+        // equal literals across the whole chunk (including nested functions)
+        // share one object (mirrors the reference's anchorstr / ls->h). The
+        // anchor table stores t[string] = string.
+        const existing = @import("ltable.zig").getHash(tab, .{ .string = ts });
+        if (existing == .string) {
+            if (existing.string) |s| return s;
+        }
+        try @import("ltable.zig").set(tab, .{ .string = ts }, .{ .string = ts });
     }
     return ts;
 }

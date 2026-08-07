@@ -8,6 +8,7 @@ const lvm = @import("lvm.zig");
 const llex = @import("llex.zig");
 const lparser = @import("lparser.zig");
 const ltm = @import("ltm.zig");
+const lstring = @import("lstring.zig");
 
 const Instruction = lvm.Instruction;
 const FuncState = lparser.FuncState;
@@ -343,7 +344,33 @@ fn freeexps(fs: *FuncState, e1: *expdesc, e2: *expdesc) void {
     freeregs(fs, r1, r2);
 }
 
+/// Two constants are considered equal (reusable) when they hold the same
+/// value; the reference deduplicates constants via its kcache table.
+fn sameConstant(a: lua.TValue, b: lua.TValue) bool {
+    return switch (a) {
+        .nil => b == .nil,
+        .boolean => |x| b == .boolean and b.boolean == x,
+        .integer => |x| b == .integer and b.integer == x,
+        .number => |x| b == .number and b.number == x,
+        .string => |s| blk: {
+            if (b != .string) break :blk false;
+            const bs = b.string orelse break :blk false;
+            const ss = s orelse break :blk false;
+            break :blk lstring.luaS_eqstr(ss, bs);
+        },
+        else => false,
+    };
+}
+
 fn addk(fs: *FuncState, v: lua.TValue) !i32 {
+    // Reuse a previously added equal constant (mirrors the reference's
+    // k2proto/kcache deduplication).
+    const tag = std.meta.activeTag(v);
+    if (tag == .nil or tag == .boolean or tag == .integer or tag == .number or tag == .string) {
+        for (fs.k.items, 0..) |existing, i| {
+            if (sameConstant(existing, v)) return @intCast(i);
+        }
+    }
     const k = fs.k.items.len;
     try fs.k.append(fs.ls.allocator, v);
     return @intCast(k);

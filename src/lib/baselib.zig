@@ -277,9 +277,19 @@ fn skipFilePreamble(content: []const u8) []const u8 {
     return content[start_idx..];
 }
 
+/// Validate a chunk-load mode (mirrors the reference getMode): the 'B'
+/// fixed-buffer mode is reserved for the C API.
+fn getMode(L: *lua.lua_State, idx: i32) ![]const u8 {
+    const mode = try lauxlib.luaL_optlstring(L, idx, "bt", null) orelse "bt";
+    if (std.mem.indexOfScalar(u8, mode, 'B') != null) {
+        return lauxlib.luaL_argerror(L, idx, "invalid mode");
+    }
+    return mode;
+}
+
 fn loadfile(L: *lua.lua_State) anyerror!i32 {
     const filename = try lauxlib.luaL_checklstring(L, 1, null);
-    const mode = try lauxlib.luaL_optlstring(L, 2, "bt", null) orelse "bt";
+    const mode = try getMode(L, 2);
     const env_idx: i32 = if (lua.lua_isnone(L, 3) != 0) 0 else 3;
 
     const io = L.l_G.?.io;
@@ -333,7 +343,7 @@ fn genericReader(L: *lua.lua_State, ud: ?*anyopaque, size: ?*usize) anyerror!?[]
 }
 
 fn load(L: *lua.lua_State) anyerror!i32 {
-    const mode = try lauxlib.luaL_optlstring(L, 3, "bt", null) orelse "bt";
+    const mode = try getMode(L, 3);
     const env_idx: i32 = if (lua.lua_isnone(L, 4) != 0) 0 else 4;
     var status: i32 = 0;
 

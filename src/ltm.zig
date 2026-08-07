@@ -207,6 +207,7 @@ pub fn luaT_callTMres(L: *lua.lua_State, f: lua.TValue, p1: *const lua.TValue, p
     L.stack[old_top + 2] = p2.*;
     L.top = old_top + 3;
     luaD_call(L, old_top, 1) catch |e| {
+        if (e == error.Yield) return e;
         L.top = saved_top;
         return e;
     };

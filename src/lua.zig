@@ -4158,6 +4158,9 @@ fn unroll(L: *lua_State) !void {
         if (ci == &L.base_ci) break;
         const val = L.stack[ci.func];
         if (val == .function and val.function.?.* == .lua) {
+            // The frame was interrupted by a yield: complete the interrupted
+            // instruction before resuming (mirrors luaV_finishOp in unroll).
+            lvm.finishOp(L, ci);
             lvm.run(L, ci) catch |e| {
                 if (e == error.Yield) return e;
                 const handled = precover(L) catch |pe| {
@@ -4216,6 +4219,7 @@ fn do_resume(L: *lua_State, narg: i32) !void {
                 const val = L.stack[ci.func];
                 if (val == .function and val.function.?.* == .lua) {
                     L.ci = ci;
+                    lvm.finishOp(L, ci);
                     lvm.run(L, ci) catch |e| {
                         if (e == error.Yield) return e;
                         const handled = precover(L) catch |pe| {

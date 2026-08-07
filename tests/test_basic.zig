@@ -4605,3 +4605,69 @@ test "BUG-047 repeated string arithmetic print doesn't crash" {
 }
 
 
+
+test "H.11 equal literals across the chunk share one object (constant dedup)" {
+    const gpa = std.testing.allocator;
+    var L: lua.lua_State = undefined;
+    try lua.luaL_newstate(&L, gpa);
+    defer lua.lua_close(&L);
+    try lua.luaL_openlibs(&L);
+
+    // A long string literal (>40 chars) repeated in the same chunk must be a
+    // single object; a runtime concatenation of the same content must not be.
+    const status = try lua.luaL_dostring(&L,
+        \\local s1 = "01234567890123456789012345678901234567890123456789"
+        \\local function foo() return "01234567890123456789012345678901234567890123456789" end
+        \\local a1 = string.format("%p", s1)
+        \\assert(a1 == string.format("%p", foo()))
+        \\local sd = "0123456789" .. "0123456789012345678901234567890123456789"
+        \\assert(sd == s1 and string.format("%p", sd) ~= a1)
+    , "=(dedup)");
+    try std.testing.expectEqual(@as(i32, lua.LUA_OK), status);
+}
+
+test "H.11 yield from a __index metamethod inside a coroutine (finishOp)" {
+    const gpa = std.testing.allocator;
+    var L: lua.lua_State = undefined;
+    try lua.luaL_newstate(&L, gpa);
+    defer lua.lua_close(&L);
+    try lua.luaL_openlibs(&L);
+
+    // The chunk's env has a __index metamethod that yields; the first resume
+    // must yield 'g' (the __index result must be completed on resume).
+    const status = try lua.luaL_dostring(&L,
+        \\local env = {assert = assert}
+        \\local f = assert(load("local y = {0,1,2,3}; X = y; assert(X[3] == 2); return 0", nil, nil, env))
+        \\f()
+        \\for k in pairs(env) do env[k] = nil end
+        \\setmetatable(env, {
+        \\  __index = function (t, n) coroutine.yield('g'); return _G[n] end,
+        \\  __newindex = function (t, n, v) coroutine.yield('s'); _G[n] = v end,
+        \\})
+        \\X = nil
+        \\local co = coroutine.wrap(f)
+        \\assert(co() == 's')
+        \\assert(co() == 'g')
+        \\assert(co() == 'g')
+        \\assert(co() == 0)
+    , "=(finishop)");
+    try std.testing.expectEqual(@as(i32, lua.LUA_OK), status);
+}
+
+test "H.11 io.open returns nil, message, errno and validates mode" {
+    const gpa = std.testing.allocator;
+    var L: lua.lua_State = undefined;
+    try lua.luaL_newstate(&L, gpa);
+    defer lua.lua_close(&L);
+    try lua.luaL_openlibs(&L);
+
+    const status = try lua.luaL_dostring(&L,
+        \\local a, b, c = io.open('xuxu_nao_existe')
+        \\assert(not a and type(b) == "string" and type(c) == "number")
+        \\local ok, err = pcall(io.open, "x", "rw")
+        \\assert(not ok and string.find(err, "invalid mode"))
+        \\local ok2, err2 = pcall(io.input, "xuxu_nao_existe")
+        \\assert(not ok2 and string.find(err2, "No such file"))
+    , "=(io)");
+    try std.testing.expectEqual(@as(i32, lua.LUA_OK), status);
+}

@@ -228,7 +228,7 @@ pub inline fn getInt(t: *Table, k: i64) TValue {
     return getHash(t, TValue{ .integer = k });
 }
 
-inline fn getHash(t: *Table, key: TValue) TValue {
+pub inline fn getHash(t: *Table, key: TValue) TValue {
     const len = t.node.items.len;
     if (len == 0) return TValue{ .nil = {} };
     const mp = hashKey(key, len);

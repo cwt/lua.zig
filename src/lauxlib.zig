@@ -924,21 +924,49 @@ pub fn luaL_newlib(L: *lua.lua_State, reg: []const luaL_Reg) !void {
     try luaL_setfuncs(L, reg, 0);
 }
 
-pub fn luaL_fileresult(L: *lua.lua_State, stat: bool, fname: ?[]const u8) i32 {
+pub fn luaL_fileresult(L: *lua.lua_State, stat: bool, fname: ?[]const u8, eno: i32) i32 {
     if (stat) {
         lua.lua_pushboolean(L, 1);
         return 1;
     } else {
         lua.lua_pushnil(L);
+        const msg = if (eno != 0) strerrorName(eno) else "(no extra info)";
         if (fname) |fn_| {
             var buf: [256]u8 = undefined;
-            const msg = std.fmt.bufPrint(&buf, "{s}: error", .{fn_}) catch "error";
-            _ = lua.lua_pushstring(L, msg);
+            const full = std.fmt.bufPrint(&buf, "{s}: {s}", .{ fn_, msg }) catch "error";
+            _ = lua.lua_pushstring(L, full);
         } else {
-            _ = lua.lua_pushstring(L, "error");
+            _ = lua.lua_pushstring(L, msg);
         }
-        return 2;
+        lua.lua_pushinteger(L, eno);
+        return 3;
     }
+}
+
+/// Map a raw errno to its strerror text (subset sufficient for the standard
+/// library; mirrors glibc's strerror for common values).
+pub fn strerrorName(eno: i32) []const u8 {
+    return switch (eno) {
+        1 => "Operation not permitted",
+        2 => "No such file or directory",
+        3 => "No such process",
+        4 => "Interrupted system call",
+        5 => "Input/output error",
+        9 => "Bad file descriptor",
+        11 => "Resource temporarily unavailable",
+        13 => "Permission denied",
+        14 => "Bad address",
+        17 => "File exists",
+        20 => "Not a directory",
+        21 => "Is a directory",
+        22 => "Invalid argument",
+        24 => "Too many open files",
+        28 => "No space left on device",
+        30 => "Read-only file system",
+        40 => "Too many levels of symbolic links",
+        90 => "Message too long",
+        else => "error",
+    };
 }
 
 pub fn luaL_execresult(L: *lua.lua_State, stat: i32) i32 {

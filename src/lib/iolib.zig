@@ -31,21 +31,55 @@ fn tostream(L_: *L, idx: i32) !*LStream {
     return @as(*LStream, @ptrCast(@alignCast(p)));
 }
 
-fn fopen(name: []const u8, mode: []const u8) ?i32 {
+/// Validate a file-open mode string (mirrors the reference l_checkmode):
+/// 'r'/'w'/'a' followed by an optional immediate '+' and then only 'b'.
+fn checkmode(mode: []const u8) bool {
+    if (mode.len == 0) return false;
+    const first = mode[0];
+    if (first != 'r' and first != 'w' and first != 'a') return false;
+    var i: usize = 1;
+    if (i < mode.len and mode[i] == '+') i += 1;
+    while (i < mode.len) : (i += 1) {
+        if (mode[i] != 'b') return false;
+    }
+    return true;
+}
+
+fn fopen(name: []const u8, mode: []const u8, eno_out: ?*i32) ?i32 {
     if (name.len == 0) return null;
     const first = if (mode.len > 0) mode[0] else 'r';
-    const flags: std.posix.O = switch (first) {
-        'r' => .{ .ACCMODE = .RDONLY },
-        'w' => .{ .ACCMODE = .WRONLY, .CREAT = true, .TRUNC = true },
-        'a' => .{ .ACCMODE = .WRONLY, .CREAT = true, .APPEND = true },
+    var flags: std.os.linux.O = .{};
+    switch (first) {
+        'r' => flags.ACCMODE = .RDONLY,
+        'w' => {
+            flags.ACCMODE = .WRONLY;
+            flags.CREAT = true;
+            flags.TRUNC = true;
+        },
+        'a' => {
+            flags.ACCMODE = .WRONLY;
+            flags.CREAT = true;
+            flags.APPEND = true;
+        },
         else => return null,
-    };
-    const mode_bits: std.posix.mode_t = switch (first) {
+    }
+    const mode_bits: std.os.linux.mode_t = switch (first) {
         'w', 'a' => 0o666,
         else => 0,
     };
-    const fd = std.posix.openat(std.posix.AT.FDCWD, name, flags, mode_bits) catch return null;
-    return fd;
+    // The syscall needs a null-terminated path; Lua strings are bounded slices
+    // (possibly without a trailing NUL), so copy here (the C ABI boundary).
+    var buf: [std.fs.max_path_bytes]u8 = undefined;
+    if (name.len >= buf.len) return null;
+    @memcpy(buf[0..name.len], name);
+    buf[name.len] = 0;
+    const rc = std.os.linux.openat(std.os.linux.AT.FDCWD, @ptrCast(&buf), flags, mode_bits);
+    const err = std.os.linux.errno(rc);
+    if (err != .SUCCESS) {
+        if (eno_out) |p| p.* = @intFromEnum(err);
+        return null;
+    }
+    return @intCast(rc);
 }
 
 fn doClose(L_: *L, p: *LStream) !i32 {
@@ -69,6 +103,13 @@ fn f_close(L_: *L, p: *LStream) !i32 {
         return cf(L_);
     }
     return doClose(L_, p);
+}
+
+/// File-method `close`: requires the file as argument 1 (raises "got no value"
+/// otherwise), mirroring the reference's f_close -> tofile -> luaL_checkudata.
+fn f_close_method(L_: *L) anyerror!i32 {
+    const p = try tostream(L_, 1);
+    return f_close(L_, p);
 }
 
 fn io_close(L_: *L) !i32 {
@@ -114,8 +155,12 @@ fn g_iofile(L_: *L, findex: []const u8, mode: []const u8) !i32 {
     if (!lua.lua_isnoneornil(L_, 1)) {
         const filename = lua.lua_tostring(L_, 1);
         if (filename) |fn_| {
-            const f = fopen(fn_, mode) orelse {
-                return lauxlib.luaL_fileresult(L_, false, fn_);
+            var eno: i32 = 0;
+            const f = fopen(fn_, mode, &eno) orelse {
+                // Mirror the reference opencheck: raise with the strerror text.
+                var mbuf: [256]u8 = undefined;
+                const msg = std.fmt.bufPrint(&mbuf, "cannot open file '{s}' ({s})", .{ fn_, lauxlib.strerrorName(eno) }) catch "cannot open file";
+                return lauxlib.luaL_error(L_, msg);
             };
             const p = try newfile(L_);
             p.* = LStream{ .fd = f, .closef = io_fclose, .buf = null, .buf_len = 0, .buf_mode = 0, .unget = null };
@@ -139,11 +184,14 @@ fn io_output(L_: *L) !i32 {
 
 fn io_open(L_: *L) !i32 {
     const filename = lua.lua_tostring(L_, 1) orelse {
-        return lauxlib.luaL_fileresult(L_, false, "?");
+        return lauxlib.luaL_fileresult(L_, false, "?", 0);
     };
     const mode = lua.lua_tostring(L_, 2) orelse "r";
-    const f = fopen(filename, mode) orelse {
-        return lauxlib.luaL_fileresult(L_, false, filename);
+    // Validate the mode (mirrors the reference l_checkmode/luaL_argcheck).
+    try lauxlib.luaL_argcheck(L_, checkmode(mode), 2, "invalid mode");
+    var eno: i32 = 0;
+    const f = fopen(filename, mode, &eno) orelse {
+        return lauxlib.luaL_fileresult(L_, false, filename, eno);
     };
     const p = try newfile(L_);
     p.* = LStream{ .fd = f, .closef = io_fclose, .buf = null, .buf_len = 0, .buf_mode = 0, .unget = null };
@@ -512,7 +560,7 @@ fn g_write(L_: *L, p: *LStream, arg: i32) !i32 {
         lua.lua_pushvalue(L_, 1);
         return 1;
     }
-    return lauxlib.luaL_fileresult(L_, false, null);
+    return lauxlib.luaL_fileresult(L_, false, null, 0);
 }
 
 fn io_write(L_: *L) !i32 {
@@ -560,7 +608,7 @@ fn f_setvbuf(L_: *L) !i32 {
     const sz = if (size) |s| (if (s > 0) @as(usize, @intCast(s)) else 0) else 0;
     const bufsize = if (sz == 0) IO_BUFSIZE else sz;
     const buf = L_.allocator.alloc(u8, bufsize) catch {
-        return lauxlib.luaL_fileresult(L_, false, null);
+        return lauxlib.luaL_fileresult(L_, false, null, 0);
     };
     p.buf = buf;
     p.buf_len = 0;
@@ -572,20 +620,21 @@ fn f_setvbuf(L_: *L) !i32 {
 fn io_flush(L_: *L) !i32 {
     const p = getiofile(L_, IO_OUTPUT) catch return lauxlib.luaL_error(L_, "default output file is closed");
     const ok = flushBuffer(p);
-    return lauxlib.luaL_fileresult(L_, ok, null);
+    return lauxlib.luaL_fileresult(L_, ok, null, 0);
 }
 
 fn f_flush(L_: *L) !i32 {
     const p = try tostream(L_, 1);
     const ok = flushBuffer(p);
-    return lauxlib.luaL_fileresult(L_, ok, null);
+    return lauxlib.luaL_fileresult(L_, ok, null, 0);
 }
 
 fn io_lines(L_: *L) !i32 {
     if (!lua.lua_isnoneornil(L_, 1)) {
         const filename = lua.lua_tostring(L_, 1) orelse "";
-        const f = fopen(filename, "r") orelse {
-            return lauxlib.luaL_fileresult(L_, false, filename);
+        var eno: i32 = 0;
+        const f = fopen(filename, "r", &eno) orelse {
+            return lauxlib.luaL_fileresult(L_, false, filename, eno);
         };
         const p = try newfile(L_);
         p.* = LStream{ .fd = f, .closef = io_fclose, .buf = null, .buf_len = 0, .buf_mode = 0, .unget = null };
@@ -615,8 +664,9 @@ fn f_lines(L_: *L) !i32 {
 fn io_noclose(L_: *L) anyerror!i32 {
     const p = try tostream(L_, 1);
     p.closef = io_noclose;
+    lua.lua_pushnil(L_);
     _ = lua.lua_pushstring(L_, "cannot close standard file");
-    return 1;
+    return 2;
 }
 
 fn createstdfile(L_: *L, fd: i32, k: ?[]const u8, fname: ?[]const u8, cf: ?lua.lua_CFunction) !void {
@@ -649,7 +699,7 @@ const iolib_reg = [_]luaL_Reg{
 };
 
 const flib = [_]luaL_Reg{
-    .{ .name = "close", .func = io_close },
+    .{ .name = "close", .func = f_close_method },
     .{ .name = "flush", .func = f_flush },
     .{ .name = "lines", .func = f_lines },
     .{ .name = "read", .func = f_read },

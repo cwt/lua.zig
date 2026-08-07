@@ -517,6 +517,47 @@ pub fn SETARG_sJ(i: *Instruction, v: i32) void {
     i.* = (i.* & ~@as(u32, 0x1FFFFFF << 7)) | (val << 7);
 }
 
+/// Complete the execution of an instruction interrupted by a yield, before
+/// resuming the frame (port of the reference `luaV_finishOp`). The metamethod
+/// call's result is on the stack top; move it to the instruction's destination
+/// register (or apply the instruction's specific completion logic).
+pub fn finishOp(L: *lua.lua_State, ci: *lua.CallInfo) void {
+    if (ci.savedpc < 1) return;
+    const code = L.stack[ci.func].function.?.lua.p.code;
+    const inst = code[@as(usize, @intCast(ci.savedpc - 1))];
+    switch (GET_OPCODE(inst)) {
+        .MMBIN, .MMBINI, .MMBINK => {
+            if (ci.savedpc < 2) return;
+            const prev = code[@as(usize, @intCast(ci.savedpc - 2))];
+            const dest = ci.base + @as(usize, @intCast(GETARG_A(prev)));
+            if (L.top > 0) {
+                L.stack[dest] = L.stack[L.top - 1];
+                L.top -= 1;
+            }
+        },
+        .UNM, .BNOT, .LEN, .GETTABUP, .GETTABLE, .GETI, .GETFIELD, .SELF => {
+            const dest = ci.base + @as(usize, @intCast(GETARG_A(inst)));
+            if (L.top > 0) {
+                L.stack[dest] = L.stack[L.top - 1];
+                L.top -= 1;
+            }
+        },
+        .CLOSE => {
+            // A __close metamethod yielded while closing; repeat the
+            // instruction to close the remaining variables.
+            ci.savedpc -= 1;
+        },
+        .RETURN => {
+            // A __close metamethod yielded during this return; restore the
+            // correct top and repeat the instruction to complete the return.
+            const ra = ci.base + @as(usize, @intCast(GETARG_A(inst)));
+            L.top = ra + @as(usize, @intCast(ci.nres_saved));
+            ci.savedpc -= 1;
+        },
+        else => {},
+    }
+}
+
 // -------------------------------------------------------------------
 // Argument-limit constants (consistent with the encoding above)
 // -------------------------------------------------------------------
