@@ -251,6 +251,8 @@ fn runRepl(L: *lua.lua_State, io: std.Io, gpa: std.mem.Allocator, print_banner: 
     if (print_banner) {
         try stdoutWrite(io, lua.LUA_COPYRIGHT);
         try stdoutWrite(io, "\n");
+        try stdoutWrite(io, lua.LUA_PORT_COPYRIGHT);
+        try stdoutWrite(io, "\n");
     }
     var accum = std.ArrayList(u8).empty;
     defer accum.deinit(gpa);
@@ -363,6 +365,8 @@ pub fn main(init: std.process.Init) !void {
 
     if (parsed.show_version) {
         try stdoutWrite(io, lua.LUA_COPYRIGHT);
+        try stdoutWrite(io, "\n");
+        try stdoutWrite(io, lua.LUA_PORT_COPYRIGHT);
         try stdoutWrite(io, "\n");
     }
 

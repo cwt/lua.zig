@@ -146,6 +146,11 @@ pub const LUA_VERSION_RELEASE: []const u8 = std.fmt.comptimePrint("{d}", .{LUA_V
 pub const LUA_VERSION: []const u8 = "Lua " ++ LUA_VERSION_MAJOR ++ "." ++ LUA_VERSION_MINOR;
 pub const LUA_RELEASE: []const u8 = LUA_VERSION ++ "." ++ LUA_VERSION_RELEASE;
 pub const LUA_COPYRIGHT = LUA_RELEASE ++ "  Copyright (C) 1994-2026 Lua.org, PUC-Rio";
+/// Extra banner line clarifying this is an independent Zig port, not a Lua.org
+/// product. The Lua copyright line above is retained (as required by Lua's MIT
+/// license and to match the reference interpreter's banner); this line makes
+/// the port's provenance explicit.
+pub const LUA_PORT_COPYRIGHT = "luazig: an independent, from-scratch Zig 0.16.0 port of the Lua reference implementation, by Lua.zig contributors — not affiliated with or endorsed by Lua.org/PUC-Rio";
 pub const LUA_AUTHORS = "R. Ierusalimschy, L. H. de Figueiredo, W. Celes";
 pub const LUA_SIGNATURE = "\x1bLua";
 

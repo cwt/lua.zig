@@ -2797,3 +2797,24 @@ contributing factors:
 ### §0.1 self-audit
 No §0.1 rule violations. Errors propagate via `!void`/`try`; allocator
 threaded; bounded slices; no `catch {}` swallowing; unmanaged containers.
+
+## 2026-08-07 — Banner: clarify port provenance
+
+The `-v`/REPL banner printed only `Lua 5.5.1  Copyright (C) 1994-2026
+Lua.org, PUC-Rio`, which could read as if the project were produced by
+Lua.org. The LICENSE already carries both copyrights (Lua.org/PUC-Rio for the
+language/API/semantics, Lua.zig contributors for the port). Added a second
+banner line via `LUA_PORT_COPYRIGHT` printed after the Lua copyright line:
+
+    Lua 5.5.1  Copyright (C) 1994-2026 Lua.org, PUC-Rio
+    luazig: an independent, from-scratch Zig 0.16.0 port of the Lua reference
+    implementation, by Lua.zig contributors — not affiliated with or endorsed
+    by Lua.org/PUC-Rio
+
+The Lua copyright line is retained (MIT-required and matches the reference
+interpreter's banner format); `LUA_COPYRIGHT` and `lua_ident` are unchanged.
+
+Verification: 131/131 unit tests, PASS 19 FAIL 0; the H.9 and CLI `-v` tests
+still pass (first line unchanged).
+
+§0.1 self-audit: no code semantics changed; banner strings only.
