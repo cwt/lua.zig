@@ -1,9 +1,9 @@
 ---
 type: architecture_guideline
 title: String Interning Design
-description: String deduplication for lua_TString, short vs long strings, hash computation, and the global string table.
+description: String deduplication for lua_TString, short vs long strings, 8-byte chunked FNV-1a hash computation, and the global string table.
 tags: [strings, interning, hashtable]
-timestamp: 2026-07-10T00:00:00Z
+timestamp: 2026-08-07T23:40:00Z
 ---
 
 ## Purpose
@@ -51,7 +51,7 @@ typedef struct stringtable {
 } stringtable;
 ```
 
-## Zig Implementation Strategy (updated 2026-07-10 — implemented)
+## Zig Implementation Strategy (updated 2026-08-07 — implemented)
 
 ### lua_TString
 
@@ -79,23 +79,33 @@ pub const global_State = struct {
 
 `strt` owns the key bytes; `lua_TString.s` points into that owned storage, so there is
 a single copy of each distinct string. Implemented in `src/lstring.zig`:
-`luaS_new` (intern / reuse), `luaS_hash` (FNV-1a with the state seed), `luaS_eqstr`.
+`luaS_new` (intern / reuse), `luaS_hash` (FNV-1a with 8-byte chunk readInt and state seed), `luaS_eqstr`.
 To prevent use-after-free bugs on temporary strings (e.g. from string buffers or VM execution), the key bytes are duplicated via `allocator.dupe` when inserted into `strt`, and are freed via `allocator.free` during GC sweeps or when `lua_close` is called.
 
 `global_State` is created in `luaL_newstate` and freed in `lua_close` (which also
 destroys every interned `lua_TString`, frees all duplicated key bytes, and deinits the `strt` map). `lua_pushlstring` /
 `lua_pushstring` now intern via `luaS_new`.
 
-### Hash Computation
+### Hash Computation (8-Byte Chunked FNV-1a)
 
-Port `luaS_hash` from `lua/lstring.c`:
+`luaS_hash` in `src/lstring.zig` processes 8 bytes per iteration using unaligned `u64` reads (`std.mem.readInt(u64, ptr[0..8], .little)`):
 
 ```zig
-fn hashString(s: []const u8, seed: usize) u32 {
-    var h: u32 = @as(u32, @truncate(seed ^ @as(usize, @intCast(s.len))));
-    for (s) |c| {
-        h = h ^ (c << (h & 3));
-        h = h ^ (h >> 5);
+pub fn luaS_hash(str: []const u8, seed: usize) u32 {
+    var h: u32 = @as(u32, @truncate(seed)) ^ 0x9e3779b9;
+    var ptr = str.ptr;
+    var len = str.len;
+    while (len >= 8) : (len -= 8) {
+        const u = std.mem.readInt(u64, ptr[0..8], .little);
+        h ^= @as(u32, @truncate(u));
+        h *%= 16777619;
+        h ^= @as(u32, @truncate(u >> 32));
+        h *%= 16777619;
+        ptr += 8;
+    }
+    for (str[str.len - len ..]) |c| {
+        h ^= c;
+        h *%= 16777619;
     }
     return h;
 }

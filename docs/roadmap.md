@@ -3,7 +3,7 @@ type: project_priority
 title: Development Roadmap
 description: Phase-based development plan for the Lua-to-Zig port, with dependencies and verification requirements.
 tags: [roadmap, planning, phases]
-timestamp: 2026-07-12T00:00:00Z
+timestamp: 2026-08-07T23:40:00Z
 ---
 
 ## Phase Overview
@@ -15,10 +15,10 @@ Phase A (DONE) --> Phase B (DONE) --> Phase C (DONE) --> Phase D (DONE) --> Phas
                                                                                                                           v
                                                                                                                 Phase H (DONE)
                                                                                                               Drop-in replacement
-                                                                                                              gap closure
+                                                                                                              & perf optimization
 ```
 
-Work **top-down from the foundation**, validating each layer with tests before proceeding. Phases A–G and H are **complete**; the full upstream `lua/testes/*.lua` suite passes (PASS 19, FAIL 0).
+Work **top-down from the foundation**, validating each layer with tests before proceeding. Phases A–G and H are **complete**; the full upstream `lua/testes/*.lua` suite passes (PASS 19, FAIL 0) with zero memory leaks, full static defect resolutions (BUG-055 to BUG-064), and Zig 0.16.0 performance optimizations.
 
 ## Phase A -- Foundations (Complete)
 
