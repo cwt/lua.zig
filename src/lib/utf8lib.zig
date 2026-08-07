@@ -176,10 +176,10 @@ fn codepoint(L: *lua.lua_State) !i32 {
 
 fn pushutfchar(L: *lua.lua_State, arg: i32) !void {
     const code_i = try lauxlib.luaL_checkinteger(L, arg);
-    const code = @as(u64, @bitCast(code_i));
-    try lauxlib.luaL_argcheck(L, code <= MAXUTF, arg, "value out of range");
+    try lauxlib.luaL_argcheck(L, code_i >= 0 and code_i <= MAXUTF, arg, "value out of range");
+    const code: u32 = @intCast(code_i);
     var buf: [6]u8 = undefined;
-    const written = encode_utf8(@as(u32, @intCast(code)), &buf);
+    const written = encode_utf8(code, &buf);
     _ = lua.lua_pushlstring(L, buf[0..written], written);
 }
 
@@ -193,10 +193,10 @@ fn char_(L: *lua.lua_State) !i32 {
         var i: i32 = 1;
         while (i <= n) : (i += 1) {
             const code_i = try lauxlib.luaL_checkinteger(L, i);
-            const code = @as(u64, @bitCast(code_i));
-            try lauxlib.luaL_argcheck(L, code <= MAXUTF, i, "value out of range");
+            try lauxlib.luaL_argcheck(L, code_i >= 0 and code_i <= MAXUTF, i, "value out of range");
+            const code: u32 = @intCast(code_i);
             var buf: [6]u8 = undefined;
-            const written = encode_utf8(@as(u32, @intCast(code)), &buf);
+            const written = encode_utf8(code, &buf);
             try list.appendSlice(L.allocator, buf[0..written]);
         }
         _ = lua.lua_pushlstring(L, list.items, list.items.len);
@@ -272,7 +272,7 @@ fn iter_aux(L: *lua.lua_State, strict: bool) !i32 {
     const s = try lauxlib.luaL_checklstring(L, 1, null);
     const slen = s.len;
     const n = lua.lua_tointeger(L, 2) orelse 0;
-    var nn: usize = @as(usize, @bitCast(n));
+    var nn: usize = if (n < 0) 0 else @intCast(n);
     if (nn < slen) {
         while (iscont_at(s, nn)) nn += 1;
     }

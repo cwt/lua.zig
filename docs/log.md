@@ -6,6 +6,33 @@ tags: [log, changelog]
 timestamp: 2026-08-07T23:05:00Z
 ---
 
+## 2026-08-08 — Resolution of BUG-065 through BUG-085 (Code Audit Fixes, 100% Tests PASS)
+
+- **Numeric & Arithmetic Safety (`src/lua.zig`, `src/ltm.zig`, `src/lcode.zig`)**:
+  - Fixed BUG-065: Replaced standard signed integer arithmetic operators (`-`, `+`) in `lua_arith` paths with wrapping operators (`-%`, `+%`) to prevent Debug panics on `LUA_MININTEGER` / `LUA_MAXINTEGER` overflow.
+  - Fixed BUG-066: `select('#', ...)` now pushes `.integer = @intCast(nextra)` instead of `.number`, preserving `math.type` integer contracts.
+  - Fixed BUG-068: Added `if (x == 0) return 0;` guard to `ceillog2` in `lcode.zig` to prevent unsigned integer underflow panics.
+  - Fixed BUG-083: Updated `lua_arith` bitwise float operations to validate `n1.toIntegerExactOpt()` before executing bitwise shifts/ops, returning `"number has no integer representation"` on non-integral floats.
+- **Memory Safety & OOM Resilience (`src/lstring.zig`, `src/lundump.zig`, `src/ltable.zig`, `src/lib/loadlib.zig`, `src/lvm.zig`, `src/lua.zig`)**:
+  - Fixed BUG-072 (`src/lstring.zig`): Reordered `errdefer` handlers and `key_ptr` assignments in `createString` to eliminate UAF reads during string table removal on allocation failure.
+  - Fixed BUG-073 (`src/lundump.zig`): Assigned `&[_]lua.AbsLineInfo{}` in `loadDebug` so prototype GC sweep does not attempt heap deallocation of static slices. Added `if (slice.len > 0)` length guards in `destroyProto` (`src/lua.zig`).
+  - Fixed BUG-075 (`src/lua.zig`): Checked `!ts.externally_owned` before freeing string keys in `close_state`.
+  - Fixed BUG-076 (`src/lib/loadlib.zig`): Added `L.allocator.destroy(lib)` to `errdefer` in `lsys_load` to prevent `std.DynLib` heap memory leaks.
+  - Fixed BUG-077 (`src/lvm.zig`): Added `errdefer` cleanup for `lc`, `upvals`, and `cl` allocations in `pushclosure`.
+  - Fixed BUG-078 (`src/ltable.zig`): Preserved `old_lastfree` and restored `t.lastfree` in `errdefer` on `growNode` failure.
+  - Fixed BUG-079 (`src/lua.zig`): Reset `marked` flags on string table entries when GC sweep allocation fails.
+- **Bytecode & Control Flow Safety (`src/lvm.zig`, `src/ltable.zig`, `src/ldump.zig`, `src/lcode.zig`)**:
+  - Fixed BUG-067 (`src/lvm.zig`): Added `ci.savedpc < 2` validation in `.MMBIN`, `.MMBINI`, and `.MMBINK` opcodes.
+  - Fixed BUG-069 (`src/ltable.zig`): Added `next >= 0` check in `setHash` chain traversal to avoid negative integer cast panics.
+  - Fixed BUG-070 (`src/ldump.zig`): Fixed debug info stripping protocol to emit count `0` for `locvars` and `upvalues` when `strip` is enabled.
+  - Fixed BUG-080 (`src/lcode.zig`): Added `luaX_syntaxerror` trigger on OOM failure in bytecode emission helpers.
+- **Portability & Code Cleanups (`src/lauxlib.zig`, `src/lib/utf8lib.zig`, `src/lib/tablib.zig`, `src/lib/baselib.zig`)**:
+  - Fixed BUG-071 (`src/lauxlib.zig`): Replaced Linux-specific `/proc/self/environ` file reading with platform-portable `std.c.getenv`.
+  - Fixed BUG-082 (`src/lib/utf8lib.zig`, `src/lib/tablib.zig`): Replaced `@bitCast` numeric conversions with explicit bounds checks and `@intCast`.
+  - Fixed BUG-084 (`src/lauxlib.zig`, `src/lib/baselib.zig`): Exported `skipFilePreamble` from `lauxlib.zig` and removed duplicate preamble skipping logic in `baselib.zig`.
+  - Fixed BUG-085 (`src/lua.zig`): Removed redundant second initialization loop in `lua_newuserdatauv`.
+- **Verification Gate**: `zig build test` passed **132/132** tests; `./run_testes.sh` passed **19 PASS / 0 FAIL / 0 CRASH** with exit code 0. Zero memory leaks.
+
 ## 2026-08-07 — macOS Platform Porting & Test Runner Fixes
 
 - **Mach-O LTO Linker Fix (`build.zig`)**: Disabled LTO (`use_lto`) when targeting Darwin (`target.result.os.tag.isDarwin()`). In Zig 0.16.0, Mach-O LTO requires LLD which is unsupported for Mach-O targets on macOS.

@@ -265,34 +265,52 @@ pub fn luaK_code(fs: *FuncState, i: Instruction) !i32 {
 pub fn luaK_codeABCk(fs: *FuncState, o: lvm.OpCode, a: i32, b: i32, c: i32, k: i32) i32 {
     std.debug.assert(a <= lvm.MAXARG_A and b <= lvm.MAXARG_B and
         c <= lvm.MAXARG_C and (k & ~@as(i32, 1)) == 0);
-    return luaK_code(fs, lvm.CREATE_ABCk(o, a, b, c, k)) catch 0;
+    return luaK_code(fs, lvm.CREATE_ABCk(o, a, b, c, k)) catch {
+        _ = llex.luaX_syntaxerror(fs.ls, "out of memory") catch {};
+        return 0;
+    };
 }
 
 pub fn luaK_codevABCk(fs: *FuncState, o: lvm.OpCode, a: i32, b: i32, c: i32, k: i32) i32 {
     std.debug.assert(a <= lvm.MAXARG_A and b <= lvm.MAXARG_vB and
         c <= lvm.MAXARG_vC and (k & ~@as(i32, 1)) == 0);
-    return luaK_code(fs, lvm.CREATE_vABCk(o, a, b, c, k)) catch 0;
+    return luaK_code(fs, lvm.CREATE_vABCk(o, a, b, c, k)) catch {
+        _ = llex.luaX_syntaxerror(fs.ls, "out of memory") catch {};
+        return 0;
+    };
 }
 
 pub fn luaK_codeABx(fs: *FuncState, o: lvm.OpCode, a: i32, bx: i32) i32 {
     std.debug.assert(a <= lvm.MAXARG_A and bx <= lvm.MAXARG_Bx);
-    return luaK_code(fs, lvm.CREATE_ABx(o, a, bx)) catch 0;
+    return luaK_code(fs, lvm.CREATE_ABx(o, a, bx)) catch {
+        _ = llex.luaX_syntaxerror(fs.ls, "out of memory") catch {};
+        return 0;
+    };
 }
 
 fn codeAsBx(fs: *FuncState, o: lvm.OpCode, a: i32, bx: i32) i32 {
     const b = bx + lvm.OFFSET_sBx;
     std.debug.assert(b <= lvm.MAXARG_Bx);
-    return luaK_code(fs, lvm.CREATE_ABx(o, a, b)) catch 0;
+    return luaK_code(fs, lvm.CREATE_ABx(o, a, b)) catch {
+        _ = llex.luaX_syntaxerror(fs.ls, "out of memory") catch {};
+        return 0;
+    };
 }
 
 fn codesJ(fs: *FuncState, o: lvm.OpCode, sj: i32, k: i32) i32 {
     std.debug.assert(sj + lvm.OFFSET_sJ <= lvm.MAXARG_sJ and (k & ~@as(i32, 1)) == 0);
-    return luaK_code(fs, lvm.CREATE_sJ(o, sj, k)) catch 0;
+    return luaK_code(fs, lvm.CREATE_sJ(o, sj, k)) catch {
+        _ = llex.luaX_syntaxerror(fs.ls, "out of memory") catch {};
+        return 0;
+    };
 }
 
 fn codeextraarg(fs: *FuncState, a: i32) i32 {
     std.debug.assert(a <= lvm.MAXARG_Ax);
-    return luaK_code(fs, lvm.CREATE_Ax(.EXTRAARG, a)) catch 0;
+    return luaK_code(fs, lvm.CREATE_Ax(.EXTRAARG, a)) catch {
+        _ = llex.luaX_syntaxerror(fs.ls, "out of memory") catch {};
+        return 0;
+    };
 }
 
 fn luaK_codek(fs: *FuncState, reg: i32, k: i32) i32 {
@@ -1261,8 +1279,8 @@ pub fn luaK_setlist(fs: *FuncState, base: i32, nelems: i32, tostore: i32) void {
 }
 
 fn ceillog2(x: u32) u32 {
-    var v = x;
-    v -= 1;
+    if (x == 0) return 0;
+    var v = x - 1;
     v |= v >> 1;
     v |= v >> 2;
     v |= v >> 4;

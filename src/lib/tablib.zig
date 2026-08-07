@@ -164,7 +164,7 @@ fn tunpack(L: *lua.lua_State) anyerror!i32 {
     const i_val = lauxlib.luaL_optinteger(L, 2, 1);
     const e_val = lauxlib.luaL_optinteger(L, 3, len);
     if (i_val > e_val) return 0;
-    const diff = @as(u64, @bitCast(e_val)) -% @as(u64, @bitCast(i_val));
+    const diff = @as(u64, @intCast(e_val -% i_val));
     if (diff >= @as(u64, @intCast(std.math.maxInt(i32) - 1))) {
         return lauxlib.luaL_error(L, "too many results to unpack");
     }

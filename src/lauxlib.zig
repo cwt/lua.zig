@@ -654,18 +654,35 @@ pub fn luaL_alloc(ud: ?*anyopaque, ptr: ?*anyopaque, osize: usize, nsize: usize)
 // Load functions (luaL_loadfilex, luaL_loadbufferx, luaL_loadstring)
 // ===================================================================
 
-const LoadS = struct {
+pub const LoadS = struct {
     s: []const u8,
     done: bool = false,
 };
 
-fn getS(L: *lua.lua_State, ud: ?*anyopaque, size: ?*usize) anyerror!?[]const u8 {
+pub fn getS(L: *lua.lua_State, ud: ?*anyopaque, size: ?*usize) anyerror!?[]const u8 {
     _ = L;
     const ls = @as(?*LoadS, @ptrCast(@alignCast(ud))) orelse return null;
     if (ls.done) return null;
     ls.done = true;
     if (size) |s| s.* = ls.s.len;
     return ls.s;
+}
+
+pub fn skipFilePreamble(content: []const u8) []const u8 {
+    var start_idx: usize = 0;
+    // Skip UTF-8 BOM (0xEF 0xBB 0xBF)
+    if (content.len >= 3 and content[0] == 0xEF and content[1] == 0xBB and content[2] == 0xBF) {
+        start_idx = 3;
+    }
+    // Skip shebang line if present
+    if (start_idx < content.len and content[start_idx] == '#') {
+        if (std.mem.indexOfScalar(u8, content[start_idx..], '\n')) |nl| {
+            start_idx = start_idx + nl + 1;
+        } else {
+            start_idx = content.len;
+        }
+    }
+    return content[start_idx..];
 }
 
 /// Load file as Lua chunk (with mode). If `filename` is null, reads from
@@ -686,27 +703,7 @@ pub fn luaL_loadfilex(L: *lua.lua_State, filename: ?[]const u8, mode: []const u8
         };
         defer L.allocator.free(content);
 
-        // Skip an optional UTF-8 BOM at the start, then skip an optional
-        // shebang line (Unix exec. file starting with '#'). This matches the
-        // `skipcomment` function in Lua's `lauxlib.c`.
-        const start = blk: {
-            var start_idx: usize = 0;
-            // Skip UTF-8 BOM (0xEF 0xBB 0xBF)
-            if (content.len >= 3 and content[0] == 0xEF and content[1] == 0xBB and content[2] == 0xBF) {
-                start_idx = 3;
-            }
-            // Skip shebang line if present
-            if (start_idx < content.len and content[start_idx] == '#') {
-                if (std.mem.indexOfScalar(u8, content[start_idx..], '\n')) |nl| {
-                    start_idx = start_idx + nl + 1;
-                } else {
-                    start_idx = content.len; // no newline: rest of file is the shebang
-                }
-            }
-            break :blk start_idx;
-        };
-        const adjusted = content[start..];
-
+        const adjusted = skipFilePreamble(content);
         var ls = LoadS{ .s = adjusted, .done = false };
         return lua.lua_load(L, getS, @as(?*anyopaque, @ptrCast(&ls)), chunkname, mode);
     }
@@ -1028,36 +1025,12 @@ pub fn luaL_openselectedlibs(L: *lua.lua_State, openmask: i32, closedmask: i32) 
 }
 
 pub fn luaL_getenv(L: *lua.lua_State, name: []const u8) anyerror!?[]const u8 {
-    const g = L.l_G orelse return null;
-    const file = std.Io.Dir.cwd().openFile(g.io, "/proc/self/environ", .{ .mode = .read_only }) catch |err| {
-        if (err == error.FileNotFound) return null;
-        return err;
-    };
-    defer file.close(g.io);
-
-    var list = std.ArrayList(u8).empty;
-    defer list.deinit(L.allocator);
-    var buf: [4096]u8 = undefined;
-    var slices = [_][]u8{&buf};
-    while (true) {
-        const n = file.readStreaming(g.io, &slices) catch |err| switch (err) {
-            error.EndOfStream => break,
-            else => return err,
-        };
-        if (n == 0) break;
-        try list.appendSlice(L.allocator, buf[0..n]);
-    }
-
-    var it = std.mem.splitScalar(u8, list.items, 0);
-    while (it.next()) |var_str| {
-        if (var_str.len == 0) continue;
-        if (std.mem.indexOfScalar(u8, var_str, '=')) |eq_idx| {
-            const var_name = var_str[0..eq_idx];
-            if (std.mem.eql(u8, var_name, name)) {
-                const var_val = var_str[eq_idx + 1 ..];
-                return try L.allocator.dupe(u8, var_val);
-            }
-        }
+    const name_z = try L.allocator.allocSentinel(u8, name.len, 0);
+    defer L.allocator.free(name_z);
+    @memcpy(name_z[0..name.len], name);
+    if (std.c.getenv(name_z.ptr)) |v| {
+        const span = std.mem.span(v);
+        return try L.allocator.dupe(u8, span);
     }
     return null;
 }

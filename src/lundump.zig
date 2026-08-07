@@ -247,7 +247,7 @@ const LoadState = struct {
             f.abslineinfo = abslineinfo; // Assign immediately
             try self.loadBlock(std.mem.sliceAsBytes(abslineinfo));
         } else {
-            f.abslineinfo = &.{};
+            f.abslineinfo = &[_]lua.AbsLineInfo{};
         }
 
         // 3. locvars

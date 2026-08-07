@@ -359,7 +359,7 @@ fn setHash(t: *Table, key: TValue, val: TValue) anyerror!void {
     const othermp = hashKey(t.node.items[mp].key, len);
     if (othermp != mp) {
         var prev = othermp;
-        while (t.node.items[prev].next != -1 and @as(usize, @intCast(t.node.items[prev].next)) != mp) {
+        while (t.node.items[prev].next >= 0 and @as(usize, @intCast(t.node.items[prev].next)) != mp) {
             prev = @intCast(t.node.items[prev].next);
         }
         if (t.node.items[prev].next != -1 and @as(usize, @intCast(t.node.items[prev].next)) == mp) {

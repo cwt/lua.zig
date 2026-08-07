@@ -802,7 +802,7 @@ pub fn luaT_getvararg(L: *lua.lua_State, ci: *lua.CallInfo, ra_idx: usize, rc_id
         if (rc.string) |ts| {
             if (ts.s.len == 1 and ts.s[0] == 'n') {
                 const nextra = if (is_vatab) (try getnumargs(L, ci, varargTableAt(L, ci, np))) else ci.nextraargs;
-                L.stack[ra_idx] = lua.TValue{ .number = @as(f64, @floatFromInt(@as(i64, nextra))) };
+                L.stack[ra_idx] = lua.TValue{ .integer = @as(i64, @intCast(nextra)) };
                 return;
             }
         }

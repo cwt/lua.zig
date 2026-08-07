@@ -1243,6 +1243,7 @@ pub fn run(L: *lua.lua_State, active_ci: *lua.CallInfo) anyerror!void {
                 }
             },
             .MMBIN => {
+                if (ci.savedpc < 2) return error.BadBytecode;
                 const ra_idx = ci.base + @as(usize, @intCast(GETARG_A(instruction)));
                 const rb_idx = ci.base + @as(usize, @intCast(GETARG_B(instruction)));
                 const tm = @as(ltm.TMS, @enumFromInt(GETARG_C(instruction)));
@@ -1251,6 +1252,7 @@ pub fn run(L: *lua.lua_State, active_ci: *lua.CallInfo) anyerror!void {
                 try ltm.luaT_trybinTM(L, &L.stack[ra_idx], &L.stack[rb_idx], dest_idx, tm);
             },
             .MMBINI => {
+                if (ci.savedpc < 2) return error.BadBytecode;
                 const ra_idx = ci.base + @as(usize, @intCast(GETARG_A(instruction)));
                 const imm = GETARG_sB(instruction);
                 const tm = @as(ltm.TMS, @enumFromInt(GETARG_C(instruction)));
@@ -1265,6 +1267,7 @@ pub fn run(L: *lua.lua_State, active_ci: *lua.CallInfo) anyerror!void {
                 }
             },
             .MMBINK => {
+                if (ci.savedpc < 2) return error.BadBytecode;
                 const ra_idx = ci.base + @as(usize, @intCast(GETARG_A(instruction)));
                 const imm = proto.k[@as(usize, @intCast(GETARG_B(instruction)))];
                 const tm = @as(ltm.TMS, @enumFromInt(GETARG_C(instruction)));

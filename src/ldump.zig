@@ -184,18 +184,22 @@ const DumpState = struct {
             self.dumpBlock(std.mem.sliceAsBytes(f.abslineinfo));
         }
         // locvars
-        self.dumpInt(@as(i32, @intCast(f.locvars.len)));
-        for (f.locvars) |lv| {
-            const vn: ?*lua.lua_TString = if (strip) null else lv.varname;
-            self.dumpString(vn);
-            self.dumpInt(lv.startpc);
-            self.dumpInt(lv.endpc);
+        const nloc = if (strip) 0 else f.locvars.len;
+        self.dumpInt(@as(i32, @intCast(nloc)));
+        if (!strip) {
+            for (f.locvars) |lv| {
+                self.dumpString(lv.varname);
+                self.dumpInt(lv.startpc);
+                self.dumpInt(lv.endpc);
+            }
         }
         // upvalue names
-        self.dumpInt(@as(i32, @intCast(f.upvalues.len)));
-        for (f.upvalues) |up| {
-            const nm: ?*lua.lua_TString = if (strip) null else up.name;
-            self.dumpString(nm);
+        const nup = if (strip) 0 else f.upvalues.len;
+        self.dumpInt(@as(i32, @intCast(nup)));
+        if (!strip) {
+            for (f.upvalues) |up| {
+                self.dumpString(up.name);
+            }
         }
     }
 

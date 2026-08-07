@@ -409,13 +409,13 @@ pub fn createProto(allocator: std.mem.Allocator) !*lua_Proto {
 }
 
 pub fn destroyProto(allocator: std.mem.Allocator, f: *lua_Proto) void {
-    allocator.free(f.code);
-    allocator.free(f.k);
-    allocator.free(f.p);
-    allocator.free(f.upvalues);
-    allocator.free(f.lineinfo);
-    allocator.free(f.abslineinfo);
-    allocator.free(f.locvars);
+    if (f.code.len > 0) allocator.free(f.code);
+    if (f.k.len > 0) allocator.free(f.k);
+    if (f.p.len > 0) allocator.free(f.p);
+    if (f.upvalues.len > 0) allocator.free(f.upvalues);
+    if (f.lineinfo.len > 0) allocator.free(f.lineinfo);
+    if (f.abslineinfo.len > 0) allocator.free(f.abslineinfo);
+    if (f.locvars.len > 0) allocator.free(f.locvars);
     allocator.destroy(f);
 }
 
@@ -1780,7 +1780,7 @@ pub fn lua_arith(L: *lua_State, op: i32) !void {
         const p1 = L.stack[L.top - 1];
         if (p1 == .integer) {
             const result = switch (op) {
-                LUA_OPUNM => @as(TValue, .{ .integer = -p1.integer }),
+                LUA_OPUNM => @as(TValue, .{ .integer = 0 -% p1.integer }),
                 LUA_OPBNOT => @as(TValue, .{ .integer = ~p1.integer }),
                 else => unreachable,
             };
@@ -1810,14 +1810,14 @@ pub fn lua_arith(L: *lua_State, op: i32) !void {
             if (num2) |n2| {
                 if (n1 == .integer and n2 == .integer) {
                     const result = switch (op) {
-                        LUA_OPADD => @as(TValue, .{ .integer = n1.integer + n2.integer }),
+                        LUA_OPADD => @as(TValue, .{ .integer = n1.integer +% n2.integer }),
                         LUA_OPSUB => @as(TValue, .{ .integer = n1.integer -% n2.integer }),
                         LUA_OPMUL => @as(TValue, .{ .integer = n1.integer *% n2.integer }),
                         LUA_OPMOD => blk: {
                             const ib = n1.integer;
                             const ic = n2.integer;
                             const r = if (ic == 0 or ic == -1) @as(i64, 0) else @rem(ib, ic);
-                            break :blk TValue{ .integer = if (r != 0 and (r ^ ic) < 0) r + ic else r };
+                            break :blk TValue{ .integer = if (r != 0 and (r ^ ic) < 0) r +% ic else r };
                         },
                         LUA_OPPOW => @as(TValue, .{ .number = libm.getLibm().pow(@as(f64, @floatFromInt(n1.integer)), @as(f64, @floatFromInt(n2.integer))) }),
                         LUA_OPDIV => @as(TValue, .{ .number = @as(f64, @floatFromInt(n1.integer)) / @as(f64, @floatFromInt(n2.integer)) }),
@@ -1849,11 +1849,31 @@ pub fn lua_arith(L: *lua_State, op: i32) !void {
                         LUA_OPPOW => libm.getLibm().pow(f1, f2),
                         LUA_OPDIV => f1 / f2,
                         LUA_OPIDIV => @floor(f1 / f2),
-                        LUA_OPBAND => @floatFromInt(n1.toIntegerExact() & n2.toIntegerExact()),
-                        LUA_OPBOR => @floatFromInt(n1.toIntegerExact() | n2.toIntegerExact()),
-                        LUA_OPBXOR => @floatFromInt(n1.toIntegerExact() ^ n2.toIntegerExact()),
-                        LUA_OPSHL => @floatFromInt(luaV_shift(n1.toIntegerExact(), n2.toIntegerExact())),
-                        LUA_OPSHR => @floatFromInt(luaV_shift(n1.toIntegerExact(), -%n2.toIntegerExact())),
+                        LUA_OPBAND => blk: {
+                            const ival1 = n1.toIntegerExactOpt() orelse return luaG_runerror(L, "number has no integer representation");
+                            const ival2 = n2.toIntegerExactOpt() orelse return luaG_runerror(L, "number has no integer representation");
+                            break :blk @floatFromInt(ival1 & ival2);
+                        },
+                        LUA_OPBOR => blk: {
+                            const ival1 = n1.toIntegerExactOpt() orelse return luaG_runerror(L, "number has no integer representation");
+                            const ival2 = n2.toIntegerExactOpt() orelse return luaG_runerror(L, "number has no integer representation");
+                            break :blk @floatFromInt(ival1 | ival2);
+                        },
+                        LUA_OPBXOR => blk: {
+                            const ival1 = n1.toIntegerExactOpt() orelse return luaG_runerror(L, "number has no integer representation");
+                            const ival2 = n2.toIntegerExactOpt() orelse return luaG_runerror(L, "number has no integer representation");
+                            break :blk @floatFromInt(ival1 ^ ival2);
+                        },
+                        LUA_OPSHL => blk: {
+                            const ival1 = n1.toIntegerExactOpt() orelse return luaG_runerror(L, "number has no integer representation");
+                            const ival2 = n2.toIntegerExactOpt() orelse return luaG_runerror(L, "number has no integer representation");
+                            break :blk @floatFromInt(luaV_shift(ival1, ival2));
+                        },
+                        LUA_OPSHR => blk: {
+                            const ival1 = n1.toIntegerExactOpt() orelse return luaG_runerror(L, "number has no integer representation");
+                            const ival2 = n2.toIntegerExactOpt() orelse return luaG_runerror(L, "number has no integer representation");
+                            break :blk @floatFromInt(luaV_shift(ival1, -%ival2));
+                        },
                         else => unreachable,
                     };
                     L.top -= 1;
@@ -3187,7 +3207,6 @@ pub fn lua_newuserdatauv(L: *lua_State, sz: usize, nuvalue: i32) ?*anyopaque {
         uv = L.allocator.alloc(TValue, @intCast(nuvalue)) catch return null;
         for (uv) |*slot| slot.* = .{ .nil = {} };
     }
-    for (uv) |*slot| slot.* = .{ .nil = {} };
     const data = L.allocator.alloc(u8, sz) catch {
         if (uv.len > 0) L.allocator.free(uv);
         return null;

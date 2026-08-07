@@ -257,24 +257,8 @@ fn ipairs(L: *lua.lua_State) anyerror!i32 {
 // Helper: skip UTF-8 BOM and shebang line from file content
 // ===================================================================
 
-/// Skip an optional UTF-8 BOM at the start, then skip an optional shebang
-/// line (Unix exec. file starting with '#'). Matches the `skipcomment`
-/// function in Lua's `lauxlib.c`.
 fn skipFilePreamble(content: []const u8) []const u8 {
-    var start_idx: usize = 0;
-    // Skip UTF-8 BOM (0xEF 0xBB 0xBF)
-    if (content.len >= 3 and content[0] == 0xEF and content[1] == 0xBB and content[2] == 0xBF) {
-        start_idx = 3;
-    }
-    // Skip shebang line if present
-    if (start_idx < content.len and content[start_idx] == '#') {
-        if (std.mem.indexOfScalar(u8, content[start_idx..], '\n')) |nl| {
-            start_idx = start_idx + nl + 1;
-        } else {
-            start_idx = content.len;
-        }
-    }
-    return content[start_idx..];
+    return lauxlib.skipFilePreamble(content);
 }
 
 /// Validate a chunk-load mode (mirrors the reference getMode): the 'B'

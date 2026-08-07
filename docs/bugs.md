@@ -660,147 +660,147 @@ plans. They are now queued for implementation in the next development round.
 - **Impact:** Latent pointer invalidation hazard if raw stack pointers are cached across stack growth calls.
 - **Fix:** Audited all stack reference sites across VM, C-API, and libraries to ensure stack index offsets are consistently used instead of raw cached pointers.
 
-## BUG-065 — `lua.zig`: Integer overflow panics on `LUA_MININTEGER` / `LUA_MAXINTEGER` arithmetic [HIGH]
+## BUG-065 — `lua.zig`: Integer overflow panics on `LUA_MININTEGER` / `LUA_MAXINTEGER` arithmetic [HIGH] ✅ FIXED
 
 - **Location:** `src/lua.zig:1783`, `1813`, `1820` (`lua_arith` UNM, ADD, and integer calculations).
 - **Defect:** Standard integer operators (`-`, `+`) are used instead of wrapping operators (`-%`, `+%`).
 - **Impact:** Negating `LUA_MININTEGER` (`-9223372036854775808`) or adding large integers panics at runtime in Debug/ReleaseSafe modes instead of performing 64-bit two's complement wrapping.
 - **Fix:** Replace `-` and `+` in integer arithmetic paths with Zig wrapping operators `-%` and `+%`.
 
-## BUG-066 — `ltm.zig`: `select('#', ...)` pushes Float TValue instead of Integer [MED]
+## BUG-066 — `ltm.zig`: `select('#', ...)` pushes Float TValue instead of Integer [MED] ✅ FIXED
 
 - **Location:** `src/ltm.zig:805` (`luaT_getvararg`).
 - **Defect:** Querying vararg count via string `'n'` sets `L.stack[ra_idx] = .{ .number = ... }` instead of `.integer`.
 - **Impact:** `select('#', ...)` returns a float, causing `math.type(select('#', ...))` to return `"float"` instead of `"integer"`, breaking Lua 5.3+ integer specification contracts.
 - **Fix:** Set `L.stack[ra_idx] = .{ .integer = @intCast(nextra) }`.
 
-## BUG-067 — `lvm.zig`: Integer underflow in `MMBIN` opcodes when `ci.savedpc < 2` [HIGH]
+## BUG-067 — `lvm.zig`: Integer underflow in `MMBIN` opcodes when `ci.savedpc < 2` [HIGH] ✅ FIXED
 
 - **Location:** `src/lvm.zig:1249`, `1258`, `1272` (`.MMBIN`, `.MMBINI`, `.MMBINK`).
 - **Defect:** Opcodes execute `const prev_inst = code[ci.savedpc - 2];` without checking if `ci.savedpc >= 2`.
 - **Impact:** Malformed or synthesized bytecode with an `MMBIN` instruction at index 0 or 1 underflows `usize` and panics in Debug mode.
 - **Fix:** Add `if (ci.savedpc < 2) return error.BadBytecode;` or guard before index lookup.
 
-## BUG-068 — `lcode.zig`: Underflow panic in `ceillog2(0)` [MED]
+## BUG-068 — `lcode.zig`: Underflow panic in `ceillog2(0)` [MED] ✅ FIXED
 
 - **Location:** `src/lcode.zig:1264`.
 - **Defect:** `ceillog2(x: u32)` executes `var v = x; v -= 1;`.
 - **Impact:** `ceillog2(0)` triggers an unsigned integer underflow panic in Debug mode.
 - **Fix:** Add guard `if (x == 0) return 0;`.
 
-## BUG-069 — `ltable.zig`: Unchecked negative index cast panic in hash chain search [HIGH]
+## BUG-069 — `ltable.zig`: Unchecked negative index cast panic in hash chain search [HIGH] ✅ FIXED
 
 - **Location:** `src/ltable.zig:359-364` (`setHash`).
 - **Defect:** `while (t.node.items[prev].next != -1 and @as(usize, @intCast(t.node.items[prev].next)) != mp)` casts negative `.next` values.
 - **Impact:** If `.next` contains any negative value other than `-1` (corrupted flag or invalid index), `@intCast` to `usize` panics.
 - **Fix:** Check `t.node.items[prev].next >= 0` before casting to `usize`.
 
-## BUG-070 — `ldump.zig`: Debug info stripping format protocol discrepancy [LOW]
+## BUG-070 — `ldump.zig`: Debug info stripping format protocol discrepancy [LOW] ✅ FIXED
 
 - **Location:** `src/ldump.zig:187`, `195`.
 - **Defect:** When `strip == true`, `ldump.zig` emits `f.locvars.len` and `f.upvalues.len` filled with empty strings instead of 0.
 - **Impact:** Stripped bytecode chunks produced by `lua_dump` contain redundant zero-length string entries, violating the reference Lua binary format.
 - **Fix:** Emit count `0` when `strip` is `true`.
 
-## BUG-071 — `lauxlib.zig`: Non-portable environment reader in `luaL_getenv` [HIGH]
+## BUG-071 — `lauxlib.zig`: Non-portable environment reader in `luaL_getenv` [HIGH] ✅ FIXED
 
 - **Location:** `src/lauxlib.zig:1030-1064` (`luaL_getenv`).
 - **Defect:** Hardcodes opening `/proc/self/environ`.
 - **Impact:** Environment variable lookups fail on macOS, Windows, and FreeBSD, breaking `LUA_PATH`/`LUA_CPATH` overrides and `os.getenv`.
-- **Fix:** Replace `/proc/self/environ` reading with native platform environment retrieval or `std.process.getEnvVarOwned`.
+- **Fix:** Replace `/proc/self/environ` reading with native platform environment retrieval or `std.c.getenv`.
 
-## BUG-072 — `lstring.zig`: Use-After-Free (UAF) read in `createString` on OOM [HIGH]
+## BUG-072 — `lstring.zig`: Use-After-Free (UAF) read in `createString` on OOM [HIGH] ✅ FIXED
 
 - **Location:** `src/lstring.zig:90-98` (`createString`).
 - **Defect:** `gop.key_ptr.*` is updated to point to `key` before creating `ts`. If `allocator.create(lua_TString)` fails, `errdefer free(key)` runs first, followed by `errdefer swapRemove(s)`, which dereferences the freed `key.ptr`.
 - **Impact:** Heap Use-After-Free read during string table cleanup on allocation failure.
 - **Fix:** Reorder `errdefer` handlers or update `gop.key_ptr.*` only after `lua_TString` creation succeeds.
 
-## BUG-073 — `lundump.zig`: Invalid free / segfault on static slice deallocation in `loadDebug` [HIGH]
+## BUG-073 — `lundump.zig`: Invalid free / segfault on static slice deallocation in `loadDebug` [HIGH] ✅ FIXED
 
 - **Location:** `src/lundump.zig:250`.
 - **Defect:** `n_abslineinfo == 0` assigns a static slice `f.abslineinfo = &.{};`.
 - **Impact:** GC sweep calls `allocator.free(f.abslineinfo)`, passing a static slice to the heap allocator and causing a segfault / invalid free crash.
 - **Fix:** Assign `&.{}` as an unallocated slice or check slice length before calling `allocator.free`.
 
-## BUG-074 — `lparser.zig`: Double free and slice leak in `close_func` [MED]
+## BUG-074 — `lparser.zig`: Double free and slice leak in `close_func` [MED] ✅ FIXED
 
 - **Location:** `src/lparser.zig:880-896`, `909` (`close_func`).
 - **Defect:** If any `toOwnedSlice` call fails midway, `errdefer` calls `.deinit()` on empty `ArrayList`s (leaking previously converted slices) and `body()`'s `errdefer` calls `.deinit()` a second time.
 - **Impact:** Double free panic and memory leaks during parse errors.
 - **Fix:** Restructure `close_func` slice conversion cleanup using explicit optional slice tracking.
 
-## BUG-075 — `lua.zig`: Unconditional free of externally-owned strings in state teardown [MED]
+## BUG-075 — `lua.zig`: Unconditional free of externally-owned strings in state teardown [MED] ✅ FIXED
 
 - **Location:** `src/lua.zig:5821-5825` (`close_state`).
 - **Defect:** `close_state` calls `g.allocator.free(key)` on all string table entries without checking `ts.externally_owned`.
 - **Impact:** Invalid free crash when closing state with external or static strings in the string table.
 - **Fix:** Add `if (!ts.externally_owned) g.allocator.free(key);` check in `close_state`.
 
-## BUG-076 — `lib/loadlib.zig`: `std.DynLib` heap memory leak on registration failure [MED]
+## BUG-076 — `lib/loadlib.zig`: `std.DynLib` heap memory leak on registration failure [MED] ✅ FIXED
 
 - **Location:** `src/lib/loadlib.zig:39-57` (`lsys_load`).
 - **Defect:** `lib` is allocated via `L.allocator.create(std.DynLib)`. If `g.clibs.append` fails with OOM, `errdefer lib.close()` closes the handle but does not call `L.allocator.destroy(lib)`.
 - **Impact:** Heap memory leak of `std.DynLib` struct on OOM.
 - **Fix:** Add `L.allocator.destroy(lib)` to `errdefer`.
 
-## BUG-077 — `lvm.zig`: Heap memory leak in `pushclosure` on OOM [MED]
+## BUG-077 — `lvm.zig`: Heap memory leak in `pushclosure` on OOM [MED] ✅ FIXED
 
 - **Location:** `src/lvm.zig:1906-1928`.
 - **Defect:** `lc`, `upvals`, and `cl` are allocated sequentially. If later steps fail with OOM, earlier allocations are not cleaned up.
 - **Impact:** Memory leak on OOM during closure instantiation.
 - **Fix:** Add `errdefer` blocks for `lc` and `upvals` allocation steps.
 
-## BUG-078 — `ltable.zig`: `lastfree` out-of-bounds index corruption on failed table growth [HIGH]
+## BUG-078 — `ltable.zig`: `lastfree` out-of-bounds index corruption on failed table growth [HIGH] ✅ FIXED
 
 - **Location:** `src/ltable.zig:154-157` (`growNode`).
 - **Defect:** `t.lastfree = newlen;` is set before re-inserting nodes. If `setHash` fails with OOM, `errdefer` restores `t.node = old_node` but leaves `t.lastfree` at `newlen` (exceeding `old_node.items.len`).
 - **Impact:** Subsequent `getFreePos` calls access out-of-bounds slice elements.
 - **Fix:** Save `old_lastfree` and restore `t.lastfree = old_lastfree` in `errdefer`.
 
-## BUG-079 — `lua.zig`: GC zombie string state leak on OOM during string sweep [MED]
+## BUG-079 — `lua.zig`: GC zombie string state leak on OOM during string sweep [MED] ✅ FIXED
 
 - **Location:** `src/lua.zig:4987`, `4996-5004` (string GC sweep).
 - **Defect:** If `dead_strings.append` fails on OOM, GC sweep aborts, leaving marked strings with `ts.marked = true`.
 - **Impact:** Surviving strings remain permanently marked as `true` and can never be garbage collected in future cycles.
 - **Fix:** Ensure string mark flags are reset even when sweep allocation fails.
 
-## BUG-080 — `lcode.zig`: Code emission corruption on allocation failure [HIGH]
+## BUG-080 — `lcode.zig`: Code emission corruption on allocation failure [HIGH] ✅ FIXED
 
 - **Location:** `src/lcode.zig:268`, `274`, `279`, `285` (`luaK_code*`).
 - **Defect:** Emission helpers execute `return luaK_code(...) catch 0;`.
 - **Impact:** Swallowing OOM errors in bytecode emitters and returning instruction index `0` corrupts jump offsets and instruction patch chains without reporting failure.
-- **Fix:** Propagate errors from `luaK_code` with `try`.
+- **Fix:** Propagate errors from `luaK_code` with `try` or trigger `luaX_syntaxerror`.
 
-## BUG-081 — `lib/iolib.zig`: Raw `std.c` POSIX syscalls bypass `std.Io` capability interface [LOW]
+## BUG-081 — `lib/iolib.zig`: Raw `std.c` POSIX syscalls bypass `std.Io` capability interface [LOW] ✅ FIXED
 
 - **Location:** `src/lib/iolib.zig:51`, `74`, `76`, `86`, `162`, `194`, `221`.
 - **Defect:** File stream operations call `std.c.open`, `std.c.close`, `std.c.unlink`, `std.c.write` directly.
 - **Impact:** Violates §0.1 Rule 10 by bypassing the explicit `std.Io` capabilities initialized in `global_State`.
 - **Fix:** Refactor file streams to use `std.Io` capabilities.
 
-## BUG-082 — `lib/utf8lib.zig` & `lib/tablib.zig`: `@bitCast` used for numeric type conversions [LOW]
+## BUG-082 — `lib/utf8lib.zig` & `lib/tablib.zig`: `@bitCast` used for numeric type conversions [LOW] ✅ FIXED
 
 - **Location:** `src/lib/utf8lib.zig:179`, `196`, `275` and `src/lib/tablib.zig:167`.
 - **Defect:** Converts integer values using `@as(u64, @bitCast(code_i))` and `@as(usize, @bitCast(n))`.
 - **Impact:** Violates §0.1 Rule 4 (restricting `@bitCast` solely to bit-identical reinterpretation).
 - **Fix:** Replace `@bitCast` with explicit bounds checking and `@intCast`.
 
-## BUG-083 — `lua.zig`: Imprecise bitwise float conversion predicates [MED]
+## BUG-083 — `lua.zig`: Imprecise bitwise float conversion predicates [MED] ✅ FIXED
 
 - **Location:** `src/lua.zig:1852-1856` (`lua_arith` bitwise operations on floats).
 - **Defect:** `toIntegerExact()` uses `@intFromFloat(n)`, truncating non-integral float values like `2.5` to `2`.
 - **Impact:** Violates §0.1 Rule 14. `2.5 & 3` evaluates to `2` instead of raising `"number has no integer representation"`.
 - **Fix:** Validate `n == @floor(n)` before converting floats to integer operands.
 
-## BUG-084 — `lauxlib.zig` & `lib/baselib.zig`: Duplicated preamble skipping & reader adapter logic [LOW]
+## BUG-084 — `lauxlib.zig` & `lib/baselib.zig`: Duplicated preamble skipping & reader adapter logic [LOW] ✅ FIXED
 
 - **Location:** `src/lauxlib.zig:692-707` & `src/lib/baselib.zig:263-278` (shebang/BOM) and `src/lauxlib.zig:657-669` & `src/lib/baselib.zig:123-134` (`LoadS`/`sliceReader`).
 - **Defect:** Identical preamble skipping and slice reader adapter logic re-implemented across both modules.
 - **Impact:** Code duplication and maintenance overhead.
 - **Fix:** Consolidate shared reader adapters and preamble logic into `lauxlib.zig`.
 
-## BUG-085 — `lua.zig`: Double initialization loop in userdata creation [LOW]
+## BUG-085 — `lua.zig`: Double initialization loop in userdata creation [LOW] ✅ FIXED
 
 - **Location:** `src/lua.zig:3188`, `3190` (`lua_newuserdatauv`).
 - **Defect:** `for (uv) |*slot| slot.* = .{ .nil = {} };` is executed twice consecutively.
