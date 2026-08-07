@@ -6,6 +6,12 @@ tags: [log, changelog]
 timestamp: 2026-08-07T23:05:00Z
 ---
 
+## 2026-08-07 — VM Execution Fast-Paths (Idiomatic Zig Unboxing & Comparison Optics)
+
+- **Idiomatic Zig Unboxing (`src/lvm.zig`)**: Introduced inline `asFloat` pattern-matching helper to perform direct float conversion without repeated `isNumberValue()` and `toFloat()` tag switches on hot arithmetic opcodes (`.ADD`, `.SUB`, `.MUL`, `.DIV`, `.MOD`, `.POW`).
+- **Direct Integer Comparison Fast-Paths (`src/lvm.zig`)**: Optimized `.EQI`, `.LTI`, `.LEI`, `.GTI`, `.GEI` opcodes to execute direct `ra.integer` vs `sb` integer comparisons when operands are `.integer`, bypassing metamethod dispatch functions (`ltm.luaT_lt`/`luaT_le`) for non-float comparisons.
+- **Verification Gate**: `zig build test` passed **132/132** tests; `./run_testes.sh` passed **19/19** upstream tests with zero regressions or memory leaks.
+
 ## 2026-08-07 — Resolution of BUG-055 through BUG-064 (All Tests Passing, 0 Leaks)
 
 - **Array & Hash Part Key Resolution (`src/ltable.zig`)**: Fixed BUG-055 and BUG-062 by introducing `clearHashKey(t, key)` to zero out hash part values when integer keys transition into the array part, preventing stale reads while keeping `node.key` intact for `next()` iteration safety. Added `errdefer` in `growNode` to prevent `old_node` array leaks on OOM (BUG-061).
