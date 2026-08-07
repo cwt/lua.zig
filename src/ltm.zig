@@ -104,7 +104,13 @@ pub fn luaT_gettmbyobj(L: *lua.lua_State, o: lua.TValue, event: TMS) lua.TValue 
 
 pub fn savestate(L: *lua.lua_State) void {
     if (L.ci) |ci| {
-        L.top = ci.top;
+        // Only RAISE the top to cover the frame; never lower it. Lowering
+        // clobbers live values above ci.top (e.g. return values placed by
+        // poscall, which sits above the frame's register top) before a
+        // metamethod call runs.
+        if (L.top < ci.top) {
+            L.top = ci.top;
+        }
     }
 }
 
@@ -152,7 +158,8 @@ pub fn luaT_callTM1(L: *lua.lua_State, f: lua.TValue, p1: *const lua.TValue) !vo
         if (old_ci) |prev| {
             prev.next = null;
         }
-        L.top = saved_top;
+        // Leave the error object on the stack (at L.top-1) so close_one_slot
+        // can propagate a __close error to the next handler.
         return e;
     };
     L.top = saved_top;
@@ -183,7 +190,8 @@ pub fn luaT_callTM2(L: *lua.lua_State, f: lua.TValue, p1: *const lua.TValue, p2:
         if (old_ci) |prev| {
             prev.next = null;
         }
-        L.top = saved_top;
+        // Leave the error object on the stack (at L.top-1) so close_one_slot
+        // can propagate a __close error to the next handler.
         return e;
     };
     L.top = saved_top;

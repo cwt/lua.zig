@@ -588,6 +588,11 @@ pub fn closeupvals(L: *lua_State, limit: usize, err_val: ?TValue) !void {
         const final_err = L.stack[err_idx];
         L.top = err_idx + 1;
         L.stack[err_idx] = final_err;
+        // A __close metamethod raised (or the value was not closable): record
+        // the error object so the surrounding protected call reports it (this
+        // path does not go through luaG_errormsg, which is what normally sets
+        // L.err_obj).
+        L.err_obj = final_err;
         return error.RuntimeError;
     }
 }
@@ -830,6 +835,9 @@ const PF_VATAB: u8 = 2; // function has a vararg table
         if (lua_checkstack(L, @intCast(extra)) == 0) {
             return error.StackOverflow;
         }
+    }
+    if (func_idx >= 2) {
+        // nothing
     }
     switch (cl.*) {
         .c => |cc| {
@@ -3483,7 +3491,7 @@ pub fn lua_pcallk(L: *lua_State, nargs: i32, nresults: i32, errfunc: i32, ctx: l
 
     if (err_occurred) {
         // Save the error object (captured in L.err_obj during luaG_errormsg).
-        const err_obj = L.err_obj;
+        var err_obj = L.err_obj;
 
         // Clean up stale CallInfo frames (overflow frames from Lua recursion).
         var curr = L.ci;
@@ -3515,7 +3523,13 @@ pub fn lua_pcallk(L: *lua_State, nargs: i32, nresults: i32, errfunc: i32, ctx: l
         L.stack[L.top] = err_obj;
         L.top += 1;
 
-        closeupvals(L, func_idx, err_obj) catch {};
+        closeupvals(L, func_idx, err_obj) catch {
+            // A __close metamethod raised while unwinding; its error object
+            // (left on the stack top by closeupvals) becomes the new error.
+            if (L.top > 0) {
+                err_obj = L.stack[L.top - 1];
+            }
+        };
 
         // Place the error object where the first result would go, so the
         // surrounding C pcall wrapper can prepend the status boolean.

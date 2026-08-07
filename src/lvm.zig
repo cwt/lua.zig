@@ -1444,6 +1444,8 @@ pub fn run(L: *lua.lua_State, active_ci: *lua.CallInfo) anyerror!void {
             },
             .CALL => {
                 const ra_idx = ci.base + @as(usize, @intCast(GETARG_A(instruction)));
+                if (GETARG_C(instruction) == 0) {
+                }
                 const b = GETARG_B(instruction);
                 const nresults = GETARG_C(instruction) - 1;
                 if (b != 0) {
