@@ -670,10 +670,14 @@ pub fn run(L: *lua.lua_State, active_ci: *lua.CallInfo) anyerror!void {
     var cl = L.stack[ci.func].function.?.lua;
     var proto = cl.p;
     var code = proto.code;
-
+    // Hoist the global state out of the per-instruction path (the reference's
+    // luaV_execute keeps GC state in locals). The hook mask is re-read each
+    // instruction: a nested call (e.g. debug.sethook) can change it, and a
+    // hoisted copy would go stale across frame boundaries.
+    const g = L.l_G orelse return error.NoGlobalState;
 
     while (ci.savedpc < code.len) {
-        if (L.l_G.?.gc_running and L.l_G.?.gc_count > L.l_G.?.gc_threshold) {
+        if (g.gc_running and g.gc_count > g.gc_threshold) {
             const old_top = L.top;
             L.top = ci.top;
             try lua.luaC_collectgarbage(L);
@@ -682,10 +686,11 @@ pub fn run(L: *lua.lua_State, active_ci: *lua.CallInfo) anyerror!void {
         const instruction: Instruction = code[ci.savedpc];
         const op = GET_OPCODE(instruction);
         ci.savedpc += 1;
+        // The hook check must run after `savedpc` advances: luaG_traceexec
+        // reads the current pc as savedpc-1.
         if (L.hookmask != 0) {
             lua.luaG_traceexec(L);
         }
-
         switch (op) {
             .MOVE => {
                 const a = GETARG_A(instruction);

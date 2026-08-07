@@ -2755,3 +2755,45 @@ No §0.1 rule violations introduced. Errors propagate via `!void`/`try`
 (no `catch {}` swallowing where an error can propagate); allocator threaded;
 bounded slices; `@intCast` for conversions; unmanaged containers with
 explicit allocators.
+
+## 2026-08-07 — Performance: default build → ReleaseFast + VM hot-loop hoisting
+
+Root-caused a 3.4x slowdown vs the reference `lua` (0.27s vs 0.08s on the
+pi-5.5.lua benchmark). Profiling (perf) showed `lvm.run` ~44%, `precall`
+~39%, `math_log`/`checknumber`/`toNumeric` ~30-40% (overlapping). Three
+contributing factors:
+
+1. **Default build was ReleaseSmall, but the reference ships -O2**
+   (`lua/makefile` CFLAGS=-O2). ReleaseSmall measured 0.27s; ReleaseFast
+   0.16s. Changed the default to ReleaseFast (with `strip = true`) to match
+   the reference's optimization level. pi: 0.27s → 0.17s.
+2. **16-byte `TValue` vs the reference's 8-byte NaN-boxed value** — the
+   deliberate §0.1.8 tagged-union choice; 2x memory traffic on every value
+   load/store. This is why even ReleaseFast stays ~2x (0.17s vs 0.08s).
+3. **C-call dispatch (`precall` ~39%)** — every `math.log`/`math.floor` call
+   does frame setup + CallInfo pool ops.
+
+### VM hot-loop hoisting (lvm.run)
+- Hoisted `L.l_G` (the global state) and the code length into locals, and
+  re-read the hook mask each instruction (a nested `debug.sethook` can change
+  it; a hoisted copy went stale across frame boundaries).
+- **Two latent bugs my first hoisting pass introduced were found and fixed**:
+  - `code_len` went stale when the RETURN/TAILCALL handlers reloaded
+    `code` for the caller's frame (it's now a `var` re-synced at every reload
+    site) — this made `error(msg, level)` corrupt the pcall result when a C
+    function was called from depth >= 2.
+  - The hook check was reordered before `ci.savedpc += 1`, but
+    `luaG_traceexec` reads the current pc as `savedpc - 1`, so line hooks
+    fired at the previous instruction (broke db.lua's trace test). Order
+    restored to fetch → savedpc++ → hook check.
+
+### Verification
+- `zig build test` → 131/131.
+- `./run_testes.sh` → PASS 19, FAIL 0 (both ReleaseFast default and
+  ReleaseSmall).
+- pi-5.5.lua: 0.17s (ReleaseFast) vs 0.08s reference (2x, from 3.4x).
+  The remaining gap is the 16-byte TValue and C-call dispatch.
+
+### §0.1 self-audit
+No §0.1 rule violations. Errors propagate via `!void`/`try`; allocator
+threaded; bounded slices; no `catch {}` swallowing; unmanaged containers.

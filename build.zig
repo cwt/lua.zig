@@ -2,16 +2,21 @@ const std = @import("std");
 
 pub fn build(b: *std.Build) void {
     const target = b.standardTargetOptions(.{});
-    // Default to ReleaseSmall (the Lua philosophy: smallest binary). Override
-    // with `-Dmode=Debug` (e.g. for readable stack traces while developing) or
-    // `-Dmode=ReleaseSafe`/`ReleaseFast`. A Debug build is far too slow for the
-    // upstream `lua/testes` suite (a 1M-deep recursion takes ~5s in Debug vs
-    // ~0.08s in an optimized build), which is what times out `constructs.lua`.
+    // Default to ReleaseFast, matching the reference Lua's `-O2` production
+    // build (`lua/makefile`: CFLAGS=-O2). ReleaseSmall (Lua's "smallest
+    // binary" idea) was measurably slower than the reference; ReleaseFast
+    // gives the fairest comparison (~2x, dominated by the 16-byte tagged-union
+    // TValue vs the reference's 8-byte NaN-boxed values). Override with
+    // `-Dmode=Debug` (e.g. for readable stack traces while developing) or
+    // `-Dmode=ReleaseSmall`/`ReleaseSafe`. A Debug build is far too slow for
+    // the upstream `lua/testes` suite (a 1M-deep recursion takes ~5s in Debug
+    // vs ~0.08s in an optimized build), which is what times out
+    // `constructs.lua`.
     const optimize = b.option(
         std.builtin.OptimizeMode,
         "mode",
-        "Optimization mode (default: ReleaseSmall)",
-    ) orelse .ReleaseSmall;
+        "Optimization mode (default: ReleaseFast)",
+    ) orelse .ReleaseFast;
 
     // Memory-safety build options (mirror talyn/build.zig):
     //  - asan: build with the C sanitizer (sanitize_c = .full, i.e. UBSan),
@@ -63,6 +68,7 @@ pub fn build(b: *std.Build) void {
         .root_module = root_module,
     });
     exe.lto = if (use_lto) .thin else .none;
+    exe.root_module.strip = true;
 
     b.installArtifact(exe);
 
@@ -71,6 +77,7 @@ pub fn build(b: *std.Build) void {
         .root_module = root_module,
     });
     lib.lto = if (use_lto) .thin else .none;
+    lib.root_module.strip = true;
 
     b.installArtifact(lib);
 
