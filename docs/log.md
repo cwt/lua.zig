@@ -2585,3 +2585,72 @@ No §0.1 rule violations introduced. Allocator is threaded (no `page_allocator`)
 errors propagate via `!void`/`try`; numeric conversions use `@intCast`/`@bitCast`
 only for byte reinterpretation; no C strings/`@ptrCast`; unmanaged containers;
 `@intCast` used for signed/unsigned conversion (1-arg, Zig 0.16.0-correct).
+
+## 2026-07-19 — Phase H.11 COMPLETE: full upstream test suite passes (PASS 19, FAIL 0)
+
+The entire `lua/testes/*.lua` conformance suite now passes. `locals.lua`
+(1228 lines — to-be-closed variables, coroutines, __close errors) was the final
+file; it failed at line 1014 when we started this session and passes fully now.
+
+### The last blocker: `CIST_YPCALL`/`precover` error routing
+The failing tests all shared one shape: a `__close` metamethod inside a
+coroutine's `pcall` **yields**, then raises an error on resume; the resumed
+frame's error must be routed back through the enclosing protected call, which
+must close the *remaining* to-be-closed variables with that error. The reference
+implements this with `CIST_YPCALL` + `finishpcallk` + `precover` (find the
+protected-call frame, re-run `unroll` down to it). Our `lua_pcallk` runs as a
+Zig function rather than a persistent C frame, so there was no recover-point to
+route to.
+
+Design decision (user-confirmed): keep the Zig error-union model, implement the
+continuation machinery as **explicit, first-class state on `CallInfo`** rather
+than transliterating the C `setjmp`/continuation re-entry.
+
+### What changed (src/lua.zig)
+- **`CallInfo.ypcall: bool`** (CIST_YPCALL): marks a protected-call frame; set in
+  `lua_pcallk` when a yieldable continuation is installed, cleared when the pcall
+  completes (kept set through a yielding recovery).
+- **`CallInfo.pcall_func: usize`**: the called function's stack index (the
+  reference's `ci->u2.funcidx`), used to close remaining TBC vars with the error.
+- **`CallInfo.recovering: bool` + `recover_err: TValue`**: saved state when an
+  error recovery is interrupted by a yielding `__close`.
+- **`fn precover(L) !bool`**: on a resumed frame's error, finds the nearest
+  `ypcall` frame, unwinds the frames above it, closes the remaining TBC
+  variables with the error (a close may raise → error replaced, or yield →
+  `error.Yield` with the recovery saved), and completes the pcall via its
+  continuation. Returns `false` when no recoverable frame exists.
+- **`fn completePcallRecovery(L, ci) !void`**: finishes an interrupted recovery on
+  resume — closes any remaining TBC vars with the saved error (placing the error
+  at `L.top-1` so `closeupvals` passes it onward), clears `ypcall`/`recovering`,
+  runs the pcall continuation (`finishpcall`), and pops the pcall frame. Keeps
+  `ypcall` set while a close yields so `precover` can find the frame on resume.
+- **`closeupvals` error semantics fixed**: it now returns `error.RuntimeError`
+  only when a `__close` *actually raised* a new error (`close_raised`), not merely
+  because an error value was passed (`has_err`). Previously, calling it with an
+  error object but an empty tbclist (or closes that ran cleanly) spuriously
+  returned an error and could clobber the caller's error object.
+- **`lua_closethread` error handling**: closes the thread's TBC variables and, if
+  a `__close` raised, copies the *new* error object to the caller's stack (the
+  reference's `setobjs2s(from, from->top, L->top-1)`); otherwise returns the
+  original status without touching the caller's stack.
+- **`unroll`/`do_resume`**: resumed-frame errors go through `precover`
+  (`error.Yield` from a recovery close is propagated, not swallowed); C frames
+  whose `recovering` flag is set run `completePcallRecovery` instead of the plain
+  continuation.
+
+### Verification
+- `locals.lua` passes: `to-be-closed variables in coroutines` (last section) OK.
+- `zig build test` → **128/128 pass, 0 leaks**.
+- `./run_testes.sh` → **PASS 19, FAIL 0, CRASH 0, TIMEOUT 0, CHECK 0**.
+- Behavioral spot-checks vs the reference binary (`lua/lua`):
+  `/tmp/tbc_co5.lua` (error in `__close` after yield: `1:x 2:y 3:z 8:false 21`),
+  `/tmp/tbc_co6.lua` (error in function body + yielding closes: x/y/z then
+  `false 30`), `/tmp/tbc_wrap.lua` (close raises `@YYY`, replaces coroutine error
+  `200`), `/tmp/tbc_wrap2.lua` (clean close leaves error `23` intact) — all match.
+
+### §0.1 self-audit
+No §0.1 rule violations introduced. Allocator is threaded (no `page_allocator`);
+errors propagate via `!void`/`try` (`catch unreachable` never used on
+allocation); `unreachable` only for provably-impossible states; numeric
+conversions use `@intCast`/`@intFromBool`; no C strings, varargs, or
+`@ptrCast`; unmanaged containers with explicit allocators.

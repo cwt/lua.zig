@@ -547,6 +547,7 @@ pub fn closeupvals(L: *lua_State, limit: usize, err_val: ?TValue) !void {
     }
 
     var has_err = (err_val != null);
+    var close_raised = false;
     var needs_err_push = (err_val != null);
     var err_idx: usize = 0;
     if (needs_err_push) {
@@ -577,6 +578,7 @@ pub fn closeupvals(L: *lua_State, limit: usize, err_val: ?TValue) !void {
                     needs_err_push = true;
                 }
                 has_err = true;
+                close_raised = true;
             } else {
                 L.top = old_top;
             }
@@ -584,7 +586,7 @@ pub fn closeupvals(L: *lua_State, limit: usize, err_val: ?TValue) !void {
             break;
         }
     }
-    if (has_err) {
+    if (close_raised) {
         const final_err = L.stack[err_idx];
         L.top = err_idx + 1;
         L.stack[err_idx] = final_err;
@@ -996,6 +998,20 @@ pub const CallInfo = struct {
     // Mirrors C reference ci->u2.nres / CIST_CLSRET.
     nres_saved: i32 = 0,
     clsret: bool = false,
+    /// Set while running a __gc finalizer, mirroring the reference's CIST_FIN.
+    /// Also marks a protected call (CIST_YPCALL): when a coroutine resumes and
+    /// the resumed frame errors, precover unwinds to the nearest frame with
+    /// this flag and runs its error recovery.
+    ypcall: bool = false,
+    /// For a protected call frame (ypcall): the stack index of the called
+    /// function, used to close remaining to-be-closed variables with the error
+    /// (mirrors the reference's ci->u2.funcidx in finishpcallk).
+    pcall_func: usize = 0,
+    /// Set while a protected call's error recovery is interrupted by a
+    /// yielding __close metamethod; recover_err holds the pending error. On
+    /// resume, the recovery completes with this error.
+    recovering: bool = false,
+    recover_err: TValue = .{ .nil = {} },
     is_lua: bool = false,
     is_hooked: bool = false,
     /// Set while running a __gc finalizer, mirroring the reference's CIST_FIN.
@@ -2195,9 +2211,8 @@ pub fn lua_newthread(L: *lua_State) !*lua_State {
 }
 
 pub fn lua_closethread(L: *lua_State, from: ?*lua_State) i32 {
-    _ = from;
     const old_status = L.status;
-    const err_val: ?TValue = if (old_status != 0 and old_status != LUA_YIELD and L.top > 0)
+    var err_val: ?TValue = if (old_status != 0 and old_status != LUA_YIELD and L.top > 0)
         L.stack[L.top - 1]
     else
         null;
@@ -2206,8 +2221,36 @@ pub fn lua_closethread(L: *lua_State, from: ?*lua_State) i32 {
 
     // Close all upvalues and TBC variables on the thread stack.
     // Index 1 corresponds to stack[1], since stack[0] is the thread function.
+    var close_err = false;
+    closeupvals(L, 1, err_val) catch {
+        // A __close metamethod raised while closing; its error replaces the
+        // thread's error (mirrors luaE_resetthread -> luaF_close).
+        close_err = true;
+        if (L.err_obj != .nil) {
+            err_val = L.err_obj;
+        } else if (L.top > 0) {
+            err_val = L.stack[L.top - 1];
+        }
+    };
 
-    closeupvals(L, 1, err_val) catch {};
+    if (close_err) {
+        if (L.top > 1) {
+            L.stack[1] = err_val.?;
+            L.top = 2;
+        } else {
+            L.top = 1;
+        }
+        L.status = LUA_ERRRUN;
+        // Copy the error object to the caller's stack (the reference does this
+        // in lua_closethread: setobjs2s(from, from->top, L->top-1)).
+        if (from) |f| {
+            if (f.top < f.stack.len) {
+                f.stack[f.top] = err_val.?;
+                f.top += 1;
+            }
+        }
+        return LUA_ERRRUN;
+    }
 
     if (old_status != 0 and old_status != LUA_YIELD) {
         if (L.top > 1) {
@@ -3381,10 +3424,21 @@ pub fn lua_call(L: *lua_State, nargs: i32, nresults: i32) !void {
 
 pub fn lua_pcallk(L: *lua_State, nargs: i32, nresults: i32, errfunc: i32, ctx: lua_KContext, k: ?lua_KFunction) anyerror!i32 {
     const yieldable_call = (k != null and lua_isyieldable(L) != 0);
+    const old_ci = L.ci;
     if (yieldable_call) {
-        if (L.ci) |ci| {
+        if (old_ci) |ci| {
             ci.k = k;
             ci.ctx = ctx;
+        }
+    }
+    const func_idx = L.top - @as(usize, @intCast(nargs)) - 1;
+    if (yieldable_call) {
+        // Mark the caller's frame as a protected call so a coroutine resume
+        // that errors in this call's callee can route the error back here
+        // (mirrors the reference's CIST_YPCALL).
+        if (old_ci) |ci| {
+            ci.ypcall = true;
+            ci.pcall_func = func_idx;
         }
     }
     if (!yieldable_call) {
@@ -3396,9 +3450,6 @@ pub fn lua_pcallk(L: *lua_State, nargs: i32, nresults: i32, errfunc: i32, ctx: l
     defer {
         if (!yieldable_call) L.noyield -= 1;
     }
-    const old_ci = L.ci;
-
-    const func_idx = L.top - @as(usize, @intCast(nargs)) - 1;
 
     // Resolve the error-function index to an *absolute* stack index up front.
     // At error time L.ci is no longer the caller's frame, so resolving the
@@ -3523,10 +3574,22 @@ pub fn lua_pcallk(L: *lua_State, nargs: i32, nresults: i32, errfunc: i32, ctx: l
         L.stack[L.top] = err_obj;
         L.top += 1;
 
-        closeupvals(L, func_idx, err_obj) catch {
+        closeupvals(L, func_idx, err_obj) catch |ce| {
+            if (ce == error.Yield) {
+                // A __close metamethod yielded during the error unwind: save
+                // the recovery state and let the coroutine yield;
+                // completePcallRecovery finishes the pcall on resume.
+                if (old_ci) |oci| {
+                    oci.recovering = true;
+                    oci.recover_err = err_obj;
+                }
+                return error.Yield;
+            }
             // A __close metamethod raised while unwinding; its error object
             // (left on the stack top by closeupvals) becomes the new error.
-            if (L.top > 0) {
+            if (L.err_obj != .nil) {
+                err_obj = L.err_obj;
+            } else if (L.top > 0) {
                 err_obj = L.stack[L.top - 1];
             }
         };
@@ -3539,11 +3602,13 @@ pub fn lua_pcallk(L: *lua_State, nargs: i32, nresults: i32, errfunc: i32, ctx: l
         // shrink it back so subsequent calls don't inherit the overflow
         // headroom as their working limit (mirrors luaD_shrinkstack).
         shrinkStack(L);
+        if (old_ci) |ci| ci.ypcall = false;
         return LUA_ERRRUN;
     }
 
     L.err_name = null;
     L.err_namewhat = null;
+    if (old_ci) |ci| ci.ypcall = false;
     return LUA_OK;
 }
 
@@ -3986,20 +4051,137 @@ fn resume_error(_: *lua_State, _: []const u8, _: i32) i32 {
     return LUA_ERRRUN;
 }
 
+/// Complete an interrupted protected-call error recovery: close any remaining
+/// to-be-closed variables with the saved error and finish the pcall via its
+/// continuation. The caller (unroll) sets L.ci to the pcall's caller.
+fn completePcallRecovery(L: *lua_State, ci: *CallInfo) !void {
+    var err_obj = ci.recover_err;
+    const pcall_func = ci.pcall_func;
+    // The error must be at L.top-1 for closeupvals to pass it to each
+    // remaining __close (it reads current_err from there).
+    if (L.top < L.stack.len) {
+        L.stack[L.top] = err_obj;
+        L.top += 1;
+    }
+    // Close any remaining to-be-closed variables (a resumed __close may
+    // itself raise, replacing the error, or yield, interrupting the recovery).
+    closeupvals(L, pcall_func, err_obj) catch |ce| {
+        if (ce == error.Yield) {
+            ci.recovering = true;
+            ci.recover_err = err_obj;
+            return error.Yield;
+        }
+        if (L.err_obj != .nil) {
+            err_obj = L.err_obj;
+        } else if (L.top > 0) {
+            err_obj = L.stack[L.top - 1];
+        }
+    };
+    ci.ypcall = false;
+    ci.recovering = false;
+    if (pcall_func < L.stack.len) {
+        L.stack[pcall_func] = err_obj;
+    }
+    L.top = pcall_func + 1;
+    if (ci.k) |kf| {
+        const nres = try kf(L, LUA_ERRRUN, ci.ctx);
+        const u_nres = @as(usize, @intCast(nres));
+        try poscall(L, ci, L.top - u_nres, u_nres);
+    }
+    const prev = ci.previous;
+    L.ci = prev;
+    if (prev) |p| {
+        p.next = null;
+    }
+    freeCallInfo(L, ci);
+}
+
+/// Route an error raised by a resumed coroutine frame back to the nearest
+/// protected call (the CIST_YPCALL equivalent): unwind the frames above it,
+/// close its remaining to-be-closed variables with the error (a __close may
+/// raise or yield), and complete the pcall via its continuation.
+/// Returns true if the error was handled (the coroutine may continue), false
+/// if there is no recoverable protected call, or error.Yield if a __close
+/// yielded during the recovery (the recovery resumes later).
+fn precover(L: *lua_State) !bool {
+    var opt: ?*CallInfo = L.ci;
+    var target: ?*CallInfo = null;
+    while (opt) |c| : (opt = c.previous) {
+        if (c.ypcall) {
+            target = c;
+            break;
+        }
+    }
+    const target_ci = target orelse return false;
+
+    // Unwind the frames above the protected call.
+    var curr = L.ci;
+    while (curr) |c| {
+        if (c == target_ci) break;
+        const prev = c.previous;
+        if (c != &L.base_ci) {
+            L.allocator.destroy(c);
+        }
+        curr = prev;
+    }
+    L.ci = target_ci;
+    if (target_ci.previous) |prev| {
+        prev.next = null;
+    }
+
+    // The error object from the erroring frame is on the stack top. Move it
+    // past any remaining TBC variables, then close them.
+    const pcall_func = target_ci.pcall_func;
+    var err_obj = if (L.top > 0) L.stack[L.top - 1] else TValue{ .nil = {} };
+    closeupvals(L, pcall_func, err_obj) catch |ce| {
+        if (ce == error.Yield) {
+            // A __close metamethod yielded while closing with the error: save
+            // the pending error and let the coroutine yield; on resume the
+            // recovery completes (completePcallRecovery).
+            target_ci.recovering = true;
+            target_ci.recover_err = err_obj;
+            return error.Yield;
+        }
+        if (L.err_obj != .nil) {
+            err_obj = L.err_obj;
+        } else if (L.top > 0) {
+            err_obj = L.stack[L.top - 1];
+        }
+    };
+    target_ci.recover_err = err_obj;
+    try completePcallRecovery(L, target_ci);
+    return true;
+}
+
 fn unroll(L: *lua_State) !void {
     while (L.ci) |ci| {
         if (ci == &L.base_ci) break;
         const val = L.stack[ci.func];
         if (val == .function and val.function.?.* == .lua) {
-            try lvm.run(L, ci);
+            lvm.run(L, ci) catch |e| {
+                if (e == error.Yield) return e;
+                const handled = precover(L) catch |pe| {
+                    if (pe == error.Yield) return pe;
+                    return e;
+                };
+                if (!handled) return e;
+                // Handled: the protected call completed; continue the loop
+                // with the (unwound) call chain.
+            };
         } else if (val == .function and val.function.?.* == .c) {
             if (ci.k) |kf| {
-                const prev = ci.previous;
-                const nres = try kf(L, LUA_YIELD, ci.ctx);
-                const u_nres = @as(usize, @intCast(nres));
-                try poscall(L, ci, L.top - u_nres, u_nres);
-                L.ci = prev;
-                freeCallInfo(L, ci);
+                if (ci.recovering) {
+                    // Finish an error recovery that was interrupted by a
+                    // yielding __close metamethod.
+                    try completePcallRecovery(L, ci);
+                } else {
+                    const prev = ci.previous;
+                    const nres = try kf(L, LUA_YIELD, ci.ctx);
+                    const u_nres = @as(usize, @intCast(nres));
+                    try poscall(L, ci, L.top - u_nres, u_nres);
+                    L.ci = prev;
+                    freeCallInfo(L, ci);
+                }
             } else {
                 const prev = ci.previous;
                 try poscall(L, ci, L.top, 0);
@@ -4034,7 +4216,14 @@ fn do_resume(L: *lua_State, narg: i32) !void {
                 const val = L.stack[ci.func];
                 if (val == .function and val.function.?.* == .lua) {
                     L.ci = ci;
-                    try lvm.run(L, ci);
+                    lvm.run(L, ci) catch |e| {
+                        if (e == error.Yield) return e;
+                        const handled = precover(L) catch |pe| {
+                            if (pe == error.Yield) return pe;
+                            return e;
+                        };
+                        if (!handled) return e;
+                    };
                 } else {
                     const prev = ci.previous;
                     try poscall(L, ci, firstArg, n);
