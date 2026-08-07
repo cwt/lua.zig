@@ -4151,15 +4151,12 @@ fn getGCObject(g: *global_State, ptr: anytype) ?*VMGCObject {
         return null;
     }
     if (T == *lua_TString) {
-        if (ptr.gc) |gc| return gc;
-        var curr = g.allgc;
-        while (curr) |obj| : (curr = obj.next) {
-            if (obj.val == .string and obj.val.string == ptr) {
-                ptr.gc = obj;
-                return obj;
-            }
-        }
-        return null;
+        // Short strings are interned in `strt` and never on allgc, so they
+        // have no VMGCObject/back-pointer; long/external strings are always
+        // GC-registered (registerGC sets `ts.gc`). A null `gc` therefore
+        // means a short string: do NOT linear-scan allgc (that made marking
+        // O(n^2) on workloads with many distinct interned strings).
+        return ptr.gc;
     }
     if (T == *UpVal) {
         var curr = g.allgc;
@@ -4506,7 +4503,11 @@ pub fn luaC_collectgarbage(L: *lua_State) !void {
     // Root 3c: intentionally omitted. The string cache is a weak reference
     // and is cleared of dead entries via luaS_clearcache before sweeping.
 
-    // Root 4: The stack of all active states and call frames.
+    // Root 4: The stack of all active states and call frames, plus the open
+    // upvalues of the current thread. (The reference's traverseThread marks
+    // open upvalues for every thread; ours were only marked for OTHER threads
+    // in Root 4b, so a GC running on the current thread could collect an open
+    // UpVal still linked in L.openupval -> use-after-free in closeupvals.)
     var opt_ci: ?*CallInfo = L.ci;
     var next_ci_func: ?usize = null;
     while (opt_ci) |ci| {
@@ -4518,6 +4519,13 @@ pub fn luaC_collectgarbage(L: *lua_State) !void {
         }
         next_ci_func = ci.func;
         opt_ci = ci.previous;
+    }
+    var curr_uv = L.openupval;
+    while (curr_uv) |uv| {
+        if (getGCObject(g, uv)) |gc| {
+            try markObject(L, gc, &gray_list);
+        }
+        curr_uv = uv.next;
     }
 
     // Root 4b: The stacks and open upvalues of all created threads, plus the

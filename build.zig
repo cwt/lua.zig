@@ -2,7 +2,16 @@ const std = @import("std");
 
 pub fn build(b: *std.Build) void {
     const target = b.standardTargetOptions(.{});
-    const optimize = b.standardOptimizeOption(.{});
+    // Default to ReleaseSmall (the Lua philosophy: smallest binary). Override
+    // with `-Dmode=Debug` (e.g. for readable stack traces while developing) or
+    // `-Dmode=ReleaseSafe`/`ReleaseFast`. A Debug build is far too slow for the
+    // upstream `lua/testes` suite (a 1M-deep recursion takes ~5s in Debug vs
+    // ~0.08s in an optimized build), which is what times out `constructs.lua`.
+    const optimize = b.option(
+        std.builtin.OptimizeMode,
+        "mode",
+        "Optimization mode (default: ReleaseSmall)",
+    ) orelse .ReleaseSmall;
 
     // Memory-safety build options (mirror talyn/build.zig):
     //  - asan: build with the C sanitizer (sanitize_c = .full, i.e. UBSan),
