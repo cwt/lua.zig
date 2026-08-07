@@ -530,6 +530,16 @@ fn lexerror(ls: *LexState, msg: []const u8, token: i32) LexError {
         const tok_text = if (tok.len > 0 and tok[tok.len - 1] == 0) tok[0 .. tok.len - 1] else tok;
         break :blk std.fmt.bufPrint(&ls.errmsg_buf, "{s} near '{s}'", .{ msg, tok_text });
     }
+    else if (token < FIRST_RESERVED) blk: {
+        // Single-byte symbols (token < FIRST_RESERVED): printable chars are
+        // quoted as 'x'; control characters are rendered as '<\NN>' (mirrors
+        // the reference's luaX_token2str).
+        if (token >= 0x20 and token < 0x7f) {
+            break :blk std.fmt.bufPrint(&ls.errmsg_buf, "{s} near '{c}'", .{ msg, @as(u8, @intCast(token)) });
+        } else {
+            break :blk std.fmt.bufPrint(&ls.errmsg_buf, "{s} near '<\\{d}>'", .{ msg, token });
+        }
+    }
     else
         std.fmt.bufPrint(&ls.errmsg_buf, "{s} near {s}", .{ msg, token2str(token) });
     ls.errmsg = s catch msg;

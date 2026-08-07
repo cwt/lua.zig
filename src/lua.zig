@@ -813,6 +813,10 @@ const PF_VATAB: u8 = 2; // function has a vararg table
     };
     if (needed > L.stack.len) {
         if (L.stack.len > llimits.LUAI_MAXSTACK) {
+            // The stack is already at ERRORSTACKSIZE: we are handling a stack
+            // error (inside its error handler). A further growth request here
+            // must report "error in error handling" (mirrors luaD_growstack's
+            // `size > MAXSTACK` branch -> luaD_errerr).
             try luaG_runerror(L, "error in error handling");
         }
         if (needed > llimits.ERRORSTACKSIZE) {
@@ -831,13 +835,6 @@ const PF_VATAB: u8 = 2; // function has a vararg table
         .c => |cc| {
             L.nCcalls += 1;
             defer L.nCcalls -= 1;
-            if (L.nCcalls == llimits.LUAI_MAXCCALLS) {
-                try luaG_runerror(L, "C stack overflow");
-            } else if (L.nCcalls >= llimits.LUAI_MAXCCALLS * 11 / 10) {
-                // We are already handling a stack overflow (the error handler
-                // itself keeps raising); report "error in error handling".
-                try luaG_runerror(L, "error in error handling");
-            }
             if (lua_checkstack(L, 20) == 0) return error.StackOverflow;
             const old_ci = L.ci;
             const new_ci = try allocCallInfo(L);
@@ -855,6 +852,18 @@ const PF_VATAB: u8 = 2; // function has a vararg table
                 prev.next = new_ci;
             }
             L.ci = new_ci;
+            // Check the C-call limit only after L.ci points at the new C frame
+            // (mirrors precallC): luaG_runerror then reports no source:line,
+            // so the message is exactly "C stack overflow".
+            if (L.nCcalls == llimits.LUAI_MAXCCALLS) {
+                try luaG_runerror(L, "C stack overflow");
+            } else if (L.nCcalls >= llimits.LUAI_MAXCCALLS * 11 / 10) {
+                // We are already handling a stack overflow (the error handler
+                // itself keeps raising). Raise DIRECTLY without re-invoking the
+                // handler, mirroring luaD_errerr -> LUA_ERRERR; this is what
+                // terminates the error-handler recursion.
+                return luaD_errerr(L);
+            }
             if (L.hookmask & llimits.LUA_MASKCALL != 0) {
                 const narg = L.top - func_idx - 1;
                 luaD_hook(L, LUA_HOOKCALL, -1, 1, @intCast(narg));
@@ -1337,8 +1346,27 @@ fn reserveErrorStack(L: *lua_State) !void {
     try reallocStack(L, llimits.ERRORSTACKSIZE);
 }
 
+/// Raise "error in error handling" WITHOUT invoking the error handler
+/// (mirrors luaD_errerr -> LUA_ERRERR). Used to terminate the error-handler
+/// recursion when the C-call stack is exhausted: calling luaG_runerror here
+/// would re-invoke the handler and recurse forever.
+fn luaD_errerr(L: *lua_State) anyerror {
+    const ts = lstring.luaS_new(L, "error in error handling") catch null;
+    if (ts) |t| {
+        L.err_obj = TValue{ .string = t };
+        if (L.top < L.stack.len) {
+            L.stack[L.top] = L.err_obj;
+            L.top += 1;
+        }
+    }
+    return error.RuntimeError;
+}
+
 /// Shrink the stack back to a reasonable size after it was overgrown (e.g. by
-/// a stack overflow). Mirrors luaD_shrinkstack.
+/// a stack overflow). Mirrors luaD_shrinkstack: notably, it does NOT shrink
+/// when the stack is still being used at/over the working limit (inuse >
+/// MAXSTACK), because that is the error-handling recursion, which must keep
+/// the ERRORSTACKSIZE headroom for nested handler invocations.
 fn shrinkStack(L: *lua_State) void {
     var lim = L.top;
     var ci = L.ci;
@@ -1348,7 +1376,7 @@ fn shrinkStack(L: *lua_State) void {
     }
     const inuse = @max(lim, @as(usize, @intCast(LUA_MINSTACK))) + 1;
     const max = if (inuse > llimits.LUAI_MAXSTACK / 3) llimits.LUAI_MAXSTACK else inuse * 3;
-    if (L.stack.len > max) {
+    if (inuse <= llimits.LUAI_MAXSTACK and L.stack.len > max) {
         reallocStack(L, @max(max, @as(usize, @intCast(LUA_MINSTACK)))) catch {};
     }
 }
@@ -4894,42 +4922,50 @@ pub fn luaG_errormsg(L: *lua_State) anyerror {
             return error.StackError;
         }
         const errfunc = @as(usize, @intCast(L.errfunc - 1));
-        L.errfunc = 0;
         const err_obj = L.stack[L.top - 1];
         
         L.stack[L.top] = err_obj;
         L.stack[L.top - 1] = L.stack[errfunc];
         L.top += 1;
 
-        var handler_errored = false;
+        // Invoke the error handler. We deliberately do NOT clear L.errfunc
+        // (mirroring the reference): if the handler raises, luaG_errormsg is
+        // re-entered and invokes the handler again, so a bounded handler
+        // recursion (e.g. xpcall(error, err, n) where err eventually returns
+        // "END") resolves normally, while an unbounded one (xpcall(error,
+        // error)) terminates via the C-call limit in precall -> luaD_errerr,
+        // yielding "error in error handling".
+        var handler_returned = true;
         const err_ci = precall(L, L.top - 2, 1) catch |e| b: {
-            // The error handler itself raised (e.g. xpcall(error, error)):
-            // report "error in error handling", mirroring the reference's
-            // LUA_ERRERR path. This also covers stack errors in the handler.
-            if (e == error.StackError or e == error.StackOverflow or e == error.RuntimeError) {
-                handler_errored = true;
+            handler_returned = false;
+            if (e == error.StackError or e == error.StackOverflow) {
+                // The handler could not run at all (stack exhausted).
                 if (lstring.luaS_new(L, "error in error handling")) |ts| {
                     L.err_obj = TValue{ .string = ts };
                 } else |_| {}
             }
+            // For RuntimeError, L.err_obj already holds the propagated error
+            // (e.g. from a nested luaD_errerr), which we keep.
             break :b @as(?*CallInfo, null);
         };
         if (err_ci) |eci| {
             lvm.run(L, eci) catch |e| {
-                if (e == error.StackOverflow or e == error.StackError or e == error.RuntimeError) {
-                    handler_errored = true;
+                handler_returned = false;
+                if (e == error.StackOverflow or e == error.StackError) {
                     if (lstring.luaS_new(L, "error in error handling")) |ts| {
                         L.err_obj = TValue{ .string = ts };
                     } else |_| {}
                 }
             };
         }
-        if (handler_errored) {
+        if (handler_returned) {
+            // Handler succeeded: its result is at L.top-1.
             if (L.top > 0) {
-                L.stack[L.top - 1] = L.err_obj;
+                L.err_obj = L.stack[L.top - 1];
             }
         } else if (L.top > 0) {
-            L.err_obj = L.stack[L.top - 1];
+            // Handler raised: place the propagated error object on the stack.
+            L.stack[L.top - 1] = L.err_obj;
         }
     }
     // Record the name of the erroring function (and how it was called), so a

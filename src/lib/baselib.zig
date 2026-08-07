@@ -147,9 +147,15 @@ fn assert(L: *lua.lua_State) anyerror!i32 {
         _ = lua.lua_pushstring(L, "assertion failed!");
     }
     lua.lua_settop(L, 1);
-    // Raise via luaL_error so the caller's location is prepended.
-    const msg = lua.lua_tostring(L, -1) orelse "(error object is not a string)";
-    return lauxlib.luaL_error(L, msg);
+    // Mirror luaB_assert -> luaB_error: prepend the caller's location for
+    // string messages, then raise the object directly via lua_error so that a
+    // non-string message (e.g. a table) is preserved as the error object.
+    if (lua.lua_type(L, 1) == lua.LUA_TSTRING) {
+        lauxlib.luaL_where(L, 1);
+        lua.lua_pushvalue(L, 1);
+        lua.lua_concat(L, 2);
+    }
+    return lua.lua_error(L);
 }
 
 fn collectgarbage(L: *lua.lua_State) anyerror!i32 {
@@ -411,6 +417,14 @@ fn finishpcall_k(L: *lua.lua_State, status: i32, ctx: lua.lua_KContext) anyerror
 
 fn finishpcall(L: *lua.lua_State, status: i32, extra: usize) i32 {
     if (status != lua.LUA_OK and status != lua.LUA_YIELD) {
+        // The stack may be exhausted (error-handling recursion); ensure room
+        // before pushing the status boolean (mirrors the reference, which runs
+        // finishpcall via luaD_rawrunprotected with stack protection).
+        if (lua.lua_checkstack(L, 2) == 0) {
+            // Cannot grow: report a stack error object instead.
+            _ = lua.lua_pushstring(L, "error in error handling");
+            return 1;
+        }
         lua.lua_pushboolean(L, 0); // first result (false)
         lua.lua_insert(L, -2); // insert false prior to error message
         return 2; // return false, msg
