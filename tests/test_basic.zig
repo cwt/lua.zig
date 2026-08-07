@@ -4532,7 +4532,7 @@ test "H.7 convenience macros (insert, remove, newtable, register, pushglobaltabl
 test "H.9 missing constants and exports (lua_ident, LUA_COPYRIGHT, LUA_AUTHORS)" {
     // These are comptime consts — verify they exist and have expected content.
     try std.testing.expectEqualStrings(
-        "Lua 5.5  Copyright (C) 1994-2026 Lua.org, PUC-Rio",
+        "Lua 5.5.1  Copyright (C) 1994-2026 Lua.org, PUC-Rio",
         lua.LUA_COPYRIGHT,
     );
     try std.testing.expectEqualStrings(

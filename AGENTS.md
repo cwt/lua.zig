@@ -108,7 +108,7 @@ against §0.1 before reporting completion.
 ## 1. What this project is
 
 `luazig` is a from-scratch port of the Lua reference implementation (the C tree at
-`lua/`, which is **Lua 5.5.0** per `lua.h`) to **Zig 0.16.0**. The goal is a
+`lua/`, which is **Lua 5.5.1** per `lua.h` (tracking upstream tags; was 5.5.0) to **Zig 0.16.0**. The goal is a
 working Lua interpreter that follows the reference semantics while adopting the
 Zig 0.16.0 idioms described in the `zig-0.16.0-development` skill
 (`std.process.Init` juicy main, explicit `std.Io`, unmanaged containers, no
@@ -139,7 +139,7 @@ are available as a Git subrepo.
   `luaL_newstate`. All stack ops use direct slice indexing — no `@ptrCast` abuse.
 - **Correct instruction decode (§4.3).** `GETARG_*`/`SETARG_*` use proper bit
   shifts and masks. No `i.ptr[...]` on `u32`.
-- **Version constants match the C reference (§4.4).** Set to Lua 5.5.0.
+- **Version constants match the C reference (§4.4).** Set to Lua 5.5.1 (upstream `v5.5.1` tag, 2026-08-07).
 - **No violations of §0.1 rules 1–8** in the active codebase. `page_allocator`,
   `catch unreachable`, varargs, `@bitCast` for value conversion, and C strings
   have all been removed.
@@ -171,7 +171,7 @@ are available as a Git subrepo.
 - **Google OKF v0.1 knowledge bundle** lives in `docs/` and is kept current with
    every phase (architecture, log, glossary). See `docs/README.md`.
 - **`lua/` is a Git subrepo** tracked via `.hgsub` (`[git]git@github.com:lua/lua.git`),
-   providing the authoritative Lua 5.5.0 C reference for porting.
+   providing the authoritative Lua C reference for porting (currently `v5.5.1`).
 - **Repository initialized** with `.hgignore`, `.hgsub`, `LICENSE`, `AGENTS.md`.
 
 - **Phase E complete — Metamethods, Error handling, and GC.**

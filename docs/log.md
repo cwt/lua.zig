@@ -2654,3 +2654,59 @@ errors propagate via `!void`/`try` (`catch unreachable` never used on
 allocation); `unreachable` only for provably-impossible states; numeric
 conversions use `@intCast`/`@intFromBool`; no C strings, varargs, or
 `@ptrCast`; unmanaged containers with explicit allocators.
+
+## 2026-08-07 — Port upgraded to Lua 5.5.1 (upstream v5.5.1 tag)
+
+The reference subrepo `lua/` was updated to the `v5.5.1` tag (41 commits,
+48 files, +604/−265 vs 5.5.0) and rebuilt. Reviewed every change and ported
+what is semantically relevant; the rest was already present or a no-op for
+our mark-and-sweep / direct-slice design.
+
+### Ported (real behavior changes)
+- **Version**: `LUA_VERSION_RELEASE_N` 0→1; `LUA_COPYRIGHT` now builds from
+  `LUA_RELEASE` ("Lua 5.5.1  Copyright (C) 1994-2026 …").
+- **`lua_load` runs GC first** (reference 5.5.1 `luaC_checkGC`). Fixed
+  `luaC_condGC` to compare the live-object count against the count-based
+  threshold (it previously compared `totalbytes`, which fires constantly when
+  a few large live objects exceed the threshold — made `constructs.lua` time
+  out at 200k `load()` calls).
+- **`repeatstat` scope ordering** (7579fc9d): the scope block's `leaveblock`
+  now runs after the loop is patched, so `repeat`-`until` loop variables stay
+  in scope when the loop exits (new locals.lua test passes).
+- **Lazy vararg table** (5.5.1 compiler): `...v` no longer eagerly sets
+  `PF_VATAB` in `parlist`; the vararg table is chosen only when the parameter
+  is used as a value (`luaK_vapar2local`). Indexing (`v[k]`, `v.n`) compiles
+  to `OP_GETVARG` with hidden arguments — bytecode now matches the reference
+  (GETTABLE 2/GETVARG 2 vs GETTABLE 4/GETVARG 0 before).
+- **C-function cache** (pre-existing gap exposed by vararg.lua): the reference
+  pushes light function values for `lua_pushcfunction` (zero allocation); our
+  port allocated a closure every time. Added `global_State.cfunc_cache`
+  (keyed by function pointer, rooted in the registry) so `lua_pushcfunction`
+  is allocation-free after the first use. Fixes vararg.lua's
+  `collectgarbage"count"` stability assertion.
+
+### Reviewed and already covered / no-op
+- `luaV_finishset`/`luaH_finishset` (write barrier for `__newindex`, float→int
+  key): our raw `ltable.set` already handles the cases; barriers are a no-op
+  for mark-and-sweep.
+- `lstrlib` (rep empty, gsub `||`, packsize overflow), `lutf8lib` (decode
+  overflow), `lstrlib.gmatch`, `ltablib` (unpack aux_getn, string `__len`),
+  `ldebug` `OP_GETVARG`, `lbaselib` load mode NULL default: already ported.
+- `lgc` step overflow / finalizer CI checks, `lstate` `luaE_extendCI` err
+  param, `lundump` anchor table, `lparser` `luaD_anchorobj`, `lauxlib` box MT:
+  our design already handles these equivalently.
+
+### Verification
+- `zig build test` → **131/131 pass** (one expectation updated for the new
+  copyright banner).
+- `./run_testes.sh` → **PASS 19, FAIL 0** against the v5.5.1 test files,
+  including the new repeat-until scope test (locals.lua), tracegc module
+  require, and the vararg GC-count test.
+- Reference `lua/lua` rebuilt at v5.5.1 (`Lua 5.5.1`).
+
+### §0.1 self-audit
+No §0.1 rule violations introduced. Allocator threaded; errors via `!void`/
+`try`; bounded slices at the C ABI boundary; `@intCast`/`@constCast` for
+conversions; no C strings, varargs, or `@ptrCast` beyond the syscall
+boundary; unmanaged containers (`std.AutoHashMapUnmanaged`) with explicit
+allocators.

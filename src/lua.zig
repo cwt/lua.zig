@@ -134,18 +134,10 @@ pub const LUA_MASKCOUNT: u32 = llimits.LUA_MASKCOUNT;
 
 pub const LUA_VERSION_NUM: lua_Number = @as(f64, @floatFromInt(@as(usize, LUA_VERSION_MAJOR_N) * 100 + LUA_VERSION_MINOR_N));
 pub const LUA_N2SBUFFSZ: usize = 64;
-pub const LUA_COPYRIGHT = "Lua 5.5  Copyright (C) 1994-2026 Lua.org, PUC-Rio";
-pub const LUA_AUTHORS = "R. Ierusalimschy, L. H. de Figueiredo, W. Celes";
-pub const LUA_SIGNATURE = "\x1bLua";
-
-/// C API identification string (port of `lua_ident` from `lapi.c`).
-/// Provides version and author strings embedded at link time in the C
-/// reference; here a comptime `[]const u8` slice.
-pub const lua_ident: []const u8 = "$LuaVersion: " ++ LUA_COPYRIGHT ++ " $" ++ "$LuaAuthors: " ++ LUA_AUTHORS ++ " $";
 
 pub const LUA_VERSION_MAJOR_N: u8 = 5;
 pub const LUA_VERSION_MINOR_N: u8 = 5;
-pub const LUA_VERSION_RELEASE_N: u8 = 0;
+pub const LUA_VERSION_RELEASE_N: u8 = 1;
 
 pub const LUA_VERSION_MAJOR: []const u8 = std.fmt.comptimePrint("{d}", .{LUA_VERSION_MAJOR_N});
 pub const LUA_VERSION_MINOR: []const u8 = std.fmt.comptimePrint("{d}", .{LUA_VERSION_MINOR_N});
@@ -153,6 +145,14 @@ pub const LUA_VERSION_RELEASE: []const u8 = std.fmt.comptimePrint("{d}", .{LUA_V
 
 pub const LUA_VERSION: []const u8 = "Lua " ++ LUA_VERSION_MAJOR ++ "." ++ LUA_VERSION_MINOR;
 pub const LUA_RELEASE: []const u8 = LUA_VERSION ++ "." ++ LUA_VERSION_RELEASE;
+pub const LUA_COPYRIGHT = LUA_RELEASE ++ "  Copyright (C) 1994-2026 Lua.org, PUC-Rio";
+pub const LUA_AUTHORS = "R. Ierusalimschy, L. H. de Figueiredo, W. Celes";
+pub const LUA_SIGNATURE = "\x1bLua";
+
+/// C API identification string (port of `lua_ident` from `lapi.c`).
+/// Provides version and author strings embedded at link time in the C
+/// reference; here a comptime `[]const u8` slice.
+pub const lua_ident: []const u8 = "$LuaVersion: " ++ LUA_COPYRIGHT ++ " $" ++ "$LuaAuthors: " ++ LUA_AUTHORS ++ " $";
 
 pub const LUA_MULTRET: i32 = -1;
 
@@ -1075,6 +1075,12 @@ pub const global_State = struct {
     mainthread: ?*lua_State = null,
     thread_list: ?*lua_State = null,
     clibs: std.ArrayList(*std.DynLib),
+    /// Cache of C-function closures with no upvalues (keyed by the C function
+    /// pointer). The reference represents such functions as light values that
+    /// do not allocate; reusing one closure per function makes every
+    /// `lua_pushcfunction` allocation-free after the first use. The closures
+    /// are rooted in the registry so the GC never collects them.
+    cfunc_cache: std.AutoHashMapUnmanaged(lua_CFunction, *lua_Closure) = .empty,
     panic: ?lua_CFunction = null,
     gc_threshold: usize = 1000,
     gc_count: usize = 0,
@@ -1992,6 +1998,39 @@ pub fn lua_pushfstring(L: *lua_State, fmt: []const u8) ?[]const u8 {
 }
 
 pub fn lua_pushcclosure(L: *lua_State, cfunc: lua_CFunction, n: i32) void {
+    if (n == 0) {
+        // No upvalues: reuse the cached closure for this C function (the
+        // reference pushes a light function value here, which does not
+        // allocate either). Root the closure in the registry so it survives.
+        if (L.l_G) |g| {
+            if (g.cfunc_cache.get(cfunc)) |cached| {
+                L.stack[L.top] = TValue{ .function = cached };
+                L.top += 1;
+                return;
+            }
+        }
+        const cc = L.allocator.create(lua_CClosure) catch return;
+        cc.* = .{ .f = cfunc, .upvals = &.{} };
+        const cl = L.allocator.create(lua_Closure) catch {
+            L.allocator.destroy(cc);
+            return;
+        };
+        cl.* = lua_Closure{ .c = cc };
+        registerGC(L, cl) catch {
+            L.allocator.destroy(cc);
+            L.allocator.destroy(cl);
+            return;
+        };
+        // Root in the registry: registry[cfunc-as-lightuserdata] = closure.
+        if (L.l_G) |g| {
+            const reg = g.registry.table orelse return;
+            ltable.set(reg, TValue{ .lightud = @constCast(@ptrCast(cfunc)) }, TValue{ .function = cl }) catch {};
+            g.cfunc_cache.put(L.allocator, cfunc, cl) catch {};
+        }
+        L.stack[L.top] = TValue{ .function = cl };
+        L.top += 1;
+        return;
+    }
     const upvals = L.allocator.alloc(TValue, @intCast(n)) catch return;
     var i: usize = 0;
     while (i < @as(usize, @intCast(n))) : (i += 1) {
@@ -4687,7 +4726,10 @@ fn luaS_clearcache(L: *lua_State) void {
 
 pub inline fn luaC_condGC(L: *lua_State) void {
     const g = G(L);
-    if (g.gc_running and !g.gc_in_progress and g.totalbytes >= g.gc_threshold) {
+    // Compare the live-object count against the count-based threshold (the
+    // same condition the VM loop uses); comparing totalbytes here would fire
+    // constantly, since a few large live objects can exceed the threshold.
+    if (g.gc_running and !g.gc_in_progress and g.gc_count > g.gc_threshold) {
         luaC_collectgarbage(L) catch {};
     }
 }
@@ -5791,6 +5833,7 @@ pub fn lua_close(L: *lua_State) void {
             g.allocator.destroy(lib);
         }
         g.clibs.deinit(g.allocator);
+        g.cfunc_cache.deinit(g.allocator);
 
         L.allocator.destroy(g);
     }

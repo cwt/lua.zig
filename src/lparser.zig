@@ -935,8 +935,12 @@ fn parlist(ls: *llex.LexState) !void {
                     varargk = 1;
                     try llex.luaX_next(ls);
                     if (ls.t.token == llex.TK_NAME) {
+                        // Declare the named vararg parameter. The vararg table
+                        // (PF_VATAB) is chosen lazily (luaK_vapar2local /
+                        // needvatab) only when the parameter is used as a
+                        // value; indexing it (`v[k]`, `v.n`) uses OP_GETVARG
+                        // with hidden arguments, like the reference.
                         _ = try new_varkind(ls, try str_checkname(ls), RDKVAVAR);
-                        needvatab(f);
                     } else {
                         _ = try new_localvarliteral(ls, "(vararg table)");
                     }
@@ -1549,7 +1553,6 @@ fn repeatstat(ls: *llex.LexState, line: i32) !void {
     try statlist(ls);
     try check_match(ls, llex.TK_UNTIL, llex.TK_REPEAT, line);
     var condexit = try cond(ls);
-    try leaveblock(fs);
     if (bl2.upval != 0) {
         const exit = lcode.luaK_jump(fs);
         lcode.luaK_patchtohere(fs, condexit);
@@ -1558,6 +1561,7 @@ fn repeatstat(ls: *llex.LexState, line: i32) !void {
         lcode.luaK_patchtohere(fs, exit);
     }
     lcode.luaK_patchlist(fs, condexit, repeat_init);
+    try leaveblock(fs);
     try leaveblock(fs);
 }
 
