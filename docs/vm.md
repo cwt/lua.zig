@@ -1,7 +1,7 @@
 ---
 type: api_spec
 title: Virtual Machine Design
-description: Lua 5.5.0 instruction formats, opcode semantics, decode helpers, and the execution model in lvm.zig.
+description: Lua 5.5.x instruction formats, opcode semantics, decode helpers, and the execution model in lvm.zig.
 tags: [vm, opcodes, instructions, lvm]
 timestamp: 2026-07-10T00:00:00Z
 ---

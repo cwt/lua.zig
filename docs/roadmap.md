@@ -26,7 +26,7 @@ Work **top-down from the foundation**, validating each layer with tests before p
 - Single type model: one `lua_State`, one `lua_CFunction`, one `global_State`
 - Real stack: `stack: []TValue` slice, `lua_checkstack` with `gpa.realloc`
 - Correct instruction decode: proper bit shifts in GETARG/SETARG
-- Version constants: Lua 5.5.0
+- Version constants: Lua 5.5.1 (upstream `v5.5.1` tag, 2026-08-07)
 - juicy-main entry: `src/luazig.zig` with `std.process.Init`
 - Builds exe + lib + tests
 - 7 passing tests: type checks + stack round-trip

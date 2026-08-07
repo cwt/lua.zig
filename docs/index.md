@@ -1,6 +1,6 @@
 ---
 type: bundle_root
-title: luazig — A Zig 0.16.0 Port of Lua 5.5.0
+title: luazig — A Zig 0.16.0 Port of Lua 5.5.1
 description: Development knowledge base for porting the Lua reference implementation (C) to idiomatic Zig 0.16.0, following strict rules against transliteration.
 tags: [lua, zig, port, okf]
 timestamp: 2026-07-10T00:00:00Z
@@ -33,6 +33,7 @@ timestamp: 2026-07-10T00:00:00Z
 
 ### Project Management
 - [Roadmap](roadmap.md) — Phase-based development plan, dependencies between layers
+- [Bugs & Fixes](bugs.md) — Chronological lessons from debugging sessions (conformance fixes, root causes)
 - [Log](log.md) — Running modification log
 
 ## Quick Reference
@@ -47,10 +48,9 @@ timestamp: 2026-07-10T00:00:00Z
 | Auxlib | `src/lauxlib.zig` | `lua/lauxlib.c` + `lua/lauxlib.h` | ✅ All core helpers + Phase H.1/H.4 (`luaL_newtable`, `luaL_len`, `luaL_where`, `luaL_ref`/`luaL_unref`); Phase H.5 complete (`luaL_checkversion_`, `luaL_callmeta`, `luaL_alloc`, `luaL_loadfilex`/`luaL_loadbufferx`/`luaL_loadstring`, `luaL_makeseed`, `luaL_getsubtable`, `luaL_requiref`, `luaL_dofile`, buffer fns) |
 | Libs | `src/lualib.zig` + `src/lib/*` | `lua/lbaselib.c` etc. | ✅ `baselib`, `mathlib`, `bit32`, `utf8lib`, `stringlib`, `tablib`, `corolib` — **all 10**; oslib real in Phase H.2 (`os.date`/`os.execute`/`os.exit`/`os.setlocale`) |
 | Entry | `src/luazig.zig` | `lua/lua.c` | ✅ juicy-main |
-| Entry | `src/luazig.zig` | `lua/lua.c` | ✅ juicy-main |
 
 ## External References
-- C reference sources: `lua/` (Lua 5.5.0)
+- C reference sources: `lua/` (Lua 5.5.1, upstream `v5.5.1` tag)
 - Lua test suite: `lua/testes/`
 - Zig 0.16.0 skill: `zig-0.16.0-development` (skill)
 - OKF specification: built into this skill bundle
