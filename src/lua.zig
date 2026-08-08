@@ -1307,6 +1307,7 @@ pub fn lua_settop(L: *lua_State, idx: i32) void {
 
 pub fn lua_pushvalue(L: *lua_State, idx: i32) void {
     const src = idxPtr(L, idx) orelse return;
+    growStack(L, 1) catch return;
     L.stack[L.top] = src.*;
     L.top += 1;
 }
@@ -2084,6 +2085,7 @@ pub fn lua_pushcclosure(L: *lua_State, cfunc: lua_CFunction, n: i32) void {
             ltable.set(reg, TValue{ .lightud = @constCast(@ptrCast(cfunc)) }, TValue{ .function = cl }) catch {};
             g.cfunc_cache.put(L.allocator, cfunc, cl) catch {};
         }
+        growStack(L, 1) catch return;
         L.stack[L.top] = TValue{ .function = cl };
         L.top += 1;
         return;
@@ -2301,6 +2303,7 @@ pub fn lua_newthread(L: *lua_State) !*lua_State {
     L1.ci = &L1.base_ci;
     L1.twups = g.thread_list;
     g.thread_list = L1;
+    try growStack(L, 1);
     L.stack[L.top] = TValue{ .thread = L1 };
     L.top += 1;
     return L1;
@@ -3153,6 +3156,7 @@ pub fn lua_getfield(L: *lua_State, idx: i32, k: []const u8) !i32 {
     }
     const ts = try lstring.luaS_new(L, k);
     const key = TValue{ .string = ts };
+    growStack(L, 1) catch return LUA_TNIL;
     const res = L.top;
     L.stack[L.top] = .{ .nil = {} };
     L.top += 1;
@@ -3171,6 +3175,7 @@ pub fn lua_geti(L: *lua_State, idx: i32, n: lua_Integer) !i32 {
         return LUA_TNIL;
     }
     const key = TValue{ .integer = n };
+    growStack(L, 1) catch return LUA_TNIL;
     const res = L.top;
     L.stack[L.top] = .{ .nil = {} };
     L.top += 1;
@@ -4617,9 +4622,17 @@ fn traverseGrayObject(L: *lua_State, gray_list: *std.ArrayList(*VMGCObject), gc:
                 try markValue(L, gray_list, uv.value);
             } else {
                 const addr = @intFromPtr(uv.v);
-                const base = @intFromPtr(L.stack.ptr);
-                const top_addr = base + L.top * @sizeOf(TValue);
-                if (addr >= base and addr < top_addr) {
+                var is_on_stack = false;
+                var curr_th = G(L).thread_list;
+                while (curr_th) |th| : (curr_th = th.twups) {
+                    const base = @intFromPtr(th.stack.ptr);
+                    const top_addr = base + th.top * @sizeOf(TValue);
+                    if (addr >= base and addr < top_addr) {
+                        is_on_stack = true;
+                        break;
+                    }
+                }
+                if (is_on_stack) {
                     try markValue(L, gray_list, uv.v.*);
                 }
             }
@@ -4811,6 +4824,10 @@ pub fn luaC_collectgarbage(L: *lua_State) !void {
     while (curr) |gc| {
         gc.color = .white;
         curr = gc.next;
+    }
+    var strt_it = g.strt.iterator();
+    while (strt_it.next()) |entry| {
+        entry.value_ptr.*.marked = false;
     }
 
     // 3. Mark roots

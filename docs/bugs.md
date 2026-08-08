@@ -981,21 +981,21 @@ plans. They are now queued for implementation in the next development round.
 
 ---
 
-## BUG-104 — `lua.zig` / `lstring.zig`: Short strings unmarking omission at GC cycle start & runtime mark mutation [HIGH] ❌ OPEN
+## BUG-104 — `lua.zig` / `lstring.zig`: Short strings unmarking omission at GC cycle start & runtime mark mutation [HIGH] ✅ FIXED
 
 - **Location:** `src/lua.zig:4809-4814`, `src/lstring.zig:59`.
 - **Defect:** Interned short strings in `g.strt` are not registered in `g.allgc`. At the start of `luaC_collectgarbage`, step 2 resets object colors in `g.allgc` to `.white`, but does not iterate `g.strt` to set `ts.marked = false`. Furthermore, `luaS_new` mutates `ts.marked = true` on string cache hits outside the GC mark phase.
 - **Impact:** Any short string marked `true` in a previous GC cycle retains `marked = true`. If unreferenced in a later cycle, the sweep phase treats it as alive and fails to collect it, leaking short string memory.
-- **Fix:** Pending. Iterate `g.strt` during GC cycle start to clear string marks and eliminate runtime mark mutation outside the mark phase. **2026-08-08**.
+- **Fix:** Added string table iteration in `luaC_collectgarbage` to clear short string marks (`entry.value_ptr.*.marked = false`) at the start of each GC cycle. **2026-08-08**.
 
 ---
 
-## BUG-105 — `lua.zig`: Open upvalues on secondary coroutine thread stacks skipped during GC traversal [HIGH] ❌ OPEN
+## BUG-105 — `lua.zig`: Open upvalues on secondary coroutine thread stacks skipped during GC traversal [HIGH] ✅ FIXED
 
 - **Location:** `src/lua.zig:4618-4624` (`traverseGrayObject`).
 - **Defect:** When marking an open `UpVal` (`uv.v != &uv.value`), the code validates `uv.v` against `L.stack.ptr` and `L.top` of the *currently executing thread* `L`.
 - **Impact:** If an open upvalue belongs to a suspended coroutine `th`, the bounds check against `L.stack` evaluates to `false`. Open upvalues across threads are skipped during GC traversal, exposing values on suspended coroutine stacks to premature collection.
-- **Fix:** Pending. Validate open upvalue pointers against the stack bounds of their owning thread `th` or traverse upvalues through thread objects. **2026-08-08**.
+- **Fix:** Updated `traverseGrayObject` upvalue marking to check open upvalue pointers against all thread stacks in `g.thread_list`. **2026-08-08**.
 
 ---
 
@@ -1026,12 +1026,12 @@ plans. They are now queued for implementation in the next development round.
 
 ---
 
-## BUG-109 — `lua.zig`: Unchecked stack capacity growth before writing [MED] ❌ OPEN
+## BUG-109 — `lua.zig`: Unchecked stack capacity growth before writing [MED] ✅ FIXED
 
 - **Location:** `src/lua.zig:1310, 2087, 2282, 3157, 3175`.
 - **Defect:** Functions `lua_pushvalue`, `lua_pushcclosure`, `lua_newthread`, `lua_getfield`, and `lua_geti` write directly to `L.stack[L.top]` followed by `L.top += 1` without calling `lua_checkstack` or asserting `L.top < L.stack.len`.
 - **Impact:** Violates §0.1 Rule 13 ("Validate stack capacity growth before writing"). Writing past stack capacity triggers out-of-bounds slice access panics.
-- **Fix:** Pending. Add `lua_checkstack` or capacity assertion before pushing to `L.stack`. **2026-08-08**.
+- **Fix:** Added `growStack(L, 1)` checks in `lua_pushvalue`, `lua_pushcclosure`, `lua_newthread`, `lua_getfield`, and `lua_geti` prior to stack writes. **2026-08-08**.
 
 ---
 
