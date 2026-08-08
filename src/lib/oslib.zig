@@ -119,14 +119,13 @@ fn os_rename(L_: *L) !i32 {
     return 1;
 }
 
-var tmpname_counter: u64 = 0;
-
 fn os_tmpname(L_: *L) !i32 {
     var buf: [64]u8 = undefined;
-    const count = @atomicRmw(u64, &tmpname_counter, .Add, 1, .monotonic);
+    const seed = if (L_.l_G) |g| g.seed else 0;
+    const ptr_val = @intFromPtr(L_);
     var t: TimeT = 0;
     _ = time(&t);
-    const path = std.fmt.bufPrint(&buf, "/tmp/lua_{x}_{x}", .{ t, count }) catch "/tmp/lua_tmp";
+    const path = std.fmt.bufPrint(&buf, "/tmp/lua_{x}_{x}_{x}", .{ t, seed, ptr_val & 0xFFFF }) catch "/tmp/lua_tmp";
     _ = lua.lua_pushlstring(L_, path, path.len);
     return 1;
 }

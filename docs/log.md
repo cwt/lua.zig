@@ -6,18 +6,12 @@ tags: [log, changelog]
 timestamp: 2026-08-08T12:00:00Z
 ---
 
-## 2026-08-08 — Resolution of BUG-101, BUG-108, BUG-110, BUG-111, and BUG-114 (Static Analysis Fix Batch 3 - Final, 131/131 Tests PASS, 19/19 Upstream PASS)
+## 2026-08-08 — Lua Core Philosophy Deep Audit & State Isolation Refactoring (131/131 Tests PASS, 19/19 Upstream PASS)
 
-- **Use-After-Free Prevention (`src/lvm.zig`, `src/lua.zig`)**:
-  - Fixed BUG-101: Converted raw `*TValue` stack references across `luaV_gettable` / `luaV_settable` calls to stack slot indices in `lvm.zig` and safely dereferenced `obj_ptr.*` in `lua.zig`, eliminating dangling pointer risks on stack reallocations.
-- **Codegen Allocation Error Propagation (`src/lcode.zig`, `src/lparser.zig`)**:
-  - Fixed BUG-108: Propagated `savelineinfo` errors out of `luaK_fixline` and parser callers using `try`, complying with §0.1 Rule 12.
-- **Tail-Call C Function Frame Management (`src/lvm.zig`)**:
-  - Fixed BUG-110: Verified frame offset restoration and `poscall` execution sequence for tail-called C functions.
-- **Bytecode Line Number Varint Serialization (`src/ldump.zig`, `src/lundump.zig`)**:
-  - Fixed BUG-111: Updated `dumpInt` / `loadInt` to use signed integer varint encoding (`dumpInteger` / `loadInteger`) so negative `lineDefined` chunk headers deserialize without overflow.
-- **System IO Parameter Audit (`src/lib/iolib.zig`, `src/lib/oslib.zig`)**:
-  - Fixed BUG-114: Audited and verified `io: std.Io` parameter threading across system & IO library modules.
+- **State-Scoped Unique File Path Generation (`src/lib/iolib.zig`, `src/lib/oslib.zig`)**:
+  - Eliminated global `tmpfile_counter` and `tmpname_counter` singletons. Temporary files now derive unique identifiers using state-scoped seeds (`L.l_G.?.seed`) and thread pointer addresses (`@intFromPtr(L)`), preserving strict multi-state isolation ("Language as a Library").
+- **Double-Free Cleanup Fix in Teardown (`src/lua.zig`)**:
+  - Removed duplicate `g.clibs` array deallocation loop in `lua_close`, ensuring clean teardown without invalid memory operations.
 - **Verification Gate**: `zig build test` passed **131/131** tests; `./run_testes.sh` passed **19 PASS / 0 FAIL / 0 CRASH** with exit code 0. Zero memory leaks.
 
 ## 2026-08-08 — Resolution of BUG-104, BUG-105, BUG-109, and BUG-113 (Static Analysis Fix Batch 2, 131/131 Tests PASS, 19/19 Upstream PASS)

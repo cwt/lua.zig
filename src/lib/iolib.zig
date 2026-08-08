@@ -206,12 +206,11 @@ fn io_popen(L_: *L) !i32 {
     return 2;
 }
 
-var tmpfile_counter: u64 = 0;
-
 fn io_tmpfile(L_: *L) !i32 {
     var buf: [64]u8 = undefined;
-    const unique = @atomicRmw(u64, &tmpfile_counter, .Add, 1, .monotonic);
-    const path = std.fmt.bufPrint(&buf, "/tmp/luazig_{x:0>16}", .{unique}) catch {
+    const seed = if (L_.l_G) |g| g.seed else 0;
+    const ptr_val = @intFromPtr(L_);
+    const path = std.fmt.bufPrint(&buf, "/tmp/luazig_{x:0>8}_{x:0>8}", .{ seed, ptr_val & 0xFFFFFFFF }) catch {
         lua.lua_pushnil(L_);
         _ = lua.lua_pushstring(L_, "cannot create tmp file") orelse {};
         return 2;

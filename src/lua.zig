@@ -5930,20 +5930,13 @@ pub fn lua_close(L: *lua_State) void {
             curr_thread = next_thread;
         }
 
-        // BUG-107: Free all opened dynamic libraries in g.clibs
+        // Free all opened dynamic libraries in g.clibs
         for (g.clibs.items) |lib| {
             lib.close();
             g.allocator.destroy(lib);
         }
         g.clibs.deinit(g.allocator);
         g.thread_list = null;
-
-        // Free dynamically loaded libraries
-        for (g.clibs.items) |lib| {
-            lib.close();
-            g.allocator.destroy(lib);
-        }
-        g.clibs.deinit(g.allocator);
         g.cfunc_cache.deinit(g.allocator);
 
         L.allocator.destroy(g);
