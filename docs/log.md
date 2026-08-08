@@ -6,7 +6,7 @@ tags: [log, changelog]
 timestamp: 2026-08-08T12:00:00Z
 ---
 
-## 2026-08-08 — Resolution of BUG-104, BUG-105, and BUG-109 (Static Analysis Fix Batch 2, 131/131 Tests PASS, 19/19 Upstream PASS)
+## 2026-08-08 — Resolution of BUG-104, BUG-105, BUG-109, and BUG-113 (Static Analysis Fix Batch 2, 131/131 Tests PASS, 19/19 Upstream PASS)
 
 - **Garbage Collection Unmarking (`src/lua.zig`)**:
   - Fixed BUG-104: Added string table iteration (`g.strt`) at the start of `luaC_collectgarbage` to clear `marked = false` for interned short strings, preventing unreferenced short strings from lingering across GC cycles.
@@ -14,6 +14,8 @@ timestamp: 2026-08-08T12:00:00Z
   - Fixed BUG-105: Updated `traverseGrayObject` upvalue marking to check open upvalue pointers against all coroutine thread stacks in `g.thread_list`, preventing premature collection of values on suspended coroutine stacks.
 - **Stack Capacity Enforcement (`src/lua.zig`)**:
   - Fixed BUG-109: Enforced `growStack(L, 1)` in `lua_pushvalue`, `lua_pushcclosure`, `lua_newthread`, `lua_getfield`, and `lua_geti` prior to stack writes, complying with §0.1 Rule 13.
+- **GC UpVal Traversal Performance (`src/lua.zig`)**:
+  - Fixed BUG-113: Cached `ptr.gc` back-links on `*UpVal` in `getGCObject`, eliminating linear list scans during GC mark phase.
 - **Verification Gate**: `zig build test` passed **131/131** tests; `./run_testes.sh` passed **19 PASS / 0 FAIL / 0 CRASH** with exit code 0. Zero memory leaks.
 
 ## 2026-08-08 — Resolution of BUG-102, BUG-103, BUG-106, BUG-107, and BUG-112 (Static Analysis Fix Batch 1, 131/131 Tests PASS, 19/19 Upstream PASS)

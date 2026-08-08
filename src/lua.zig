@@ -4497,9 +4497,13 @@ fn getGCObject(g: *global_State, ptr: anytype) ?*VMGCObject {
         return ptr.gc;
     }
     if (T == *UpVal) {
+        if (ptr.gc) |gc| return gc;
         var curr = g.allgc;
         while (curr) |obj| : (curr = obj.next) {
-            if (obj.val == .upval and obj.val.upval == ptr) return obj;
+            if (obj.val == .upval and obj.val.upval == ptr) {
+                ptr.gc = obj;
+                return obj;
+            }
         }
         return null;
     }

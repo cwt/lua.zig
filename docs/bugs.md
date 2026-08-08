@@ -1062,12 +1062,12 @@ plans. They are now queued for implementation in the next development round.
 
 ---
 
-## BUG-113 — `lua.zig`: $O(N)$ linear scan in `getGCObject` during GC marking (quadratic GC latency) [MED] ❌ OPEN
+## BUG-113 — `lua.zig`: $O(N)$ linear scan in `getGCObject` during GC marking (quadratic GC latency) [MED] ✅ FIXED
 
 - **Location:** `src/lua.zig:4437-4498`.
 - **Defect:** When resolving `*UpVal` (or objects where `ptr.gc == null`), `getGCObject` performs a linear scan over `g.allgc` (`while (curr) |obj| : (curr = obj.next)`).
 - **Impact:** Traversal of every upvalue during GC marking turns overall mark complexity quadratic ($O(N \times M)$), introducing latency spikes on large heaps.
-- **Fix:** Pending. Maintain direct `ptr.gc` back-links for all GC-tracked objects to eliminate linear list scans. **2026-08-08**.
+- **Fix:** Cached `ptr.gc` back-links on `*UpVal` lookup in `getGCObject`, eliminating linear list scans. **2026-08-08**.
 
 ---
 
