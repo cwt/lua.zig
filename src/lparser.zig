@@ -1294,7 +1294,7 @@ fn funcargs(ls: *llex.LexState, f: *expdesc) !void {
         nparams = fs.freereg - (base + 1);
     }
     init_exp(f, .VCALL, lcode.luaK_codeABC(fs, .CALL, base, nparams + 1, 2));
-    lcode.luaK_fixline(fs, line);
+    try lcode.luaK_fixline(fs, line);
     fs.freereg = @intCast(base + 1);
 }
 
@@ -1498,7 +1498,7 @@ fn globalfunc(ls: *llex.LexState, line: i32) !void {
     try body(ls, &b, false, ls.linenumber);
     try checkglobal(ls, fname, line);
     try lcode.luaK_storevar(fs, &var_, &b);
-    lcode.luaK_fixline(fs, line);
+    try lcode.luaK_fixline(fs, line);
 }
 
 fn globalstatfunc(ls: *llex.LexState, line: i32) !void {
@@ -1606,11 +1606,11 @@ fn forbody(ls: *llex.LexState, base: i32, line: i32, nvars: i32, isgen: i32) !vo
     try fixforjump(fs, prep, lcode.luaK_getlabel(fs), 0);
     if (isgen != 0) {
         _ = lcode.luaK_codeABC(fs, .TFORCALL, base, 0, nvars);
-        lcode.luaK_fixline(fs, line);
+        try lcode.luaK_fixline(fs, line);
     }
     const endfor = lcode.luaK_codeABx(fs, forloop[@intCast(isgen)], base, 0);
     try fixforjump(fs, endfor, prep + 1, 1);
-    lcode.luaK_fixline(fs, line);
+    try lcode.luaK_fixline(fs, line);
 }
 
 fn fornum(ls: *llex.LexState, varname: *lua.lua_TString, line: i32) !void {
@@ -1777,7 +1777,7 @@ fn funcstat(ls: *llex.LexState, line: i32) !void {
     try check_readonly(ls, &v);
     try body(ls, &b, ismethod != 0, line);
     try lcode.luaK_storevar(ls.fs.?, &v, &b);
-    lcode.luaK_fixline(ls.fs.?, line);
+    try lcode.luaK_fixline(ls.fs.?, line);
 }
 
 fn statement(ls: *llex.LexState) anyerror!void {

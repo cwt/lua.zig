@@ -833,14 +833,12 @@ pub fn run(L: *lua.lua_State, active_ci: *lua.CallInfo) anyerror!void {
                 const vC = @as(usize, @intCast(GETARG_vC(instruction)));
                 var narr = vC;
                 if (GETARG_k(instruction) != 0) {
-                    const extra = code[ci.savedpc];
+                    const extra = @as(usize, @intCast(GETARG_Ax(code[ci.savedpc])));
                     ci.savedpc += 1;
-                    narr += @as(usize, @intCast(GETARG_Ax(extra))) * 1024;
+                    narr += extra * (MAXARG_vC + 1);
                 }
-                const nrec = if (vB > 0) blk: {
-                    const shift = @as(u6, @intCast(@min(vB - 1, 63)));
-                    break :blk @as(usize, 1) << shift;
-                } else 0;
+                const shift = @as(u6, @intCast(@min(vB - 1, 63)));
+                const nrec = if (vB > 0) @as(usize, 1) << shift else 0;
                 const tab = try ltable.createTable(L.allocator, narr, nrec);
                 try lua.registerGC(L, tab);
                 L.stack[ra_idx] = .{ .table = tab };

@@ -672,11 +672,11 @@ pub fn luaK_exp2anyreg(fs: *FuncState, e: *expdesc) !i32 {
 
 pub fn luaK_codecheckglobal(fs: *FuncState, var_: *expdesc, k: i32, line: i32) !void {
     _ = try luaK_exp2anyreg(fs, var_);
-    luaK_fixline(fs, line);
+    try luaK_fixline(fs, line);
     var k2 = k;
     if (k2 >= lvm.MAXARG_Bx) k2 = 0 else k2 += 1;
     _ = luaK_codeABx(fs, .ERRNNIL, var_.u.info, k2);
-    luaK_fixline(fs, line);
+    try luaK_fixline(fs, line);
     freeexp(fs, var_);
 }
 
@@ -975,7 +975,7 @@ fn codeunexpval(fs: *FuncState, op: lvm.OpCode, e: *expdesc, line: i32) !void {
     freeexp(fs, e);
     e.u = .{ .info = luaK_codeABC(fs, op, 0, r, 0) };
     e.k = .VRELOC;
-    luaK_fixline(fs, line);
+    try luaK_fixline(fs, line);
 }
 
 fn finishbinexpval(fs: *FuncState, e1: *expdesc, e2: *expdesc, op: lvm.OpCode, v2: i32, flip: bool, line: i32, mmop: lvm.OpCode, event: ltm.TMS) !void {
@@ -987,9 +987,9 @@ fn finishbinexpval(fs: *FuncState, e1: *expdesc, e2: *expdesc, op: lvm.OpCode, v
     freeexps(fs, e1, e2);
     e1.u = .{ .info = @intCast(fs.code.items.len - 1) };
     e1.k = .VRELOC;
-    luaK_fixline(fs, line);
+    try luaK_fixline(fs, line);
     _ = luaK_codeABCk(fs, mmop, v1, v2, @intFromEnum(event), if (flip) 1 else 0);
-    luaK_fixline(fs, line);
+    try luaK_fixline(fs, line);
 }
 
 fn codebinexpval(fs: *FuncState, opr: lparser.BinOpr, e1: *expdesc, e2: *expdesc, line: i32) !void {
@@ -1182,7 +1182,7 @@ fn codeconcat(fs: *FuncState, e1: *expdesc, e2: *expdesc, line: i32) !void {
     }
     _ = luaK_codeABC(fs, .CONCAT, e1.u.info, 2, 0);
     freeexp(fs, e2);
-    luaK_fixline(fs, line);
+    try luaK_fixline(fs, line);
 }
 
 pub fn luaK_posfix(fs: *FuncState, opr: lparser.BinOpr, e1: *expdesc, e2: *expdesc, line: i32) !void {
@@ -1248,9 +1248,9 @@ pub fn luaK_posfix(fs: *FuncState, opr: lparser.BinOpr, e1: *expdesc, e2: *expde
     }
 }
 
-pub fn luaK_fixline(fs: *FuncState, line: i32) void {
+pub fn luaK_fixline(fs: *FuncState, line: i32) !void {
     removelastlineinfo(fs);
-    savelineinfo(fs, line) catch {};
+    try savelineinfo(fs, line);
 }
 
 pub fn luaK_settablesize(fs: *FuncState, pc: i32, ra: i32, asize: i32, hsize: i32) void {

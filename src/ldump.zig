@@ -75,7 +75,7 @@ const DumpState = struct {
     }
 
     fn dumpInt(self: *DumpState, x: i32) void {
-        self.dumpVarint(@bitCast(@as(i64, x)));
+        self.dumpInteger(@as(i64, x));
     }
 
     fn dumpNumber(self: *DumpState, x: f64) void {

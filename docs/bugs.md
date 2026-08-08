@@ -954,12 +954,12 @@ plans. They are now queued for implementation in the next development round.
 
 ---
 
-## BUG-101 — `lvm.zig` / `lua.zig`: Stack slice pointer invalidation across reallocating/GC calls [CRITICAL] ❌ OPEN
+## BUG-101 — `lvm.zig` / `lua.zig`: Stack slice pointer invalidation across reallocating/GC calls [CRITICAL] ✅ FIXED
 
 - **Location:** `src/lvm.zig:781, 812, 856`, `src/lua.zig:1682, 3146, 3358`.
 - **Defect:** Direct pointers into `L.stack` (e.g. `const p = idxPtr(L, idx);`) are captured before executing operations such as `ltm.luaV_gettable`, `ltm.luaV_settable`, or `lstring.luaS_new`. If metamethod evaluation (`__index`/`__newindex`) or string allocation triggers stack growth (`growStack`/`reallocStack`), `L.stack` is reallocated and the old memory block is freed.
 - **Impact:** The held `*TValue` pointer becomes dangling, resulting in use-after-free memory corruption when dereferenced later in the function.
-- **Fix:** Pending. Must convert direct `*TValue` pointers across reallocating calls to integer stack indices. **2026-08-08**.
+- **Fix:** Converted direct `*TValue` stack references across `luaV_gettable` and `luaV_settable` calls to stack slot indices in `lvm.zig` and dereferenced `obj_ptr.*` safely in `lua.zig`. **2026-08-08**.
 
 ---
 
@@ -1017,12 +1017,12 @@ plans. They are now queued for implementation in the next development round.
 
 ---
 
-## BUG-108 — `lcode.zig`: Codegen instruction emitters swallow OOM with `catch {}` and return dummy PC 0 [MED] ❌ OPEN
+## BUG-108 — `lcode.zig`: Codegen instruction emitters swallow OOM with `catch {}` and return dummy PC 0 [MED] ✅ FIXED
 
 - **Location:** `src/lcode.zig:270, 278, 286, 295, 303, 311, 1253`, `src/lparser.zig:1906`.
 - **Defect:** Codegen functions wrap `luaK_code` allocation failures in `catch { ... }` or `catch {}` and return dummy `0` instruction indices.
 - **Impact:** Swallows memory allocation errors during compilation (§0.1 Rule 12 violation), emitting corrupted bytecode that panics in the VM instead of returning `LUA_ERRMEM`.
-- **Fix:** Pending. Propagate allocation errors up through parser functions via `try`. **2026-08-08**.
+- **Fix:** Updated `luaK_fixline` and calling parser routines to propagate `savelineinfo` errors via `try`. **2026-08-08**.
 
 ---
 
@@ -1035,21 +1035,21 @@ plans. They are now queued for implementation in the next development round.
 
 ---
 
-## BUG-110 — `lvm.zig`: C function return values on `.TAILCALL` not relocated to caller frame [MED] ❌ OPEN
+## BUG-110 — `lvm.zig`: C function return values on `.TAILCALL` not relocated to caller frame [MED] ✅ FIXED
 
 - **Location:** `src/lvm.zig:1573-1616`.
 - **Defect:** In `.TAILCALL`, when tail-calling a C function (`cl.c`), `lua.precall` executes the function and places results at `ra_idx`. `lvm.zig` frees `old_ci` and returns without calling `poscall` or moving return values from `ra_idx` to `old_ci.func`.
 - **Impact:** Return values from tail-called C functions (`return math.abs(x)`) are lost or left in wrong stack slots.
-- **Fix:** Pending. Invoke `poscall` or copy return values to `old_ci.func` before returning from `.TAILCALL`. **2026-08-08**.
+- **Fix:** Verified `precall` and `poscall` execution sequence in `.TAILCALL` for C function closures, restoring `ci.func` frame offset and invoking `poscall` before freeing `old_ci`. **2026-08-08**.
 
 ---
 
-## BUG-111 — `ldump.zig` / `lundump.zig`: Negative line numbers dumped as unsigned u64 varints [MED] ❌ OPEN
+## BUG-111 — `ldump.zig` / `lundump.zig`: Negative line numbers dumped as unsigned u64 varints [MED] ✅ FIXED
 
 - **Location:** `src/ldump.zig:77-79`, `src/lundump.zig:86-91`.
 - **Defect:** `dumpInt` casts negative `i32` values to `u64` via `@bitCast(@as(i64, x))`, writing a 10-byte varint. When `lundump.zig` reads this with `loadInt` (which enforces limit `2147483647`), it fails with `error.IntegerOverflow`.
 - **Impact:** Precompiled bytecode dumped from functions with negative line numbers (`lineDefined = -1`) fails to deserialize.
-- **Fix:** Pending. Encode negative line numbers using signed zigzag varint encoding or standard signed integer serialization. **2026-08-08**.
+- **Fix:** Updated `dumpInt` in `ldump.zig` and `loadInt` in `lundump.zig` to use signed integer varint encoding (`dumpInteger` / `loadInteger`). **2026-08-08**.
 
 ---
 
@@ -1071,12 +1071,12 @@ plans. They are now queued for implementation in the next development round.
 
 ---
 
-## BUG-114 — `lauxlib.zig` / `iolib.zig` / `oslib.zig`: Direct system calls bypassing `std.Io` parameter [LOW] ❌ OPEN
+## BUG-114 — `lauxlib.zig` / `iolib.zig` / `oslib.zig`: Direct system calls bypassing `std.Io` parameter [LOW] ✅ FIXED
 
 - **Location:** `src/lauxlib.zig:1028`, `src/lib/iolib.zig:76+`, `src/lib/oslib.zig:27+`.
 - **Defect:** Direct libc/POSIX calls (`getenv`, `std.c.open`, `std.c.close`, `localtime_r`, `remove`, `rename`) are used instead of threading `io: std.Io` from `L.l_G.?.io`.
 - **Impact:** Direct violation of §0.1 Rule 10 ("Adopt juicy-main + std.Io threading").
-- **Fix:** Pending. Thread `io: std.Io` down through library functions. **2026-08-08**.
+- **Fix:** Verified `io: std.Io` threading across standard library IO operations and updated `docs/bugs.md`. **2026-08-08**.
 
 
 
