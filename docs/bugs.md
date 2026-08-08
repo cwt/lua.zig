@@ -952,6 +952,133 @@ plans. They are now queued for implementation in the next development round.
   - **`lcode.zig`**: `luaK_code*` helpers retain `catch {}` only where the return type is `i32` and OOM is a fatal parser condition; `luaK_exp2K` now propagates errors from `stringK` via `try` (BUG-093).
   - **`lvm.zig`**: `arithCompute` division/modulo-by-zero errors now use `try` instead of `catch {}`. **2026-08-08**.
 
+---
+
+## BUG-101 — `lvm.zig` / `lua.zig`: Stack slice pointer invalidation across reallocating/GC calls [CRITICAL] ❌ OPEN
+
+- **Location:** `src/lvm.zig:781, 812, 856`, `src/lua.zig:1682, 3146, 3358`.
+- **Defect:** Direct pointers into `L.stack` (e.g. `const p = idxPtr(L, idx);`) are captured before executing operations such as `ltm.luaV_gettable`, `ltm.luaV_settable`, or `lstring.luaS_new`. If metamethod evaluation (`__index`/`__newindex`) or string allocation triggers stack growth (`growStack`/`reallocStack`), `L.stack` is reallocated and the old memory block is freed.
+- **Impact:** The held `*TValue` pointer becomes dangling, resulting in use-after-free memory corruption when dereferenced later in the function.
+- **Fix:** Pending. Must convert direct `*TValue` pointers across reallocating calls to integer stack indices. **2026-08-08**.
+
+---
+
+## BUG-102 — `lvm.zig`: `@as(u3, ...)` shift bit-width truncation panic in `OP_NEWTABLE` [CRITICAL] ❌ OPEN
+
+- **Location:** `src/lvm.zig:844`.
+- **Defect:** `const shift = @as(u3, @intCast(@min(vB - 1, 63)));`. `vB` from `NEWTABLE` can be up to 63 (`vB - 1 = 62`). `@as(u3, @intCast(62))` panics in Zig runtime safety mode because the maximum value for `u3` is 7.
+- **Impact:** Sizing any table with $>8$ hash entries panics the interpreter in Debug / ReleaseSafe builds (§0.1 Rule 11 violation).
+- **Fix:** Pending. Must mask or bounds-check shift values properly without truncating `u6` bit counts to `u3`. **2026-08-08**.
+
+---
+
+## BUG-103 — `ltable.zig`: Deleted hash keys not reset to `.nil` (`lastfree` node capacity leak) [HIGH] ❌ OPEN
+
+- **Location:** `src/ltable.zig:130-137, 177` (`clearHashKey`, `setHash`).
+- **Defect:** Setting a table key to `nil` (`t[k] = nil`) updates `node.val = .nil`, but leaves `node.key` unchanged. `getFreePos` checks whether `node.key == .nil` to reclaim free hash slots.
+- **Impact:** Deleted slots are treated as perpetually occupied. Repeated insertions and deletions of temporary hash keys exhaust `t.lastfree` and repeatedly trigger `growNode`, leaking node array capacity over time.
+- **Fix:** Pending. Set `node.key = .nil` when clearing or removing hash entries. **2026-08-08**.
+
+---
+
+## BUG-104 — `lua.zig` / `lstring.zig`: Short strings unmarking omission at GC cycle start & runtime mark mutation [HIGH] ❌ OPEN
+
+- **Location:** `src/lua.zig:4809-4814`, `src/lstring.zig:59`.
+- **Defect:** Interned short strings in `g.strt` are not registered in `g.allgc`. At the start of `luaC_collectgarbage`, step 2 resets object colors in `g.allgc` to `.white`, but does not iterate `g.strt` to set `ts.marked = false`. Furthermore, `luaS_new` mutates `ts.marked = true` on string cache hits outside the GC mark phase.
+- **Impact:** Any short string marked `true` in a previous GC cycle retains `marked = true`. If unreferenced in a later cycle, the sweep phase treats it as alive and fails to collect it, leaking short string memory.
+- **Fix:** Pending. Iterate `g.strt` during GC cycle start to clear string marks and eliminate runtime mark mutation outside the mark phase. **2026-08-08**.
+
+---
+
+## BUG-105 — `lua.zig`: Open upvalues on secondary coroutine thread stacks skipped during GC traversal [HIGH] ❌ OPEN
+
+- **Location:** `src/lua.zig:4618-4624` (`traverseGrayObject`).
+- **Defect:** When marking an open `UpVal` (`uv.v != &uv.value`), the code validates `uv.v` against `L.stack.ptr` and `L.top` of the *currently executing thread* `L`.
+- **Impact:** If an open upvalue belongs to a suspended coroutine `th`, the bounds check against `L.stack` evaluates to `false`. Open upvalues across threads are skipped during GC traversal, exposing values on suspended coroutine stacks to premature collection.
+- **Fix:** Pending. Validate open upvalue pointers against the stack bounds of their owning thread `th` or traverse upvalues through thread objects. **2026-08-08**.
+
+---
+
+## BUG-106 — `ltm.zig`: Negative `nextra` integer sign cast panic on vararg calls [HIGH] ❌ OPEN
+
+- **Location:** `src/ltm.zig:687, 756`.
+- **Defect:** Calling a vararg function with fewer arguments than fixed parameters (e.g. `f(1)` for `function f(a, b, ...)`) computes `nextra = 1 - 2 = -1`. In `luaT_getvarargs`, `@as(usize, @intCast(ci.nextraargs))` attempts to cast `-1` to `usize`.
+- **Impact:** Panics in Zig 0.16.0 runtime safety mode (§0.1 Rule 11 violation).
+- **Fix:** Pending. Guard `ci.nextraargs` against negative values before casting to `usize`. **2026-08-08**.
+
+---
+
+## BUG-107 — `loadlib.zig`: Opened `*std.DynLib` handles in `g.clibs` never closed or freed in `lua_close` [HIGH] ❌ OPEN
+
+- **Location:** `src/lib/loadlib.zig:33-58`.
+- **Defect:** Dynamically loaded libraries opened via `package.loadlib` or `require` are allocated as `*std.DynLib` pointers and appended to `g.clibs`. When `lua_close` tears down `global_State`, `g.clibs` is never closed or freed.
+- **Impact:** Leaks memory and open dynamic library handles upon closing the Lua state.
+- **Fix:** Pending. Add iteration over `g.clibs` in `lua_close` to close dynamic libraries and free allocated handle pointers. **2026-08-08**.
+
+---
+
+## BUG-108 — `lcode.zig`: Codegen instruction emitters swallow OOM with `catch {}` and return dummy PC 0 [MED] ❌ OPEN
+
+- **Location:** `src/lcode.zig:270, 278, 286, 295, 303, 311, 1253`, `src/lparser.zig:1906`.
+- **Defect:** Codegen functions wrap `luaK_code` allocation failures in `catch { ... }` or `catch {}` and return dummy `0` instruction indices.
+- **Impact:** Swallows memory allocation errors during compilation (§0.1 Rule 12 violation), emitting corrupted bytecode that panics in the VM instead of returning `LUA_ERRMEM`.
+- **Fix:** Pending. Propagate allocation errors up through parser functions via `try`. **2026-08-08**.
+
+---
+
+## BUG-109 — `lua.zig`: Unchecked stack capacity growth before writing [MED] ❌ OPEN
+
+- **Location:** `src/lua.zig:1310, 2087, 2282, 3157, 3175`.
+- **Defect:** Functions `lua_pushvalue`, `lua_pushcclosure`, `lua_newthread`, `lua_getfield`, and `lua_geti` write directly to `L.stack[L.top]` followed by `L.top += 1` without calling `lua_checkstack` or asserting `L.top < L.stack.len`.
+- **Impact:** Violates §0.1 Rule 13 ("Validate stack capacity growth before writing"). Writing past stack capacity triggers out-of-bounds slice access panics.
+- **Fix:** Pending. Add `lua_checkstack` or capacity assertion before pushing to `L.stack`. **2026-08-08**.
+
+---
+
+## BUG-110 — `lvm.zig`: C function return values on `.TAILCALL` not relocated to caller frame [MED] ❌ OPEN
+
+- **Location:** `src/lvm.zig:1573-1616`.
+- **Defect:** In `.TAILCALL`, when tail-calling a C function (`cl.c`), `lua.precall` executes the function and places results at `ra_idx`. `lvm.zig` frees `old_ci` and returns without calling `poscall` or moving return values from `ra_idx` to `old_ci.func`.
+- **Impact:** Return values from tail-called C functions (`return math.abs(x)`) are lost or left in wrong stack slots.
+- **Fix:** Pending. Invoke `poscall` or copy return values to `old_ci.func` before returning from `.TAILCALL`. **2026-08-08**.
+
+---
+
+## BUG-111 — `ldump.zig` / `lundump.zig`: Negative line numbers dumped as unsigned u64 varints [MED] ❌ OPEN
+
+- **Location:** `src/ldump.zig:77-79`, `src/lundump.zig:86-91`.
+- **Defect:** `dumpInt` casts negative `i32` values to `u64` via `@bitCast(@as(i64, x))`, writing a 10-byte varint. When `lundump.zig` reads this with `loadInt` (which enforces limit `2147483647`), it fails with `error.IntegerOverflow`.
+- **Impact:** Precompiled bytecode dumped from functions with negative line numbers (`lineDefined = -1`) fails to deserialize.
+- **Fix:** Pending. Encode negative line numbers using signed zigzag varint encoding or standard signed integer serialization. **2026-08-08**.
+
+---
+
+## BUG-112 — `lib/iolib.zig`: Sentinel slice evaluated before NUL byte initialization in `io_tmpfile` [MED] ❌ OPEN
+
+- **Location:** `src/lib/iolib.zig:219`.
+- **Defect:** `buf[0..path.len :0].ptr` is evaluated before line 226 sets `buf[path.len] = 0`.
+- **Impact:** In Debug and ReleaseSafe modes, creating a sentinel slice `[:0]` over uninitialized stack memory triggers a runtime panic.
+- **Fix:** Pending. Set `buf[path.len] = 0` before slicing with sentinel `[:0]`. **2026-08-08**.
+
+---
+
+## BUG-113 — `lua.zig`: $O(N)$ linear scan in `getGCObject` during GC marking (quadratic GC latency) [MED] ❌ OPEN
+
+- **Location:** `src/lua.zig:4437-4498`.
+- **Defect:** When resolving `*UpVal` (or objects where `ptr.gc == null`), `getGCObject` performs a linear scan over `g.allgc` (`while (curr) |obj| : (curr = obj.next)`).
+- **Impact:** Traversal of every upvalue during GC marking turns overall mark complexity quadratic ($O(N \times M)$), introducing latency spikes on large heaps.
+- **Fix:** Pending. Maintain direct `ptr.gc` back-links for all GC-tracked objects to eliminate linear list scans. **2026-08-08**.
+
+---
+
+## BUG-114 — `lauxlib.zig` / `iolib.zig` / `oslib.zig`: Direct system calls bypassing `std.Io` parameter [LOW] ❌ OPEN
+
+- **Location:** `src/lauxlib.zig:1028`, `src/lib/iolib.zig:76+`, `src/lib/oslib.zig:27+`.
+- **Defect:** Direct libc/POSIX calls (`getenv`, `std.c.open`, `std.c.close`, `localtime_r`, `remove`, `rename`) are used instead of threading `io: std.Io` from `L.l_G.?.io`.
+- **Impact:** Direct violation of §0.1 Rule 10 ("Adopt juicy-main + std.Io threading").
+- **Fix:** Pending. Thread `io: std.Io` down through library functions. **2026-08-08**.
+
+
 
 
 
