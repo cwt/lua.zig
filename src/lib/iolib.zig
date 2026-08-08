@@ -216,6 +216,7 @@ fn io_tmpfile(L_: *L) !i32 {
         _ = lua.lua_pushstring(L_, "cannot create tmp file") orelse {};
         return 2;
     };
+    buf[path.len] = 0;
     const a = std.posix.openatZ(std.posix.AT.FDCWD, buf[0..path.len :0].ptr, .{ .ACCMODE = .RDWR, .CREAT = true, .EXCL = true }, 0o600) catch {
         lua.lua_pushnil(L_);
         _ = lua.lua_pushstring(L_, "cannot create tmp file") orelse {};
@@ -223,7 +224,6 @@ fn io_tmpfile(L_: *L) !i32 {
     };
     errdefer _ = std.c.close(a);
     defer {
-        buf[path.len] = 0;
         _ = std.c.unlink(buf[0..path.len :0]);
     }
     const p = try newfile(L_);

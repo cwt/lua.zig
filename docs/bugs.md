@@ -963,21 +963,21 @@ plans. They are now queued for implementation in the next development round.
 
 ---
 
-## BUG-102 — `lvm.zig`: `@as(u3, ...)` shift bit-width truncation panic in `OP_NEWTABLE` [CRITICAL] ❌ OPEN
+## BUG-102 — `lvm.zig`: `@as(u3, ...)` shift bit-width truncation panic in `OP_NEWTABLE` [CRITICAL] ✅ FIXED
 
 - **Location:** `src/lvm.zig:844`.
 - **Defect:** `const shift = @as(u3, @intCast(@min(vB - 1, 63)));`. `vB` from `NEWTABLE` can be up to 63 (`vB - 1 = 62`). `@as(u3, @intCast(62))` panics in Zig runtime safety mode because the maximum value for `u3` is 7.
 - **Impact:** Sizing any table with $>8$ hash entries panics the interpreter in Debug / ReleaseSafe builds (§0.1 Rule 11 violation).
-- **Fix:** Pending. Must mask or bounds-check shift values properly without truncating `u6` bit counts to `u3`. **2026-08-08**.
+- **Fix:** Fixed shift calculation in `OP_NEWTABLE` by casting `@min(vB - 1, 63)` directly to `u6`. **2026-08-08**.
 
 ---
 
-## BUG-103 — `ltable.zig`: Deleted hash keys not reset to `.nil` (`lastfree` node capacity leak) [HIGH] ❌ OPEN
+## BUG-103 — `ltable.zig`: Deleted hash keys not reset to `.nil` (`lastfree` node capacity leak) [HIGH] ✅ FIXED
 
 - **Location:** `src/ltable.zig:130-137, 177` (`clearHashKey`, `setHash`).
 - **Defect:** Setting a table key to `nil` (`t[k] = nil`) updates `node.val = .nil`, but leaves `node.key` unchanged. `getFreePos` checks whether `node.key == .nil` to reclaim free hash slots.
 - **Impact:** Deleted slots are treated as perpetually occupied. Repeated insertions and deletions of temporary hash keys exhaust `t.lastfree` and repeatedly trigger `growNode`, leaking node array capacity over time.
-- **Fix:** Pending. Set `node.key = .nil` when clearing or removing hash entries. **2026-08-08**.
+- **Fix:** Added `node.key = .nil` in `clearHashKey` so `getFreePos` can recycle deleted slots. **2026-08-08**.
 
 ---
 
@@ -999,21 +999,21 @@ plans. They are now queued for implementation in the next development round.
 
 ---
 
-## BUG-106 — `ltm.zig`: Negative `nextra` integer sign cast panic on vararg calls [HIGH] ❌ OPEN
+## BUG-106 — `ltm.zig`: Negative `nextra` integer sign cast panic on vararg calls [HIGH] ✅ FIXED
 
 - **Location:** `src/ltm.zig:687, 756`.
 - **Defect:** Calling a vararg function with fewer arguments than fixed parameters (e.g. `f(1)` for `function f(a, b, ...)`) computes `nextra = 1 - 2 = -1`. In `luaT_getvarargs`, `@as(usize, @intCast(ci.nextraargs))` attempts to cast `-1` to `usize`.
 - **Impact:** Panics in Zig 0.16.0 runtime safety mode (§0.1 Rule 11 violation).
-- **Fix:** Pending. Guard `ci.nextraargs` against negative values before casting to `usize`. **2026-08-08**.
+- **Fix:** Guarded `ci.nextraargs` against negative values before casting to `usize` in `luaT_getvarargs`. **2026-08-08**.
 
 ---
 
-## BUG-107 — `loadlib.zig`: Opened `*std.DynLib` handles in `g.clibs` never closed or freed in `lua_close` [HIGH] ❌ OPEN
+## BUG-107 — `loadlib.zig`: Opened `*std.DynLib` handles in `g.clibs` never closed or freed in `lua_close` [HIGH] ✅ FIXED
 
-- **Location:** `src/lib/loadlib.zig:33-58`.
+- **Location:** `src/lib/loadlib.zig:33-58`, `src/lua.zig:5912`.
 - **Defect:** Dynamically loaded libraries opened via `package.loadlib` or `require` are allocated as `*std.DynLib` pointers and appended to `g.clibs`. When `lua_close` tears down `global_State`, `g.clibs` is never closed or freed.
 - **Impact:** Leaks memory and open dynamic library handles upon closing the Lua state.
-- **Fix:** Pending. Add iteration over `g.clibs` in `lua_close` to close dynamic libraries and free allocated handle pointers. **2026-08-08**.
+- **Fix:** Added dynamic library handle closure and array deinitialization in `lua_close`. **2026-08-08**.
 
 ---
 
@@ -1053,12 +1053,12 @@ plans. They are now queued for implementation in the next development round.
 
 ---
 
-## BUG-112 — `lib/iolib.zig`: Sentinel slice evaluated before NUL byte initialization in `io_tmpfile` [MED] ❌ OPEN
+## BUG-112 — `lib/iolib.zig`: Sentinel slice evaluated before NUL byte initialization in `io_tmpfile` [MED] ✅ FIXED
 
 - **Location:** `src/lib/iolib.zig:219`.
 - **Defect:** `buf[0..path.len :0].ptr` is evaluated before line 226 sets `buf[path.len] = 0`.
 - **Impact:** In Debug and ReleaseSafe modes, creating a sentinel slice `[:0]` over uninitialized stack memory triggers a runtime panic.
-- **Fix:** Pending. Set `buf[path.len] = 0` before slicing with sentinel `[:0]`. **2026-08-08**.
+- **Fix:** Set `buf[path.len] = 0` before calling `openatZ` with `[:0]` sentinel slice in `io_tmpfile`. **2026-08-08**.
 
 ---
 

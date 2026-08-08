@@ -175,6 +175,7 @@ fn growNode(t: *Table) anyerror!void {
 fn clearHashKey(t: *Table, key: TValue) void {
     if (findNodeIndex(t, key)) |idx| {
         t.node.items[idx].val = .{ .nil = {} };
+        t.node.items[idx].key = .{ .nil = {} };
     }
 }
 

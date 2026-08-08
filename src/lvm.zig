@@ -838,11 +838,8 @@ pub fn run(L: *lua.lua_State, active_ci: *lua.CallInfo) anyerror!void {
                     narr += @as(usize, @intCast(GETARG_Ax(extra))) * 1024;
                 }
                 const nrec = if (vB > 0) blk: {
-                    // BUG-092: vB-1 is a u6 field; casting to u5 can panic if
-                    // vB-1 >= 32.  Shift the usize literal by up to 6 bits at
-                    // a time (u6 -> 64 = 2^6) to stay within u5 width.
-                    const shift = @as(u3, @intCast(@min(vB - 1, 63)));
-                    break :blk @as(usize, 1) << @as(u6, @intCast(shift));
+                    const shift = @as(u6, @intCast(@min(vB - 1, 63)));
+                    break :blk @as(usize, 1) << shift;
                 } else 0;
                 const tab = try ltable.createTable(L.allocator, narr, nrec);
                 try lua.registerGC(L, tab);

@@ -6,6 +6,20 @@ tags: [log, changelog]
 timestamp: 2026-08-08T12:00:00Z
 ---
 
+## 2026-08-08 — Resolution of BUG-102, BUG-103, BUG-106, BUG-107, and BUG-112 (Static Analysis Fix Batch 1, 131/131 Tests PASS, 19/19 Upstream PASS)
+
+- **Opcode Bitwise Shift Safety (`src/lvm.zig`)**:
+  - Fixed BUG-102: Fixed `OP_NEWTABLE` shift calculation by casting `@min(vB - 1, 63)` directly to `u6`, preventing a `u3` cast truncation panic for table hash sizes.
+- **Table Node Memory Leak (`src/ltable.zig`)**:
+  - Fixed BUG-103: Added `node.key = .nil` in `clearHashKey` when Setting a hash key to `nil`, enabling `getFreePos` to recycle deleted hash slots instead of leaking node capacity.
+- **Vararg Argument Sign Cast Safety (`src/ltm.zig`)**:
+  - Fixed BUG-106: Guarded `ci.nextraargs` against negative values before casting to `usize` in `luaT_getvarargs`, preventing a cast overflow panic when calling vararg functions with fewer arguments than fixed parameters.
+- **Resource Lifecycle in `lua_close` (`src/lua.zig`)**:
+  - Fixed BUG-107: Added dynamic library handle closing (`lib.close()`) and array deallocation (`g.clibs.deinit()`) in `lua_close`, eliminating memory and handle leaks on state teardown.
+- **I/O Sentinel Slice Safety (`src/lib/iolib.zig`)**:
+  - Fixed BUG-112: Initialized NUL sentinel at `buf[path.len] = 0` before evaluating `buf[0..path.len :0].ptr` in `io_tmpfile`, eliminating runtime panics on stack sentinel evaluation.
+- **Verification Gate**: `zig build test` passed **131/131** tests; `./run_testes.sh` passed **19 PASS / 0 FAIL / 0 CRASH** with exit code 0. Zero memory leaks.
+
 ## 2026-08-08 — Resolution of BUG-086 through BUG-100 (Memory Safety & Error-Propagation Audit, 132/132 Tests PASS, 19/19 Upstream PASS)
 
 - **GC Correctness (`src/lua.zig`)**:

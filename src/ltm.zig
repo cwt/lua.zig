@@ -752,8 +752,9 @@ pub fn luaT_getvarargs(L: *lua.lua_State, ci: *lua.CallInfo, where_idx: usize, w
     }
     if (h == null) {
         var i: i32 = 0;
+        const nextra: usize = if (ci.nextraargs > 0) @intCast(ci.nextraargs) else 0;
         while (i < touse) : (i += 1) {
-            L.stack[where_idx + @as(usize, @intCast(i))] = L.stack[ci.func - @as(usize, @intCast(ci.nextraargs)) + @as(usize, @intCast(i))];
+            L.stack[where_idx + @as(usize, @intCast(i))] = L.stack[ci.func - nextra + @as(usize, @intCast(i))];
         }
     } else {
         var i: i32 = 0;
