@@ -21,6 +21,8 @@ const LStream = struct {
     /// Pending unread byte (one-level pushback) so read helpers can return a
     /// look-ahead char to the stream. `null` means no pending byte.
     unget: ?u8,
+    /// Child process for `io.popen` streams. `null` for regular files.
+    child: ?std.process.Child = null,
 };
 
 /// Default buffer size for `setvbuf` when no size is given (cf. stdio `BUFSIZ`).
@@ -82,6 +84,11 @@ fn fopen(name: []const u8, mode: []const u8, eno_out: ?*i32) ?i32 {
 fn doClose(L_: *L, p: *LStream) !i32 {
     // Flush any pending buffered output before releasing the fd.
     _ = flushBuffer(p);
+    if (p.child) |*child| {
+        // Wait for the child process to avoid zombies, then close the pipe fd.
+        _ = child.wait(L_.l_G.?.io) catch {};
+        p.child = null;
+    }
     if (p.fd >= 0) {
         _ = std.c.close(p.fd);
         p.fd = -1;
@@ -169,7 +176,7 @@ fn g_iofile(L_: *L, findex: []const u8, mode: []const u8) !i32 {
             _ = try tostream(L_, 1);
             lua.lua_pushvalue(L_, 1);
         }
-        try lua.lua_rawsetp(L_, lua.LUA_REGISTRYINDEX, @constCast(@ptrCast(findex.ptr)));
+        try lua.lua_rawsetp(L_, lua.LUA_REGISTRYINDEX, @ptrCast(@constCast(findex.ptr)));
     }
     _ = lua.lua_rawgetp(L_, lua.LUA_REGISTRYINDEX, @ptrCast(findex.ptr));
     return 1;
@@ -200,10 +207,91 @@ fn io_open(L_: *L) !i32 {
     return 1;
 }
 
+fn io_pclose(L_: *L) !i32 {
+    const p = try tostream(L_, 1);
+    // Wait for the child and close the pipe fd.
+    var stat: i32 = 0;
+    if (p.child) |*child| {
+        switch (try child.wait(L_.l_G.?.io)) {
+            .exited => |code| stat = @intCast(code),
+            .signal => |sig| stat = @intCast(@as(u32, @intFromEnum(sig))),
+            .stopped => |sig| stat = @intCast(@as(u32, @intFromEnum(sig))),
+            .unknown => |code| stat = @intCast(code),
+        }
+        p.child = null;
+    }
+    // Close the pipe fd.
+    if (p.fd >= 0) {
+        _ = std.c.close(p.fd);
+        p.fd = -1;
+    }
+    // Reset closef so we don't double-close.
+    p.closef = null;
+    return lauxlib.luaL_execresult(L_, stat);
+}
+
 fn io_popen(L_: *L) !i32 {
-    lua.lua_pushnil(L_);
-    _ = lua.lua_pushstring(L_, "'popen' not supported") orelse {};
-    return 2;
+    const cmd = lua.lua_tostring(L_, 1) orelse {
+        return lauxlib.luaL_error(L_, "string expected");
+    };
+    const mode_s = lua.lua_tostring(L_, 2) orelse "r";
+    // Validate mode: popen only accepts "r" or "w" (no '+' or 'b').
+    if (mode_s.len != 1 or (mode_s[0] != 'r' and mode_s[0] != 'w')) {
+        return lauxlib.luaL_argerror(L_, 2, "invalid mode");
+    }
+    const is_read = mode_s[0] == 'r';
+
+    const io = L_.l_G orelse return lauxlib.luaL_error(L_, "no I/O context");
+
+    // Build argv: ["/bin/sh", "-c", cmd]
+    const argv = [_][]const u8{ "/bin/sh", "-c", cmd };
+
+    // Spawn the child with pipes.
+    var child = std.process.spawn(io.io, .{
+        .argv = &argv,
+        .stdin = if (is_read) .ignore else .pipe,
+        .stdout = if (is_read) .pipe else .ignore,
+        .stderr = .inherit,
+    }) catch {
+        lua.lua_pushnil(L_);
+        _ = lua.lua_pushstring(L_, "cannot open pipe") orelse {};
+        return 2;
+    };
+
+    // Grab the pipe fd.
+    var pipe_fd: i32 = undefined;
+    if (is_read) {
+        if (child.stdout) |f| {
+            pipe_fd = f.handle;
+        } else {
+            // Should not happen, but clean up.
+            _ = child.wait(io.io) catch {};
+            lua.lua_pushnil(L_);
+            _ = lua.lua_pushstring(L_, "cannot open pipe") orelse {};
+            return 2;
+        }
+    } else {
+        if (child.stdin) |f| {
+            pipe_fd = f.handle;
+        } else {
+            _ = child.wait(io.io) catch {};
+            lua.lua_pushnil(L_);
+            _ = lua.lua_pushstring(L_, "cannot open pipe") orelse {};
+            return 2;
+        }
+    }
+
+    const p = try newfile(L_);
+    p.* = LStream{
+        .fd = pipe_fd,
+        .closef = io_pclose,
+        .buf = null,
+        .buf_len = 0,
+        .buf_mode = 0,
+        .unget = null,
+        .child = child,
+    };
+    return 1;
 }
 
 fn io_tmpfile(L_: *L) !i32 {
@@ -677,7 +765,7 @@ fn createstdfile(L_: *L, fd: i32, k: ?[]const u8, fname: ?[]const u8, cf: ?lua.l
     try lauxlib.luaL_setmetatable(L_, LUA_FILEHANDLE);
     if (k) |key| {
         lua.lua_pushvalue(L_, -1);
-        try lua.lua_rawsetp(L_, lua.LUA_REGISTRYINDEX, @constCast(@ptrCast(key.ptr)));
+        try lua.lua_rawsetp(L_, lua.LUA_REGISTRYINDEX, @ptrCast(@constCast(key.ptr)));
     }
     if (fname) |name| {
         try lua.lua_setfield(L_, -2, name);
