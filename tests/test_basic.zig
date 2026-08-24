@@ -4737,3 +4737,23 @@ test "BUG-118: clearHashKey keeps key as dead node without breaking hash collisi
     , "=(bug118)");
     try std.testing.expectEqual(@as(i32, lua.LUA_OK), status);
 }
+
+test "BUG-120: coroutines are collected by GC when unreachable" {
+    const gpa = std.testing.allocator;
+    var L: lua.lua_State = undefined;
+    try lua.luaL_newstate(&L, gpa);
+    defer lua.lua_close(&L);
+    try lua.luaL_openlibs(&L);
+
+    const status = try lua.luaL_dostring(&L,
+        \\for i = 1, 20 do
+        \\    local co = coroutine.create(function()
+        \\        coroutine.yield(i)
+        \\    end)
+        \\    local ok, res = coroutine.resume(co)
+        \\    assert(ok and res == i)
+        \\end
+        \\collectgarbage()
+    , "=(bug120)");
+    try std.testing.expectEqual(@as(i32, lua.LUA_OK), status);
+}

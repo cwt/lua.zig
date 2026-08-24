@@ -1060,6 +1060,7 @@ pub const VMGCObject = struct {
         proto: *lua_Proto,
         userdata: *lua_Udata,
         string: *lua_TString,
+        thread: *lua_State,
     };
 };
 
@@ -1124,6 +1125,7 @@ pub fn registerGC(L: *lua_State, val: anytype) !void {
         *lua_Proto => VMGCObject.ValUnion{ .proto = val },
         *lua_Udata => VMGCObject.ValUnion{ .userdata = val },
         *lua_TString => VMGCObject.ValUnion{ .string = val },
+        *lua_State => VMGCObject.ValUnion{ .thread = val },
         else => @compileError("Unsupported type for GC registration"),
     };
     gc.* = .{
@@ -1141,6 +1143,7 @@ pub fn registerGC(L: *lua_State, val: anytype) !void {
         .proto => |pr| pr.gc = gc,
         .string => |ts| ts.gc = gc,
         .upval => |uv| uv.gc = gc,
+        .thread => |th| th.gc = gc,
     }
     g.allgc = gc;
     g.gc_count += 1;
@@ -1155,20 +1158,9 @@ pub fn registerGC(L: *lua_State, val: anytype) !void {
         .userdata => |ud| @sizeOf(lua_Udata) + ud.data.len + ud.uv.len * @sizeOf(TValue),
         .proto => @sizeOf(lua_Proto),
         .upval => @sizeOf(UpVal),
+        .thread => |th| @sizeOf(lua_State) + th.stack.len * @sizeOf(TValue),
     };
     g.totalbytes += sz + @sizeOf(VMGCObject);
-
-    switch (union_val) {
-        .table => |t| t.gc = gc,
-        .closure => |cl| switch (cl.*) {
-            .c => |cc| cc.gc = gc,
-            .lua => |lc| lc.gc = gc,
-        },
-        .upval => |uv| uv.gc = gc,
-        .proto => |p| p.gc = gc,
-        .userdata => |ud| ud.gc = gc,
-        .string => |ts| ts.gc = gc,
-    }
 }
 
 pub const GCObject = struct {
@@ -1194,6 +1186,7 @@ pub const lua_State = struct {
     stack: []TValue,
     stack_last: usize,
     openupval: ?*UpVal,
+    gc: ?*VMGCObject = null,
     tbclist: std.ArrayListUnmanaged(usize),
     gclist: ?*GCObject,
     twups: ?*lua_State,
@@ -2304,6 +2297,7 @@ pub fn lua_newthread(L: *lua_State) !*lua_State {
     L1.ci = &L1.base_ci;
     L1.twups = g.thread_list;
     g.thread_list = L1;
+    try registerGC(L, L1);
     try growStack(L, 1);
     L.stack[L.top] = TValue{ .thread = L1 };
     L.top += 1;
@@ -4511,6 +4505,17 @@ fn getGCObject(g: *global_State, ptr: anytype) ?*VMGCObject {
         }
         return null;
     }
+    if (T == *lua_State) {
+        if (ptr.gc) |gc| return gc;
+        var curr = g.allgc;
+        while (curr) |obj| : (curr = obj.next) {
+            if (obj.val == .thread and obj.val.thread == ptr) {
+                ptr.gc = obj;
+                return obj;
+            }
+        }
+        return null;
+    }
     return null;
 }
 
@@ -4541,6 +4546,7 @@ fn markValue(L: *lua_State, gray_list: *std.ArrayList(*VMGCObject), val: TValue)
         .upval => |u| if (u) |uv| if (getGCObject(g, uv)) |gc| try markObject(L, gc, gray_list),
         .proto => |p| if (p) |pr| if (getGCObject(g, pr)) |gc| try markObject(L, gc, gray_list),
         .userdata => |u| if (u) |ud| if (getGCObject(g, ud)) |gc| try markObject(L, gc, gray_list),
+        .thread => |t| if (t) |th| if (getGCObject(g, th)) |gc| try markObject(L, gc, gray_list),
         else => {},
     }
 }
@@ -4676,6 +4682,9 @@ fn traverseGrayObject(L: *lua_State, gray_list: *std.ArrayList(*VMGCObject), gc:
                 }
             }
         },
+        .thread => |th| {
+            try markThreadStack(L, gray_list, th);
+        },
         // Strings (external) have no outgoing references to traverse.
         .string => {},
     }
@@ -4693,6 +4702,7 @@ fn freeGCObject(L: *lua_State, gc: *VMGCObject) void {
         .userdata => |ud| @sizeOf(lua_Udata) + ud.data.len + ud.uv.len * @sizeOf(TValue),
         .proto => @sizeOf(lua_Proto),
         .upval => @sizeOf(UpVal),
+        .thread => |th| @sizeOf(lua_State) + th.stack.len * @sizeOf(TValue),
     };
     if (g.totalbytes >= sz + @sizeOf(VMGCObject)) {
         g.totalbytes -= sz + @sizeOf(VMGCObject);
@@ -4734,6 +4744,24 @@ fn freeGCObject(L: *lua_State, gc: *VMGCObject) void {
                 L.allocator.free(ts.s);
             }
             L.allocator.destroy(ts);
+        },
+        .thread => |th| {
+            if (g.thread_list == th) {
+                g.thread_list = th.twups;
+            } else {
+                var prev_th = g.thread_list;
+                while (prev_th) |p| {
+                    if (p.twups == th) {
+                        p.twups = th.twups;
+                        break;
+                    }
+                    prev_th = p.twups;
+                }
+            }
+            freeAllCallInfos(th);
+            th.tbclist.deinit(th.allocator);
+            th.allocator.free(th.stack);
+            th.allocator.destroy(th);
         },
     }
     L.allocator.destroy(gc);
@@ -4892,35 +4920,12 @@ pub fn luaC_collectgarbage(L: *lua_State) !void {
         curr_uv = uv.next;
     }
 
-    // Root 4b: The stacks and open upvalues of all created threads, plus the
-    // main thread (which is not in thread_list but is always a GC root; the
-    // reference marks it in markroot). Without this, running a GC from a
-    // coroutine could collect objects still referenced by the main thread.
+    // Root 4b: The stack and open upvalues of the main thread (which is not
+    // on allgc, so it is an unconditional GC root).
     if (g.mainthread) |mt| {
         if (mt != L) {
             try markThreadStack(L, &gray_list, mt);
-        } else {}
-    }
-    var curr_th = g.thread_list;
-    while (curr_th) |th| {
-        if (getGCObject(g, th)) |gc| {
-            try markObject(L, gc, &gray_list);
         }
-        if (th != L) {
-            try markThreadStack(L, &gray_list, th);
-        }
-        // BUG-086: also mark the open upvalues of each thread — without
-        // this, an open UpVal whose value lives on a *different* thread's
-        // stack is invisible to the collector and can be collected while
-        // still referenced, causing a Use-After-Free on coroutine resume.
-        var th_uv = th.openupval;
-        while (th_uv) |uv| {
-            if (getGCObject(g, uv)) |uv_gc| {
-                try markObject(L, uv_gc, &gray_list);
-            }
-            th_uv = uv.next;
-        }
-        curr_th = th.twups;
     }
 
     // 4. Traverse gray list until empty
