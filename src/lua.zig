@@ -4771,6 +4771,7 @@ fn freeGCObject(L: *lua_State, gc: *VMGCObject) void {
             L.allocator.destroy(ts);
         },
         .thread => |th| {
+            closeupvals(th, 0, null) catch {};
             if (g.thread_list == th) {
                 g.thread_list = th.twups;
             } else {
