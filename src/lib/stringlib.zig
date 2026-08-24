@@ -96,9 +96,9 @@ fn str_rep(L: *lua.lua_State) anyerror!i32 {
         _ = lua.lua_pushlstring(L, "", 0);
         return 1;
     }
-    const MAX_SIZE = @min(std.math.maxInt(usize) / 2, @as(usize, @intCast(std.math.maxInt(i64))));
+    const MAX_SIZE = lua.MAX_SIZE;
     const un = @as(u64, @intCast(n));
-    if (len > MAX_SIZE -| lsep or (len + lsep) > MAX_SIZE / un) {
+    if (len > MAX_SIZE -| lsep or (un > 0 and (len + lsep) > MAX_SIZE / un)) {
         return lauxlib.luaL_error(L, "resulting string too large");
     }
     const totallen = un * (@as(u64, @intCast(len)) + @as(u64, @intCast(lsep))) - @as(u64, @intCast(lsep));

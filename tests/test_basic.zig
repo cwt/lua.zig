@@ -4971,3 +4971,29 @@ test "BUG-130: LUA_ERRFILE is distinct from LUA_ERRERR and returned by luaL_load
     try std.testing.expectEqual(lua.LUA_ERRFILE, status);
     try std.testing.expect(lua.lua_tostring(&L, -1) != null);
 }
+
+test "BUG-131: string.rep overflow message and pointer tostring without fixed 0-padding" {
+    const gpa = std.testing.allocator;
+    var L: lua.lua_State = undefined;
+    try lua.luaL_newstate(&L, gpa);
+    defer lua.lua_close(&L);
+    try lua.luaL_openlibs(&L);
+
+    // 1. string.rep with maxinteger
+    const status1 = try lua.luaL_dostring(&L,
+        \\local ok, err = pcall(string.rep, "x", math.maxinteger)
+        \\assert(not ok)
+        \\assert(string.find(err, "resulting string too large", 1, true) ~= nil)
+    , "=(bug131_1)");
+    try std.testing.expectEqual(@as(i32, lua.LUA_OK), status1);
+
+    // 2. pointer formatting without 0-padding: should be "table: 0x..." and not start with 0x0000
+    const status2 = try lua.luaL_dostring(&L,
+        \\local t = {}
+        \\local s = tostring(t)
+        \\assert(string.sub(s, 1, 9) == "table: 0x")
+        \\local hex = string.sub(s, 10)
+        \\assert(not string.find(hex, "^0000"))
+    , "=(bug131_2)");
+    try std.testing.expectEqual(@as(i32, lua.LUA_OK), status2);
+}

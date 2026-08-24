@@ -39,6 +39,8 @@ pub const LUA_MINSTACK: i32 = llimits.LUA_MINSTACK;
 pub const LUA_NUMTYPES: i32 = llimits.LUA_NUMTYPES;
 pub const LUA_MAXINTEGER: lua_Integer = llimits.LUA_MAXINTEGER;
 pub const LUA_MININTEGER: lua_Integer = llimits.LUA_MININTEGER;
+pub const MAX_SIZET: usize = llimits.MAX_SIZET;
+pub const MAX_SIZE: usize = llimits.MAX_SIZE;
 
 // Arithmetic and bitwise operators
 pub const LUA_OPADD: i32 = llimits.LUA_OPADD;

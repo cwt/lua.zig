@@ -94,6 +94,8 @@ pub const lua_Unsigned = luaconf.LUA_UNSIGNED;
 // Maximum and minimum integer values
 pub const LUA_MAXINTEGER: lua_Integer = std.math.maxInt(lua_Integer);
 pub const LUA_MININTEGER: lua_Integer = std.math.minInt(lua_Integer);
+pub const MAX_SIZET: usize = std.math.maxInt(usize);
+pub const MAX_SIZE: usize = @min(MAX_SIZET, @as(usize, @intCast(LUA_MAXINTEGER)));
 
 // ===================================================================
 // Debug API constants

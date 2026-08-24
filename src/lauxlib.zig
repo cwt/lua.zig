@@ -364,7 +364,7 @@ pub fn luaL_tolstring(L: *lua.lua_State, idx: i32, len: ?*usize) ?[]const u8 {
             }
             var buf: [128]u8 = undefined;
             const ptr = lua.lua_topointer(L, abs_idx);
-            const s = std.fmt.bufPrint(&buf, "{s}: 0x{x:0>14}", .{ kind, @intFromPtr(ptr) }) catch return null;
+            const s = std.fmt.bufPrint(&buf, "{s}: 0x{x}", .{ kind, @intFromPtr(ptr) }) catch return null;
             _ = lua.lua_pushstring(L, s);
             if (name_pushed) {
                 lua.lua_remove(L, -2);
@@ -800,11 +800,16 @@ pub fn luaL_buffsub(b: *luaL_Buffer, s: usize) void {
 
 pub fn luaL_prepbuffsize(L: *lua.lua_State, b: *luaL_Buffer, sz: usize) ![]u8 {
     const old_len = b.buf.items.len;
+    if (sz >= lua.MAX_SIZE - old_len) {
+        return luaL_error(L, "resulting string too large");
+    }
     // Reserve capacity for `sz` bytes without committing them: the logical
     // length stays at `old_len` until luaL_addsize is called. This matches
     // the C luaL_prepbuffsize / luaL_addsize contract (prepbuffsize only
     // guarantees free space; addsize commits it).
-    try b.buf.ensureTotalCapacity(L.allocator, old_len + sz);
+    b.buf.ensureTotalCapacity(L.allocator, old_len + sz) catch {
+        return luaL_error(L, "resulting string too large");
+    };
     return b.buf.items.ptr[old_len .. old_len + sz];
 }
 
