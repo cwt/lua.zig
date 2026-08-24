@@ -4604,8 +4604,6 @@ test "BUG-047 repeated string arithmetic print doesn't crash" {
     try std.testing.expectEqual(@as(i32, lua.LUA_OK), status);
 }
 
-
-
 test "H.11 equal literals across the chunk share one object (constant dedup)" {
     const gpa = std.testing.allocator;
     var L: lua.lua_State = undefined;
@@ -4688,5 +4686,22 @@ test "BUG-055: integer key moving from hash part to array part does not cause du
         \\t[3] = nil
         \\assert(t[3] == nil)
     , "=(bug055)");
+    try std.testing.expectEqual(@as(i32, lua.LUA_OK), status);
+}
+
+test "BUG-117: string.dump and load round-trip bytecode wire format" {
+    const gpa = std.testing.allocator;
+    var L: lua.lua_State = undefined;
+    try lua.luaL_newstate(&L, gpa);
+    defer lua.lua_close(&L);
+    try lua.luaL_openlibs(&L);
+
+    const status = try lua.luaL_dostring(&L,
+        \\local f = function(x, y) return x + y end
+        \\local d = string.dump(f)
+        \\local f2 = load(d)
+        \\assert(type(f2) == "function")
+        \\assert(f2(10, 20) == 30)
+    , "=(bug117)");
     try std.testing.expectEqual(@as(i32, lua.LUA_OK), status);
 }

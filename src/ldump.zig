@@ -37,7 +37,7 @@ const DumpState = struct {
     fn dumpBlock(self: *DumpState, b: []const u8) void {
         if (self.status != lua.LUA_OK) return;
         if (b.len == 0) return;
-        self.status = self.writer(self.L, @as(?*anyopaque, @constCast(@ptrCast(b.ptr))), b.len, self.data);
+        self.status = self.writer(self.L, @as(?*anyopaque, @ptrCast(@constCast(b.ptr))), b.len, self.data);
         if (self.status != lua.LUA_OK) return;
         self.written += b.len;
     }
@@ -75,7 +75,8 @@ const DumpState = struct {
     }
 
     fn dumpInt(self: *DumpState, x: i32) void {
-        self.dumpInteger(@as(i64, x));
+        std.debug.assert(x >= 0);
+        self.dumpVarint(@as(u64, @intCast(x)));
     }
 
     fn dumpNumber(self: *DumpState, x: f64) void {
