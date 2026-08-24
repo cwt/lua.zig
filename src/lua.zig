@@ -541,7 +541,6 @@ fn close_one_slot(L: *lua_State, abs: usize, err_val: ?TValue) anyerror!?TValue 
 }
 
 pub fn closeupvals(L: *lua_State, limit: usize, err_val: ?TValue) !void {
-
     const lim = if (limit < L.stack.len) limit else L.stack.len;
     const limit_addr = @intFromPtr(&L.stack[lim]);
     while (L.openupval) |uv| {
@@ -807,7 +806,7 @@ fn freeAllCallInfos(L: *lua_State) void {
 const PF_VAHID: u8 = 1; // function has hidden vararg arguments
 const PF_VATAB: u8 = 2; // function has a vararg table
 
- pub fn precall(L: *lua_State, func_idx: usize, nresults: i32) !?*CallInfo {
+pub fn precall(L: *lua_State, func_idx: usize, nresults: i32) !?*CallInfo {
     var ccmt: usize = 0;
     while (L.stack[func_idx] != .function) {
         const val = L.stack[func_idx];
@@ -935,7 +934,7 @@ const PF_VATAB: u8 = 2; // function has a vararg table
             const num_params = proto.numParams;
             const base_idx = func_idx + 1;
             const frame_top = base_idx + proto.maxStackSize;
-             const is_vararg = (proto.flag & (PF_VAHID | PF_VATAB)) != 0;
+            const is_vararg = (proto.flag & (PF_VAHID | PF_VATAB)) != 0;
             try growStack(L, frame_top + 1);
             const num_args_passed = L.top - base_idx;
             if (num_args_passed < num_params) {
@@ -1375,7 +1374,7 @@ pub fn lua_copy(L: *lua_State, fromidx: i32, toidx: i32) void {
     dst.* = src.*;
 }
 
- pub fn growStack(L: *lua_State, needed: usize) !void {
+pub fn growStack(L: *lua_State, needed: usize) !void {
     if (needed <= L.stack.len) return;
     // Normal stack growth never crosses the working limit; the ERRORSTACKSIZE
     // headroom is reserved separately (see reserveErrorStack) only when a
@@ -2082,7 +2081,7 @@ pub fn lua_pushcclosure(L: *lua_State, cfunc: lua_CFunction, n: i32) void {
         // Root in the registry: registry[cfunc-as-lightuserdata] = closure.
         if (L.l_G) |g| {
             const reg = g.registry.table orelse return;
-            ltable.set(reg, TValue{ .lightud = @constCast(@ptrCast(cfunc)) }, TValue{ .function = cl }) catch {};
+            ltable.set(reg, TValue{ .lightud = @ptrCast(@constCast(cfunc)) }, TValue{ .function = cl }) catch {};
             g.cfunc_cache.put(L.allocator, cfunc, cl) catch {};
         }
         growStack(L, 1) catch return;
@@ -3492,7 +3491,7 @@ pub inline fn lua_setuservalue(L: *lua_State, idx: i32) i32 {
     return lua_setiuservalue(L, idx, 1);
 }
 
- pub fn lua_callk(L: *lua_State, nargs: i32, nresults: i32, ctx: lua_KContext, k: ?lua_KFunction) !void {
+pub fn lua_callk(L: *lua_State, nargs: i32, nresults: i32, ctx: lua_KContext, k: ?lua_KFunction) !void {
     const yieldable_call = (k != null and lua_isyieldable(L) != 0);
     if (yieldable_call) {
         if (L.ci) |ci| {
@@ -3637,7 +3636,6 @@ pub fn lua_pcallk(L: *lua_State, nargs: i32, nresults: i32, errfunc: i32, ctx: l
                         }
                         _ = luaG_errormsg(L) catch {};
                     }
-
                 };
             }
         }
@@ -3936,8 +3934,6 @@ pub fn luaG_ordererror(L: *lua_State, p1: TValue, p2: TValue) !void {
     return luaG_runerror(L, mslice);
 }
 
-
-
 pub fn lua_load(L: *lua_State, reader: lua_Reader, dt: ?*anyopaque, chunkname: []const u8, mode: []const u8) i32 {
     const initial_top = L.top;
     var size: usize = 0;
@@ -3991,11 +3987,17 @@ pub fn lua_load(L: *lua_State, reader: lua_Reader, dt: ?*anyopaque, chunkname: [
             return LUA_ERRSYNTAX;
         }
         const proto = lundump.loadBinaryChunk(L, reader, dt, first_slice.?, chunkname) catch |e| {
+            if (e == error.OutOfMemory) return LUA_ERRMEM;
             var msg_buf: [256]u8 = undefined;
-            const msg = if (e == error.TruncatedChunk)
-                std.fmt.bufPrint(&msg_buf, "{s}: truncated chunk", .{chunkname}) catch "truncated chunk"
-            else
-                std.fmt.bufPrint(&msg_buf, "{s}: truncated chunk", .{chunkname}) catch "truncated chunk";
+            const msg = switch (e) {
+                error.TruncatedChunk => std.fmt.bufPrint(&msg_buf, "{s}: truncated chunk", .{chunkname}) catch "truncated chunk",
+                error.IntegerOverflow => std.fmt.bufPrint(&msg_buf, "{s}: integer overflow", .{chunkname}) catch "integer overflow",
+                error.VersionMismatch => std.fmt.bufPrint(&msg_buf, "{s}: bad binary format (version mismatch)", .{chunkname}) catch "bad binary format (version mismatch)",
+                error.FormatMismatch => std.fmt.bufPrint(&msg_buf, "{s}: bad binary format (format mismatch)", .{chunkname}) catch "bad binary format (format mismatch)",
+                error.BadHeader, error.CorruptedChunk => std.fmt.bufPrint(&msg_buf, "{s}: bad binary format (corrupted chunk)", .{chunkname}) catch "bad binary format (corrupted chunk)",
+                error.TypeSizeMismatch, error.TypeFormatMismatch => std.fmt.bufPrint(&msg_buf, "{s}: bad binary format (size mismatch)", .{chunkname}) catch "bad binary format (size mismatch)",
+                else => std.fmt.bufPrint(&msg_buf, "{s}: corrupted chunk", .{chunkname}) catch "corrupted chunk",
+            };
             _ = lua_pushstring(L, msg);
             if (L.top > initial_top) {
                 const err_val = L.stack[L.top - 1];
@@ -4895,8 +4897,7 @@ pub fn luaC_collectgarbage(L: *lua_State) !void {
     if (g.mainthread) |mt| {
         if (mt != L) {
             try markThreadStack(L, &gray_list, mt);
-        } else {
-        }
+        } else {}
     }
     var curr_th = g.thread_list;
     while (curr_th) |th| {
@@ -5269,7 +5270,7 @@ pub fn luaG_errormsg(L: *lua_State) anyerror {
         }
         const errfunc = @as(usize, @intCast(L.errfunc - 1));
         const err_obj = L.stack[L.top - 1];
-        
+
         L.stack[L.top] = err_obj;
         L.stack[L.top - 1] = L.stack[errfunc];
         L.top += 1;
@@ -5572,7 +5573,8 @@ pub fn tonumberValue(s: []const u8) ?TValue {
             const copy_len = @min(trimmed.len, rest_lower.len);
             _ = std.ascii.lowerString(rest_lower[0..copy_len], trimmed[0..copy_len]);
             if (std.mem.eql(u8, rest_lower[0..3], "inf") or
-                std.mem.eql(u8, rest_lower[0..3], "nan")) {
+                std.mem.eql(u8, rest_lower[0..3], "nan"))
+            {
                 return null;
             }
         }

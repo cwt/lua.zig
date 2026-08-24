@@ -98,7 +98,7 @@ const LoadState = struct {
     }
 
     fn loadInt(self: *LoadState) !i32 {
-        const val = try self.loadInteger();
+        const val = try self.loadVarint(std.math.maxInt(i32));
         return @intCast(val);
     }
 
