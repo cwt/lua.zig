@@ -4809,3 +4809,20 @@ test "BUG-122: TBC variables close safely with stack capacity checks" {
     , "=(bug122)");
     try std.testing.expectEqual(@as(i32, lua.LUA_OK), status);
 }
+
+test "BUG-123: float to string formatting in concat and conversion" {
+    const gpa = std.testing.allocator;
+    var L: lua.lua_State = undefined;
+    try lua.luaL_newstate(&L, gpa);
+    defer lua.lua_close(&L);
+    try lua.luaL_openlibs(&L);
+
+    const status = try lua.luaL_dostring(&L,
+        \\local s1 = (100 * 1e300) .. "!"
+        \\assert(string.sub(s1, -1) == "!")
+        \\assert(string.find(s1, "1e%+302") or string.find(s1, "1e302"))
+        \\local s2 = tostring(1e15)
+        \\assert(s2 == "1e+15" or s2 == "1e15" or s2 == "1000000000000000.0")
+    , "=(bug123)");
+    try std.testing.expectEqual(@as(i32, lua.LUA_OK), status);
+}

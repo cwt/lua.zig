@@ -621,18 +621,10 @@ fn g_write(L_: *L, p: *LStream, arg: i32) !i32 {
                 status = false;
                 break;
             }
-        } else if (lua.lua_isinteger(L_, idx) != 0) {
-            const val = lua.lua_tointeger(L_, idx) orelse 0;
-            var buf: [32]u8 = undefined;
-            const formatted = std.fmt.bufPrint(&buf, "{d}", .{val}) catch unreachable;
-            if (!writeToStream(p, formatted)) {
-                status = false;
-                break;
-            }
         } else if (lua.lua_type(L_, idx) == lua.LUA_TNUMBER) {
-            const num = lua.lua_tonumber(L_, idx) orelse 0.0;
-            var buf: [64]u8 = undefined;
-            const formatted = std.fmt.bufPrint(&buf, "{d}", .{num}) catch unreachable;
+            const v = lua.stackAt(L_, idx);
+            var buf: [128]u8 = undefined;
+            const formatted = lua.luaO_tostringbuff(v, &buf);
             if (!writeToStream(p, formatted)) {
                 status = false;
                 break;

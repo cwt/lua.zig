@@ -325,31 +325,6 @@ pub fn luaL_checkstack(L: *lua.lua_State, n: i32, msg: []const u8) !void {
     }
 }
 
-extern "c" fn snprintf(buf: [*]u8, size: usize, format: [*]const u8, ...) c_int;
-extern "c" fn strtod(nptr: [*]const u8, endptr: ?*[*]const u8) f64;
-extern "c" fn strspn(str1: [*]const u8, str2: [*]const u8) usize;
-
-fn tostringbuffFloat(n: f64, buff: *[128]u8) usize {
-    var len = snprintf(buff, 128, "%.15g", n);
-    if (len < 0) return 0;
-    buff[@intCast(len)] = 0;
-    const check = strtod(buff, null);
-    if (check != n) {
-        len = snprintf(buff, 128, "%.17g", n);
-        if (len < 0) return 0;
-        buff[@intCast(len)] = 0;
-    }
-    const idx = strspn(buff, "-0123456789");
-    if (buff[idx] == 0) {
-        const ulen: usize = @intCast(len);
-        buff[ulen] = '.';
-        buff[ulen + 1] = '0';
-        buff[ulen + 2] = 0;
-        return ulen + 2;
-    }
-    return @intCast(len);
-}
-
 pub fn luaL_tolstring(L: *lua.lua_State, idx: i32, len: ?*usize) ?[]const u8 {
     const abs_idx = lua.lua_absindex(L, idx);
     if ((luaL_callmeta(L, abs_idx, "__tostring") catch 0) != 0) {
@@ -365,17 +340,10 @@ pub fn luaL_tolstring(L: *lua.lua_State, idx: i32, len: ?*usize) ?[]const u8 {
             lua.lua_pushvalue(L, abs_idx);
         },
         lua.LUA_TNUMBER => {
+            const v = lua.stackAt(L, abs_idx);
             var buf: [128]u8 = undefined;
-            if (lua.lua_isinteger(L, abs_idx) != 0) {
-                if (lua.lua_tointeger(L, abs_idx)) |iv| {
-                    const s = std.fmt.bufPrint(&buf, "{d}", .{iv}) catch return null;
-                    _ = lua.lua_pushstring(L, s);
-                }
-            } else {
-                const fv = lua.lua_tonumber(L, abs_idx) orelse 0.0;
-                const slen = tostringbuffFloat(fv, &buf);
-                _ = lua.lua_pushlstring(L, &buf, slen);
-            }
+            const s = lua.luaO_tostringbuff(v, &buf);
+            _ = lua.lua_pushlstring(L, s, s.len);
         },
         lua.LUA_TBOOLEAN => {
             const b = lua.lua_toboolean(L, abs_idx);
@@ -427,7 +395,7 @@ const LEVELS2 = 11;
 fn pushfuncname(L: *lua.lua_State, ar: *const lua.lua_Debug) !void {
     if (ar.namewhat != null and ar.namewhat.?.len > 0) {
         const name = ar.name orelse "?";
-        const fmt_str = try std.fmt.allocPrint(L.allocator, "{s} '{s}'", .{ar.namewhat.?, name});
+        const fmt_str = try std.fmt.allocPrint(L.allocator, "{s} '{s}'", .{ ar.namewhat.?, name });
         defer L.allocator.free(fmt_str);
         _ = lua.lua_pushlstring(L, fmt_str, fmt_str.len);
     } else if (ar.what != null and ar.what.?.len > 0 and ar.what.?[0] == 'm') {
@@ -436,7 +404,7 @@ fn pushfuncname(L: *lua.lua_State, ar: *const lua.lua_Debug) !void {
         const src = ar.source orelse "?";
         var short_src: [lua.LUA_IDSIZE]u8 = undefined;
         lua.luaO_chunkid(&short_src, src);
-        const fmt_str = try std.fmt.allocPrint(L.allocator, "function <{s}:{}>", .{std.mem.sliceTo(&short_src, 0), ar.linedefined});
+        const fmt_str = try std.fmt.allocPrint(L.allocator, "function <{s}:{}>", .{ std.mem.sliceTo(&short_src, 0), ar.linedefined });
         defer L.allocator.free(fmt_str);
         _ = lua.lua_pushlstring(L, fmt_str, fmt_str.len);
     } else if (pushglobalfuncname(L, @constCast(ar))) {
@@ -517,7 +485,7 @@ pub fn luaL_traceback(L: *lua.lua_State, L2: *lua.lua_State, msg: []const u8, le
             if (gres == 0) {
                 continue;
             }
-            
+
             const src = if (ar.source) |s| s else "?";
             var short_src: [lua.LUA_IDSIZE]u8 = undefined;
             lua.luaO_chunkid(&short_src, src);
@@ -527,7 +495,7 @@ pub fn luaL_traceback(L: *lua.lua_State, L2: *lua.lua_State, msg: []const u8, le
             const line_str = if (ar.currentline <= 0)
                 try std.fmt.bufPrint(&line_buf, "\n\t{s}: in ", .{short_src_slice})
             else
-                try std.fmt.bufPrint(&line_buf, "\n\t{s}:{}: in ", .{short_src_slice, ar.currentline});
+                try std.fmt.bufPrint(&line_buf, "\n\t{s}:{}: in ", .{ short_src_slice, ar.currentline });
             try luaL_addlstring(L, &b, line_str);
 
             try pushfuncname(L, &ar);
@@ -877,7 +845,7 @@ pub fn luaL_gsub(L: *lua.lua_State, s: []const u8, p: []const u8, r: []const u8)
 pub fn luaL_newmetatable(L: *lua.lua_State, tname: []const u8) !i32 {
     _ = try lua.lua_getfield(L, lua.LUA_REGISTRYINDEX, tname);
     if (lua.lua_type(L, -1) != lua.LUA_TNIL) {
-        return 0;  // already exists
+        return 0; // already exists
     }
     lua.lua_pop(L, 1);
     lua.lua_createtable(L, 0, 2);
@@ -1035,4 +1003,3 @@ pub fn luaL_getenv(L: *lua.lua_State, name: []const u8) anyerror!?[]const u8 {
     }
     return null;
 }
-

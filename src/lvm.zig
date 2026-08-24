@@ -51,7 +51,7 @@ fn numMod(a: f64, b: f64) f64 {
 fn forlimit(L: *lua.lua_State, init: i64, lim: lua.TValue, p: *i64, step: i64) !bool {
     const min_f64 = @as(f64, -9223372036854775808.0);
     const max_exclusive_f64 = @as(f64, 9223372036854775808.0);
-    
+
     var converted = false;
     var val: i64 = 0;
     const num = toNumeric(lim);
@@ -75,7 +75,7 @@ fn forlimit(L: *lua.lua_State, init: i64, lim: lua.TValue, p: *i64, step: i64) !
         p.* = val;
         return if (step > 0) init > val else init < val;
     }
-    
+
     var flim: f64 = 0.0;
     if (num) |nv| {
         flim = switch (nv) {
@@ -87,7 +87,7 @@ fn forlimit(L: *lua.lua_State, init: i64, lim: lua.TValue, p: *i64, step: i64) !
         try lua.luaG_forerror(L, lim, "limit");
         return true;
     }
-    
+
     if (0.0 < flim) {
         if (step < 0) return true;
         p.* = std.math.maxInt(i64);
@@ -102,7 +102,7 @@ fn forprep(L: *lua.lua_State, ra_idx: usize) !bool {
     const pinit = L.stack[ra_idx];
     const plimit = L.stack[ra_idx + 1];
     const pstep = L.stack[ra_idx + 2];
-    
+
     if (pinit == .integer and pstep == .integer) {
         const init = pinit.integer;
         const step = pstep.integer;
@@ -131,7 +131,7 @@ fn forprep(L: *lua.lua_State, ra_idx: usize) !bool {
         var init: f64 = 0.0;
         var limit: f64 = 0.0;
         var step: f64 = 0.0;
-        
+
         const num_limit = toNumeric(plimit);
         if (num_limit == null) {
             try lua.luaG_forerror(L, plimit, "limit");
@@ -141,7 +141,7 @@ fn forprep(L: *lua.lua_State, ra_idx: usize) !bool {
             .number => |n| n,
             else => unreachable,
         };
-        
+
         const num_step = toNumeric(pstep);
         if (num_step == null) {
             try lua.luaG_forerror(L, pstep, "step");
@@ -154,7 +154,7 @@ fn forprep(L: *lua.lua_State, ra_idx: usize) !bool {
         if (step == 0.0) {
             try lua.luaG_runerror(L, "'for' step is zero");
         }
-        
+
         const num_init = toNumeric(pinit);
         if (num_init == null) {
             try lua.luaG_forerror(L, pinit, "initial value");
@@ -164,7 +164,7 @@ fn forprep(L: *lua.lua_State, ra_idx: usize) !bool {
             .number => |n| n,
             else => unreachable,
         };
-        
+
         if (if (0.0 < step) limit < init else init < limit) {
             return true;
         } else {
@@ -1371,13 +1371,9 @@ pub fn run(L: *lua.lua_State, active_ci: *lua.CallInfo) anyerror!void {
                             while (j < k) : (j += 1) {
                                 switch (L.stack[ra_idx + j]) {
                                     .string => |s| try list.appendSlice(L.allocator, s.?.s),
-                                    .number => |num| {
-                                        var b: [64]u8 = undefined;
-                                        try list.appendSlice(L.allocator, std.fmt.bufPrint(&b, "{d}", .{num}) catch "");
-                                    },
-                                    .integer => |num| {
-                                        var b: [32]u8 = undefined;
-                                        try list.appendSlice(L.allocator, std.fmt.bufPrint(&b, "{d}", .{num}) catch "");
+                                    .number, .integer => {
+                                        var b: [128]u8 = undefined;
+                                        try list.appendSlice(L.allocator, lua.luaO_tostringbuff(L.stack[ra_idx + j], &b));
                                     },
                                     else => unreachable,
                                 }
@@ -1510,8 +1506,7 @@ pub fn run(L: *lua.lua_State, active_ci: *lua.CallInfo) anyerror!void {
             },
             .CALL => {
                 const ra_idx = ci.base + @as(usize, @intCast(GETARG_A(instruction)));
-                if (GETARG_C(instruction) == 0) {
-                }
+                if (GETARG_C(instruction) == 0) {}
                 const b = GETARG_B(instruction);
                 const nresults = GETARG_C(instruction) - 1;
                 if (b != 0) {

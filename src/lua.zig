@@ -1670,6 +1670,48 @@ pub fn lua_toboolean(L: *lua_State, idx: i32) i32 {
     return if (v.toBoolean()) 1 else 0;
 }
 
+extern "c" fn snprintf(buf: [*]u8, size: usize, format: [*]const u8, ...) c_int;
+extern "c" fn strtod(nptr: [*:0]const u8, endptr: ?*?[*:0]const u8) f64;
+extern "c" fn strspn(str1: [*]const u8, str2: [*]const u8) usize;
+
+pub fn tostringbuffFloat(n: f64, buff: *[128]u8) usize {
+    var len = snprintf(buff, 128, "%.15g", n);
+    if (len < 0) return 0;
+    buff[@intCast(len)] = 0;
+    const check = strtod(@ptrCast(buff), null);
+    if (check != n) {
+        len = snprintf(buff, 128, "%.17g", n);
+        if (len < 0) return 0;
+        buff[@intCast(len)] = 0;
+    }
+    const idx = strspn(buff, "-0123456789");
+    if (buff[idx] == 0) {
+        const ulen: usize = @intCast(len);
+        buff[ulen] = '.';
+        buff[ulen + 1] = '0';
+        buff[ulen + 2] = 0;
+        return ulen + 2;
+    }
+    return @intCast(len);
+}
+
+pub fn luaO_tostringbuff(val: TValue, buff: *[128]u8) []const u8 {
+    return switch (val) {
+        .integer => |i| std.fmt.bufPrint(buff, "{d}", .{i}) catch "",
+        .number => |n| {
+            if (std.math.isNan(n)) {
+                return "nan";
+            } else if (std.math.isInf(n)) {
+                return if (n < 0) "-inf" else "inf";
+            }
+            const len = tostringbuffFloat(n, buff);
+            return buff[0..len];
+        },
+        .string => |s| if (s) |str| str.s else "",
+        else => "",
+    };
+}
+
 pub fn lua_tolstring(L: *lua_State, idx: i32, len: ?*usize) ?[]const u8 {
     const ptr = idxPtr(L, idx) orelse return null;
     switch (ptr.*) {
@@ -1677,17 +1719,9 @@ pub fn lua_tolstring(L: *lua_State, idx: i32, len: ?*usize) ?[]const u8 {
             if (len) |p| p.* = s.?.len;
             return s.?.s;
         },
-        .integer => |val| {
-            var buf: [32]u8 = undefined;
-            const s = std.fmt.bufPrint(&buf, "{}", .{val}) catch return null;
-            const ts = lstring.luaS_new(L, s) catch return null;
-            ptr.* = TValue{ .string = ts };
-            if (len) |p| p.* = ts.len;
-            return ts.s;
-        },
-        .number => |val| {
-            var buf: [64]u8 = undefined;
-            const s = std.fmt.bufPrint(&buf, "{d}", .{val}) catch return null;
+        .integer, .number => {
+            var buf: [128]u8 = undefined;
+            const s = luaO_tostringbuff(ptr.*, &buf);
             const ts = lstring.luaS_new(L, s) catch return null;
             ptr.* = TValue{ .string = ts };
             if (len) |p| p.* = ts.len;
@@ -5376,14 +5410,9 @@ pub fn lua_concat(L: *lua_State, n: i32) !void {
         const val = L.stack[start + k];
         switch (val) {
             .string => |s| try list.appendSlice(L.allocator, s.?.s),
-            .number => |num| {
-                var buf: [64]u8 = undefined;
-                const slice = try std.fmt.bufPrint(&buf, "{d}", .{num});
-                try list.appendSlice(L.allocator, slice);
-            },
-            .integer => |num| {
-                var buf: [32]u8 = undefined;
-                const slice = try std.fmt.bufPrint(&buf, "{d}", .{num});
+            .number, .integer => {
+                var buf: [128]u8 = undefined;
+                const slice = luaO_tostringbuff(val, &buf);
                 try list.appendSlice(L.allocator, slice);
             },
             else => {
@@ -5502,7 +5531,6 @@ fn trailingAllSpace(s: []const u8, off: usize) bool {
     return k == s.len;
 }
 
-extern "c" fn strtod(nptr: [*:0]const u8, endptr: *?[*:0]const u8) f64;
 extern "c" fn localeconv() *Lconv;
 const Lconv = extern struct {
     decimal_point: [*:0]const u8,
