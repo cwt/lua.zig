@@ -3488,9 +3488,14 @@ test "H.1 createargtable builds the global arg table" {
     try lua.luaL_newstate(&L, gpa);
     defer lua.lua_close(&L);
 
-    try lua.createargtable(&L, &[_][]const u8{ "luazig", "script.lua", "extra1", "extra2" });
+    try lua.createargtable(&L, &[_][]const u8{ "luazig", "script.lua", "extra1", "extra2" }, 1);
     _ = lua.lua_getglobal(&L, "arg");
     try std.testing.expectEqual(@as(i32, lua.LUA_TTABLE), lua.lua_type(&L, -1));
+
+    _ = lua.lua_rawgeti(&L, -1, -1);
+    const a_neg1 = lua.lua_tostring(&L, -1) orelse return error.TestFailed;
+    try std.testing.expectEqualSlices(u8, "luazig", a_neg1);
+    lua.lua_pop(&L, 1);
 
     _ = lua.lua_rawgeti(&L, -1, 0);
     const a0 = lua.lua_tostring(&L, -1) orelse return error.TestFailed;
@@ -3505,6 +3510,7 @@ test "H.1 createargtable builds the global arg table" {
     _ = lua.lua_rawgeti(&L, -1, 2);
     const a2 = lua.lua_tostring(&L, -1) orelse return error.TestFailed;
     try std.testing.expectEqualSlices(u8, "extra2", a2);
+    lua.lua_pop(&L, 1);
 }
 
 test "H.1 lua_getallocf / lua_setallocf roundtrip" {
@@ -4912,4 +4918,41 @@ test "BUG-128: compiler instruction emission propagates OOM and produces valid b
         \\assert(x == 50)
     , "=(bug128)");
     try std.testing.expectEqual(@as(i32, lua.LUA_OK), status);
+}
+
+test "BUG-129: CLI createargtable with negative options and progname error prefix" {
+    const gpa = std.testing.allocator;
+    var L: lua.lua_State = undefined;
+    try lua.luaL_newstate(&L, gpa);
+    defer lua.lua_close(&L);
+
+    // Given argv: ["luazig", "-i", "-v", "main.lua", "x", "y"] with script at index 3:
+    // arg[-3] = "luazig", arg[-2] = "-i", arg[-1] = "-v", arg[0] = "main.lua", arg[1] = "x", arg[2] = "y"
+    try lua.createargtable(&L, &[_][]const u8{ "luazig", "-i", "-v", "main.lua", "x", "y" }, 3);
+    _ = lua.lua_getglobal(&L, "arg");
+    try std.testing.expectEqual(@as(i32, lua.LUA_TTABLE), lua.lua_type(&L, -1));
+
+    _ = lua.lua_rawgeti(&L, -1, -3);
+    try std.testing.expectEqualStrings("luazig", lua.lua_tostring(&L, -1).?);
+    lua.lua_pop(&L, 1);
+
+    _ = lua.lua_rawgeti(&L, -1, -2);
+    try std.testing.expectEqualStrings("-i", lua.lua_tostring(&L, -1).?);
+    lua.lua_pop(&L, 1);
+
+    _ = lua.lua_rawgeti(&L, -1, -1);
+    try std.testing.expectEqualStrings("-v", lua.lua_tostring(&L, -1).?);
+    lua.lua_pop(&L, 1);
+
+    _ = lua.lua_rawgeti(&L, -1, 0);
+    try std.testing.expectEqualStrings("main.lua", lua.lua_tostring(&L, -1).?);
+    lua.lua_pop(&L, 1);
+
+    _ = lua.lua_rawgeti(&L, -1, 1);
+    try std.testing.expectEqualStrings("x", lua.lua_tostring(&L, -1).?);
+    lua.lua_pop(&L, 1);
+
+    _ = lua.lua_rawgeti(&L, -1, 2);
+    try std.testing.expectEqualStrings("y", lua.lua_tostring(&L, -1).?);
+    lua.lua_pop(&L, 1);
 }

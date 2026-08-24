@@ -994,6 +994,13 @@ pub fn luaL_openselectedlibs(L: *lua.lua_State, openmask: i32, closedmask: i32) 
 }
 
 pub fn luaL_getenv(L: *lua.lua_State, name: []const u8) anyerror!?[]const u8 {
+    _ = try lua.lua_getfield(L, lua.LUA_REGISTRYINDEX, "LUA_NOENV");
+    if (lua.lua_type(L, -1) != lua.LUA_TNIL) {
+        lua.lua_pop(L, 1);
+        return null;
+    }
+    lua.lua_pop(L, 1);
+
     const name_z = try L.allocator.allocSentinel(u8, name.len, 0);
     defer L.allocator.free(name_z);
     @memcpy(name_z[0..name.len], name);

@@ -3,71 +3,102 @@ const lua = @import("lua.zig");
 const lauxlib = lua.lauxlib;
 const build_options = @import("build_options");
 
-/// Result of parsing the command-line arguments (everything after the
-/// program name). Mirrors the reference standalone interpreter:
-///   luazig [options] [script [args]]
-/// Options: -e chunk, -l name, -i, -v, -- (stop options), - (stdin script).
+/// Action resulting from -e, -l, -W options.
+const OptionAction = union(enum) {
+    eval: []const u8,
+    lib: []const u8,
+    warn_on,
+};
+
+/// Result of parsing command-line arguments. Mirrors reference lua.c collectargs.
 const ParsedArgs = struct {
     interactive: bool = false,
     show_version: bool = false,
-    script: ?[]const u8 = null,
-    extra_args: []const [:0]const u8 = &[_][:0]const u8{},
-    e_chunks: [][]const u8 = &[_][]const u8{},
-    l_libs: [][]const u8 = &[_][]const u8{},
+    ignore_env: bool = false,
+    has_e: bool = false,
+    script_idx: i32 = 0,
+    actions: []const OptionAction = &[_]OptionAction{},
 };
 
 fn parseArgs(allocator: std.mem.Allocator, args: []const [:0]const u8) !ParsedArgs {
     var result: ParsedArgs = .{};
-    var e_list = std.ArrayList([]const u8).empty;
-    var l_list = std.ArrayList([]const u8).empty;
+    var actions = std.ArrayList(OptionAction).empty;
 
-    var i: usize = 1; // args[0] is the program name
+    if (args.len <= 1) {
+        result.script_idx = 0;
+        return result;
+    }
+
+    var i: usize = 1;
     while (i < args.len) : (i += 1) {
         const arg = args[i];
+        if (arg.len == 0 or arg[0] != '-') {
+            // First non-option is the script
+            result.script_idx = @intCast(i);
+            break;
+        }
         if (std.mem.eql(u8, arg, "--")) {
-            // Stop option parsing; the next argument (if any) is the script.
-            i += 1;
-            if (i < args.len) {
-                result.script = args[i];
-                i += 1;
+            // Stop option parsing; next arg is script (or 0 if none)
+            if (i + 1 < args.len) {
+                result.script_idx = @intCast(i + 1);
+            } else {
+                result.script_idx = 0;
             }
             break;
         } else if (std.mem.eql(u8, arg, "-")) {
-            // Read the script from stdin.
-            result.script = "-";
-            i += 1;
+            // Script name is "-"
+            result.script_idx = @intCast(i);
             break;
-        } else if (arg.len >= 2 and arg[0] == '-') {
-            switch (arg[1]) {
-                'e' => {
-                    if (i + 1 >= args.len) {
+        }
+
+        switch (arg[1]) {
+            'E' => {
+                if (arg.len != 2) return error.UnrecognizedOption;
+                result.ignore_env = true;
+            },
+            'W' => {
+                if (arg.len != 2) return error.UnrecognizedOption;
+                try actions.append(allocator, .warn_on);
+            },
+            'i' => {
+                if (arg.len != 2) return error.UnrecognizedOption;
+                result.interactive = true;
+                result.show_version = true;
+            },
+            'v' => {
+                if (arg.len != 2) return error.UnrecognizedOption;
+                result.show_version = true;
+            },
+            'e' => {
+                result.has_e = true;
+                const chunk = if (arg.len > 2)
+                    arg[2..]
+                else blk: {
+                    i += 1;
+                    if (i >= args.len or (args[i].len > 0 and args[i][0] == '-')) {
                         return error.MissingOptionArgument;
                     }
-                    try e_list.append(allocator, args[i + 1]);
+                    break :blk args[i];
+                };
+                try actions.append(allocator, .{ .eval = chunk });
+            },
+            'l' => {
+                const lib = if (arg.len > 2)
+                    arg[2..]
+                else blk: {
                     i += 1;
-                },
-                'l' => {
-                    if (i + 1 >= args.len) {
+                    if (i >= args.len or (args[i].len > 0 and args[i][0] == '-')) {
                         return error.MissingOptionArgument;
                     }
-                    try l_list.append(allocator, args[i + 1]);
-                    i += 1;
-                },
-                'i' => result.interactive = true,
-                'v' => result.show_version = true,
-                else => return error.UnrecognizedOption,
-            }
-        } else {
-            // First non-option argument is the script file.
-            result.script = arg;
-            i += 1;
-            break;
+                    break :blk args[i];
+                };
+                try actions.append(allocator, .{ .lib = lib });
+            },
+            else => return error.UnrecognizedOption,
         }
     }
 
-    result.extra_args = if (result.script != null) args[i..] else &[_][:0]const u8{};
-    result.e_chunks = try e_list.toOwnedSlice(allocator);
-    result.l_libs = try l_list.toOwnedSlice(allocator);
+    result.actions = try actions.toOwnedSlice(allocator);
     return result;
 }
 
@@ -123,19 +154,24 @@ fn pcallWithHandler(L: *lua.lua_State, nargs: i32) i32 {
 
 /// Run a chunk already loaded at the top of the stack (with `nargs` extra
 /// arguments just below it). Returns true if an error occurred.
-fn runLoadedChunk(L: *lua.lua_State, io: std.Io, nargs: i32) !bool {
+fn runLoadedChunk(L: *lua.lua_State, io: std.Io, progname: ?[]const u8, nargs: i32) !bool {
     const status = pcallWithHandler(L, nargs);
     if (status != lua.LUA_OK) {
-        printError(L, io);
+        printError(L, io, progname);
         return true;
     }
     lua.lua_settop(L, 0);
     return false;
 }
 
-/// Print a top-level error message (already carrying a traceback, courtesy of
-/// `msghandler`) to stderr.
-fn printError(L: *lua.lua_State, io: std.Io) void {
+/// Print a top-level error message to stderr, prefixed by progname if present.
+fn printError(L: *lua.lua_State, io: std.Io, progname: ?[]const u8) void {
+    if (progname) |pname| {
+        if (pname.len > 0) {
+            stderrWrite(io, pname) catch {};
+            stderrWrite(io, ": ") catch {};
+        }
+    }
     if (lua.lua_tostring(L, -1)) |msg| {
         stderrWrite(io, msg) catch {};
         stderrWrite(io, "\n") catch {};
@@ -196,44 +232,81 @@ fn printResults(L: *lua.lua_State, io: std.Io) !void {
     lua.lua_settop(L, 0);
 }
 
-fn runString(L: *lua.lua_State, io: std.Io, s: []const u8, name: []const u8) !bool {
+fn runString(L: *lua.lua_State, io: std.Io, progname: ?[]const u8, s: []const u8, name: []const u8) !bool {
     const load_status = lauxlib.luaL_loadbufferx(L, s, name, "t");
     if (load_status != lua.LUA_OK) {
-        printError(L, io);
+        printError(L, io, progname);
         return true;
     }
-    return try runLoadedChunk(L, io, 0);
+    return try runLoadedChunk(L, io, progname, 0);
 }
 
-/// Require a library by name. Built-in libraries are already globals after
-/// luaL_openlibs, so we register them in package.loaded; otherwise we defer to
-/// require().
-fn doLibrary(L: *lua.lua_State, io: std.Io, name: []const u8) !bool {
-    _ = lua.lua_getglobal(L, name);
-    if (lua.lua_isnil(L, -1) == 0) {
-        // Already a global: register it in package.loaded[name].
-        _ = try lua.lua_getfield(L, lua.LUA_REGISTRYINDEX, lauxlib.LUA_LOADED_TABLE);
-        lua.lua_pushvalue(L, -2);
-        try lua.lua_setfield(L, -2, name);
-        lua.lua_pop(L, 2);
-        return false;
+/// Require a library by name: 'globname[=modname]' -> globname = require(modname).
+fn doLibrary(L: *lua.lua_State, io: std.Io, progname: ?[]const u8, name: []const u8) !bool {
+    var globname = name;
+    var modname = name;
+    if (std.mem.indexOfScalar(u8, name, '=')) |eq_idx| {
+        globname = name[0..eq_idx];
+        modname = name[eq_idx + 1 ..];
+    } else if (std.mem.indexOfScalar(u8, name, '-')) |dash_idx| {
+        globname = name[0..dash_idx];
     }
-    lua.lua_pop(L, 1);
 
-    // Not a global: try require(name).
     _ = lua.lua_getglobal(L, "require");
     if (lua.lua_type(L, -1) != lua.LUA_TFUNCTION) {
         lua.lua_pop(L, 1);
         return false;
     }
-    _ = lua.lua_pushstring(L, name);
+    _ = lua.lua_pushstring(L, modname);
     const status = pcallWithHandler(L, 1);
     if (status == lua.LUA_OK) {
-        try lua.lua_setglobal(L, name);
+        try lua.lua_setglobal(L, globname);
         return false;
     }
-    printError(L, io);
+    printError(L, io, progname);
     return true;
+}
+
+fn handleLuainit(L: *lua.lua_State, io: std.Io, progname: []const u8) !bool {
+    const vinit = try lauxlib.luaL_getenv(L, "LUA_INIT_5_5");
+    var init_str = vinit;
+    var name: []const u8 = "=LUA_INIT_5_5";
+    if (init_str == null) {
+        init_str = try lauxlib.luaL_getenv(L, "LUA_INIT");
+        name = "=LUA_INIT";
+    }
+    if (init_str) |s| {
+        defer L.allocator.free(s);
+        if (s.len > 0 and s[0] == '@') {
+            const fname = s[1..];
+            const load_status = lauxlib.luaL_loadfilex(L, fname, "bt");
+            if (load_status != lua.LUA_OK) {
+                printError(L, io, progname);
+                return true;
+            }
+            return try runLoadedChunk(L, io, progname, 0);
+        } else {
+            return try runString(L, io, progname, s, name);
+        }
+    }
+    return false;
+}
+
+/// Push script arguments from table 'arg' (1 to #arg) onto the stack.
+fn pushargs(L: *lua.lua_State) !i32 {
+    _ = lua.lua_getglobal(L, "arg");
+    if (lua.lua_type(L, -1) != lua.LUA_TTABLE) {
+        lua.lua_pop(L, 1);
+        return 0;
+    }
+    const n: i32 = @intCast(try lauxlib.luaL_len(L, -1));
+    _ = lua.lua_checkstack(L, n + 3);
+    var i: i32 = 1;
+    while (i <= n) : (i += 1) {
+        _ = lua.lua_rawgeti(L, -i, i);
+    }
+    lua.lua_remove(L, -(n + 1)); // remove arg table from the stack
+    return n;
 }
 
 fn readAllStdin(io: std.Io, gpa: std.mem.Allocator) ![]u8 {
@@ -264,15 +337,10 @@ fn runRepl(L: *lua.lua_State, io: std.Io, gpa: std.mem.Allocator, print_banner: 
     // more than one line (which would discard the rest of multi-line input).
     var read_buf: [4096]u8 = undefined;
     var file_reader = std.Io.File.Reader.init(std.Io.File.stdin(), io, &read_buf);
-    // Keep the Io.Reader as a pointer into file_reader: its vtable uses
-    // fieldParentPtr("interface", ...) to recover the owning Io.File.Reader,
-    // which only works while the reader lives inside the struct instance.
     const reader = &file_reader.interface;
 
     while (true) {
         try stdoutWrite(io, if (accum.items.len == 0) "> " else ">> ");
-        // Read one line (excluding the trailing newline). A trailing line
-        // without a newline, or EOF, ends the REPL.
         const line = reader.takeDelimiter('\n') catch |err| {
             return err;
         } orelse break;
@@ -285,14 +353,12 @@ fn runRepl(L: *lua.lua_State, io: std.Io, gpa: std.mem.Allocator, print_banner: 
         try accum.appendSlice(gpa, line);
         try accum.append(gpa, '\n');
 
-        // Try to compile the accumulated input. A successful compile means the
-        // statement(s) are complete; a syntax error mentioning <eof> means we
-        // need to keep reading (multi-line input).
+        // Try to compile the accumulated input.
         const status = lauxlib.luaL_loadstring(L, accum.items);
         if (status == lua.LUA_OK) {
             const call_status = pcallWithHandler(L, 0);
             if (call_status != lua.LUA_OK) {
-                printError(L, io);
+                printError(L, io, null);
             } else {
                 try printResults(L, io);
             }
@@ -312,26 +378,16 @@ fn runRepl(L: *lua.lua_State, io: std.Io, gpa: std.mem.Allocator, print_banner: 
                 lua.lua_pop(L, 1); // discard the incomplete-input error
                 continue;
             }
-            printError(L, io);
+            printError(L, io, null);
             accum.clearRetainingCapacity();
         } else {
-            printError(L, io);
+            printError(L, io, null);
             accum.clearRetainingCapacity();
         }
     }
 }
 
 pub fn main(init: std.process.Init) !void {
-    // Memory-safety allocator selection (mirror talyn's asan/debug-alloc):
-    //  - asan: build with sanitize_c = .full (the C sanitizer / UBSan), which
-    //    instruments the binary for undefined-behaviour checks, and use a
-    //    safety-checked DebugAllocator so heap double-free / use-after-free are
-    //    also caught at runtime.
-    //  - debug-alloc: use a safety-checked DebugAllocator so heap double-free /
-    //    use-after-free / leaks are caught at runtime. Zig 0.16 has no
-    //    first-class AddressSanitizer for Zig heaps (only -fsanitize-c / UBSan
-    //    and -fsanitize-thread / TSan), so this is the Zig-native equivalent.
-    //  - default: the process-provided general-purpose allocator.
     var dbg_alloc = std.heap.DebugAllocator(.{ .safety = true }).init;
     var gpa: std.mem.Allocator = if (build_options.asan or build_options.debug_alloc)
         dbg_alloc.allocator()
@@ -341,31 +397,21 @@ pub fn main(init: std.process.Init) !void {
     const io = init.io;
     const arena = init.arena.allocator();
     const args = try init.minimal.args.toSlice(arena);
+    const progname = if (args.len > 0) args[0] else "luazig";
 
     const L = try gpa.create(lua.lua_State);
     defer gpa.destroy(L);
     try lua.luaL_newstate_io(L, gpa, io);
-    try lua.luaL_openlibs(L);
-    // Close on every exit path (including option-parse errors) so the Lua
-    // state and all its allocations are released.
     defer lua.lua_close(L);
 
     const parsed = parseArgs(arena, args) catch |err| {
         switch (err) {
-            error.MissingOptionArgument => try stderrWrite(io, "lua: option requires an argument\n"),
-            error.UnrecognizedOption => try stderrWrite(io, "lua: unrecognized option\n"),
-            else => try stderrWrite(io, "lua: invalid arguments\n"),
+            error.MissingOptionArgument => try stderrWrite(io, "luazig: option requires an argument\n"),
+            error.UnrecognizedOption => try stderrWrite(io, "luazig: unrecognized option\n"),
+            else => try stderrWrite(io, "luazig: invalid arguments\n"),
         }
         return err;
     };
-
-    // Build the `arg` table. createargtable expects args[0]=prog, args[1]=script,
-    // args[2..]=extra args. When there is no script the table is left empty.
-    var effective = std.ArrayList([]const u8).empty;
-    try effective.append(arena, args[0]);
-    if (parsed.script) |s| try effective.append(arena, s);
-    for (parsed.extra_args) |ea| try effective.append(arena, ea);
-    try lua.createargtable(L, effective.items);
 
     if (parsed.show_version) {
         try stdoutWrite(io, lua.LUA_COPYRIGHT);
@@ -374,36 +420,95 @@ pub fn main(init: std.process.Init) !void {
         try stdoutWrite(io, "\n");
     }
 
+    if (parsed.ignore_env) {
+        _ = lua.lua_pushboolean(L, 1);
+        try lua.lua_setfield(L, lua.LUA_REGISTRYINDEX, "LUA_NOENV");
+    }
+
+    try lua.luaL_openlibs(L);
+
+    // Build the `arg` table with negative, zero, and positive indices.
+    var argv_list = std.ArrayList([]const u8).empty;
+    for (args) |a| try argv_list.append(arena, a);
+    try lua.createargtable(L, argv_list.items, parsed.script_idx);
+
     var had_error = false;
 
-    for (parsed.e_chunks) |chunk| {
-        had_error = (try runString(L, io, chunk, "=(command line)")) or had_error;
+    if (!parsed.ignore_env) {
+        if (try handleLuainit(L, io, progname)) {
+            std.process.exit(1);
+        }
     }
 
-    for (parsed.l_libs) |lib| {
-        had_error = (try doLibrary(L, io, lib)) or had_error;
+    for (parsed.actions) |act| {
+        switch (act) {
+            .eval => |chunk| {
+                if (try runString(L, io, progname, chunk, "=(command line)")) {
+                    had_error = true;
+                    break;
+                }
+            },
+            .lib => |lib| {
+                if (try doLibrary(L, io, progname, lib)) {
+                    had_error = true;
+                    break;
+                }
+            },
+            .warn_on => {
+                lua.lua_warning(L, "@on", 0);
+            },
+        }
     }
 
-    if (parsed.script) |s| {
-        if (std.mem.eql(u8, s, "-")) {
+    if (!had_error and parsed.script_idx > 0) {
+        const s = args[@as(usize, @intCast(parsed.script_idx))];
+        const is_stdin = std.mem.eql(u8, s, "-") and
+            !(parsed.script_idx > 1 and std.mem.eql(u8, args[@as(usize, @intCast(parsed.script_idx - 1))], "--"));
+        if (is_stdin) {
             const content = try readAllStdin(io, gpa);
             defer gpa.free(content);
-            had_error = (try runString(L, io, content, "=stdin")) or had_error;
+            const load_status = lauxlib.luaL_loadbufferx(L, content, "=stdin", "bt");
+            if (load_status != lua.LUA_OK) {
+                printError(L, io, progname);
+                had_error = true;
+            } else {
+                const nparams = try pushargs(L);
+                had_error = (try runLoadedChunk(L, io, progname, nparams)) or had_error;
+            }
         } else {
             const load_status = lauxlib.luaL_loadfilex(L, s, "bt");
             if (load_status != lua.LUA_OK) {
-                printError(L, io);
+                printError(L, io, progname);
                 had_error = true;
             } else {
-                had_error = (try runLoadedChunk(L, io, 0)) or had_error;
+                const nparams = try pushargs(L);
+                had_error = (try runLoadedChunk(L, io, progname, nparams)) or had_error;
             }
         }
     }
 
-    // Enter the REPL when -i is given, or when there is no script and no -e.
-    // REPL errors do not affect the process exit code (mirrors lua.c).
-    if (parsed.interactive or (parsed.script == null and parsed.e_chunks.len == 0)) {
-        try runRepl(L, io, gpa, !parsed.show_version);
+    if (!had_error) {
+        if (parsed.interactive) {
+            try runRepl(L, io, gpa, false);
+        } else if (parsed.script_idx < 1 and !parsed.has_e and !parsed.show_version) {
+            if (std.c.isatty(0) != 0) {
+                try stdoutWrite(io, lua.LUA_COPYRIGHT);
+                try stdoutWrite(io, "\n");
+                try stdoutWrite(io, lua.LUA_PORT_COPYRIGHT);
+                try stdoutWrite(io, "\n");
+                try runRepl(L, io, gpa, false);
+            } else {
+                const content = try readAllStdin(io, gpa);
+                defer gpa.free(content);
+                const load_status = lauxlib.luaL_loadbufferx(L, content, "=stdin", "bt");
+                if (load_status != lua.LUA_OK) {
+                    printError(L, io, progname);
+                    had_error = true;
+                } else {
+                    had_error = (try runLoadedChunk(L, io, progname, 0)) or had_error;
+                }
+            }
+        }
     }
 
     if (had_error) {

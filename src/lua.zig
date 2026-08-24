@@ -5867,19 +5867,23 @@ pub fn luaL_newstate(L: *lua_State, gpa: std.mem.Allocator) !void {
     }
 }
 
-pub fn createargtable(L: *lua_State, args: []const []const u8) !void {
-    // Build the `arg` table (as in the reference standalone interpreter):
-    //   arg[0] = script name (args[1]), arg[1..] = extra CLI args (args[2..]).
-    // When running the REPL (no script), the table is left empty.
-    lua_createtable(L, 0, 0);
-    if (args.len >= 2) {
-        _ = lua_pushstring(L, args[1]);
-        try lua_rawseti(L, -2, 0);
-        var i: usize = 2;
-        while (i < args.len) : (i += 1) {
-            _ = lua_pushstring(L, args[i]);
-            try lua_rawseti(L, -2, @as(i64, @intCast(i - 1)));
-        }
+pub fn createargtable(L: *lua_State, argv: []const []const u8, script: i32) !void {
+    // Build the `arg` table matching reference createargtable in lua.c:
+    // arg[0] = script name (argv[script]).
+    // arg[1..] = arguments after script (positive indices).
+    // arg[-1..] = options/arguments before script (negative indices).
+    // When there is no script name, script is 0 (referring to interpreter argv[0]).
+    const argc = argv.len;
+    const narg: usize = if (script >= 0 and @as(usize, @intCast(script)) + 1 <= argc)
+        argc - (@as(usize, @intCast(script)) + 1)
+    else
+        0;
+    const nhash: usize = if (script >= 0) @as(usize, @intCast(script)) + 1 else 0;
+    lua_createtable(L, @as(i32, @intCast(narg)), @as(i32, @intCast(nhash)));
+    for (argv, 0..) |arg, i| {
+        _ = lua_pushstring(L, arg);
+        const idx: i64 = @as(i64, @intCast(i)) - @as(i64, script);
+        try lua_rawseti(L, -2, idx);
     }
     try lua_setglobal(L, "arg");
 }
