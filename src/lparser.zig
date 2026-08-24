@@ -318,7 +318,7 @@ fn str_checkname(ls: *llex.LexState) !*lua.lua_TString {
 }
 
 fn luaK_jumpto(fs: *FuncState, target: i32) !void {
-    try lcode.luaK_patchlist(fs, lcode.luaK_jump(fs), target);
+    try lcode.luaK_patchlist(fs, try lcode.luaK_jump(fs), target);
 }
 
 fn luaK_setmultret(fs: *FuncState, e: *expdesc) !void {
@@ -654,7 +654,7 @@ fn leaveblock(fs: *FuncState) !void {
     const ls = fs.ls;
     const stklevel = reglevel(fs, bl.nactvar);
     if (bl.previous != null and bl.upval != 0) {
-        _ = lcode.luaK_codeABC(fs, .CLOSE, stklevel, 0, 0);
+        _ = try lcode.luaK_codeABC(fs, .CLOSE, stklevel, 0, 0);
     }
     fs.freereg = stklevel;
     removevars(fs, bl.nactvar);
@@ -716,8 +716,8 @@ fn newlabelentry(ls: *llex.LexState, l: *std.ArrayList(llex.Labeldesc), name: *l
 
 fn newgotoentry(ls: *llex.LexState, name: *lua.lua_TString, line: i32) !i32 {
     const fs = ls.fs.?;
-    const pc = lcode.luaK_jump(fs);
-    _ = lcode.luaK_codeABC(fs, .CLOSE, 0, 1, 0);
+    const pc = try lcode.luaK_jump(fs);
+    _ = try lcode.luaK_codeABC(fs, .CLOSE, 0, 1, 0);
     return try newlabelentry(ls, &ls.dyd.gt, name, line, pc);
 }
 
@@ -837,7 +837,7 @@ fn addprototype(ls: *llex.LexState) !*lua.lua_Proto {
 
 fn codeclosure(ls: *llex.LexState, e: *expdesc) !void {
     const parent = ls.fs.?.prev.?;
-    init_exp(e, .VRELOC, lcode.luaK_codeABx(parent, .CLOSURE, 0, @as(i32, @intCast(parent.p.items.len)) - 1));
+    init_exp(e, .VRELOC, try lcode.luaK_codeABx(parent, .CLOSURE, 0, @as(i32, @intCast(parent.p.items.len)) - 1));
     try lcode.luaK_exp2nextreg(parent, e);
 }
 
@@ -898,12 +898,12 @@ fn close_func(ls: *llex.LexState) !void {
     f.isVarArg = (f.flag & (PF_VAHID | PF_VATAB)) != 0;
 }
 
-fn setvararg(fs: *FuncState) void {
+fn setvararg(fs: *FuncState) !void {
     fs.f.isVarArg = true;
     if ((fs.f.flag & PF_VATAB) == 0) {
         fs.f.flag |= PF_VAHID;
     }
-    _ = lcode.luaK_codeABC(fs, .VARARGPREP, 0, 0, 0);
+    _ = try lcode.luaK_codeABC(fs, .VARARGPREP, 0, 0, 0);
 }
 
 fn body(ls: *llex.LexState, e: *expdesc, ismethod: bool, line: i32) !void {
@@ -963,7 +963,7 @@ fn parlist(ls: *llex.LexState) !void {
     try adjustlocalvars(ls, nparams);
     f.numParams = @intCast(fs.nactvar);
     if (varargk != 0) {
-        setvararg(fs);
+        try setvararg(fs);
         try adjustlocalvars(ls, 1);
     }
     try lcode.luaK_reserveregs(fs, fs.nactvar);
@@ -983,7 +983,7 @@ fn maxtostore(fs: *FuncState) i32 {
 fn constructor(ls: *llex.LexState, t: *expdesc) !void {
     const fs = ls.fs.?;
     const line = ls.linenumber;
-    const pc = lcode.luaK_codevABCk(fs, .NEWTABLE, 0, 0, 0, 0);
+    const pc = try lcode.luaK_codevABCk(fs, .NEWTABLE, 0, 0, 0, 0);
     var cc: ConsControl = undefined;
     _ = try lcode.luaK_code(fs, 0);
     cc.na = 0;
@@ -1012,7 +1012,7 @@ fn closelistfield(fs: *FuncState, cc: *ConsControl) !void {
     try lcode.luaK_exp2nextreg(fs, &cc.v);
     cc.v.k = .VVOID;
     if (cc.tostore >= cc.maxtostore) {
-        lcode.luaK_setlist(fs, cc.t.u.info, cc.na, cc.tostore);
+        try lcode.luaK_setlist(fs, cc.t.u.info, cc.na, cc.tostore);
         cc.na += cc.tostore;
         cc.tostore = 0;
     }
@@ -1022,11 +1022,11 @@ fn lastlistfield(fs: *FuncState, cc: *ConsControl) !void {
     if (cc.tostore == 0) return;
     if (hasmultret(cc.v.k)) {
         try luaK_setmultret(fs, &cc.v);
-        lcode.luaK_setlist(fs, cc.t.u.info, cc.na, lua.LUA_MULTRET);
+        try lcode.luaK_setlist(fs, cc.t.u.info, cc.na, lua.LUA_MULTRET);
         cc.na -= 1;
     } else {
         if (cc.v.k != .VVOID) try lcode.luaK_exp2nextreg(fs, &cc.v);
-        lcode.luaK_setlist(fs, cc.t.u.info, cc.na, cc.tostore);
+        try lcode.luaK_setlist(fs, cc.t.u.info, cc.na, cc.tostore);
     }
     cc.na += cc.tostore;
 }
@@ -1088,7 +1088,7 @@ fn primaryexp(ls: *llex.LexState, v: *expdesc) !void {
             try llex.luaX_next(ls);
             try expr(ls, v);
             try check_match(ls, ')', '(', line);
-            lcode.luaK_dischargevars(ls.fs.?, v);
+            try lcode.luaK_dischargevars(ls.fs.?, v);
         },
         llex.TK_NAME => try singlevar(ls, v),
         else => {
@@ -1159,7 +1159,7 @@ fn simpleexp(ls: *llex.LexState, v: *expdesc) anyerror!void {
         llex.TK_DOTS => {
             const fs = ls.fs.?;
             try check_condition(ls, isvararg(fs.f), "cannot use '...' outside a vararg function");
-            init_exp(v, .VVARARG, lcode.luaK_codeABC(fs, .VARARG, 0, fs.f.numParams, 1));
+            init_exp(v, .VVARARG, try lcode.luaK_codeABC(fs, .VARARG, 0, fs.f.numParams, 1));
         },
         '{' => {
             try constructor(ls, v);
@@ -1293,7 +1293,7 @@ fn funcargs(ls: *llex.LexState, f: *expdesc) !void {
         if (args.k != .VVOID) try lcode.luaK_exp2nextreg(fs, &args);
         nparams = fs.freereg - (base + 1);
     }
-    init_exp(f, .VCALL, lcode.luaK_codeABC(fs, .CALL, base, nparams + 1, 2));
+    init_exp(f, .VCALL, try lcode.luaK_codeABC(fs, .CALL, base, nparams + 1, 2));
     try lcode.luaK_fixline(fs, line);
     fs.freereg = @intCast(base + 1);
 }
@@ -1308,7 +1308,7 @@ fn adjust_assign(ls: *llex.LexState, nvars: i32, nexps: i32, e: *expdesc) !void 
         try lcode.luaK_setreturns(fs, e, extra);
     } else {
         if (e.k != .VVOID) try lcode.luaK_exp2nextreg(fs, e);
-        if (needed > 0) lcode.luaK_nil(fs, fs.freereg, needed);
+        if (needed > 0) try lcode.luaK_nil(fs, fs.freereg, needed);
     }
     if (needed > 0) {
         try lcode.luaK_reserveregs(fs, needed);
@@ -1350,9 +1350,9 @@ fn check_conflict(ls: *llex.LexState, lh: *LHS_assign, v: *expdesc) !void {
     }
     if (conflict != 0) {
         if (v.k == .VLOCAL) {
-            _ = lcode.luaK_codeABC(fs, .MOVE, extra, v.u.uv.ridx, 0);
+            _ = try lcode.luaK_codeABC(fs, .MOVE, extra, v.u.uv.ridx, 0);
         } else {
-            _ = lcode.luaK_codeABC(fs, .GETUPVAL, extra, v.u.info, 0);
+            _ = try lcode.luaK_codeABC(fs, .GETUPVAL, extra, v.u.info, 0);
         }
         try lcode.luaK_reserveregs(fs, 1);
     }
@@ -1422,7 +1422,8 @@ fn retstat(ls: *llex.LexState) !void {
         if (hasmultret(e.k)) {
             try luaK_setmultret(fs, &e);
             if (e.k == .VCALL and nret == 1 and
-                (if (fs.bl) |b| b.insidetbc == 0 else true)) {
+                (if (fs.bl) |b| b.insidetbc == 0 else true))
+            {
                 lvm.SET_OPCODE(getinstruction(fs, &e), .TAILCALL);
                 std.debug.assert(lvm.GETARG_A(getinstruction(fs, &e).*) == luaY_nvarstack(fs));
             }
@@ -1530,7 +1531,7 @@ fn test_then_block(ls: *llex.LexState, escapelist: *i32) !void {
     try checknext(ls, llex.TK_THEN);
     try block(ls);
     if (ls.t.token == llex.TK_ELSE or ls.t.token == llex.TK_ELSEIF) {
-        try lcode.luaK_concat(fs, escapelist, lcode.luaK_jump(fs));
+        try lcode.luaK_concat(fs, escapelist, try lcode.luaK_jump(fs));
     }
     try lcode.luaK_patchtohere(fs, condtrue);
 }
@@ -1562,10 +1563,10 @@ fn repeatstat(ls: *llex.LexState, line: i32) !void {
     try check_match(ls, llex.TK_UNTIL, llex.TK_REPEAT, line);
     var condexit = try cond(ls);
     if (bl2.upval != 0) {
-        const exit = lcode.luaK_jump(fs);
+        const exit = try lcode.luaK_jump(fs);
         try lcode.luaK_patchtohere(fs, condexit);
-        _ = lcode.luaK_codeABC(fs, .CLOSE, reglevel(fs, bl2.nactvar), 0, 0);
-        condexit = lcode.luaK_jump(fs);
+        _ = try lcode.luaK_codeABC(fs, .CLOSE, reglevel(fs, bl2.nactvar), 0, 0);
+        condexit = try lcode.luaK_jump(fs);
         try lcode.luaK_patchtohere(fs, exit);
     }
     try lcode.luaK_patchlist(fs, condexit, repeat_init);
@@ -1596,7 +1597,7 @@ fn forbody(ls: *llex.LexState, base: i32, line: i32, nvars: i32, isgen: i32) !vo
     var bl: BlockCnt = .{};
     const fs = ls.fs.?;
     try checknext(ls, llex.TK_DO);
-    const prep = lcode.luaK_codeABx(fs, forprep[@intCast(isgen)], base, 0);
+    const prep = try lcode.luaK_codeABx(fs, forprep[@intCast(isgen)], base, 0);
     fs.freereg -= 1;
     enterblock(fs, &bl, 0);
     try adjustlocalvars(ls, nvars);
@@ -1605,10 +1606,10 @@ fn forbody(ls: *llex.LexState, base: i32, line: i32, nvars: i32, isgen: i32) !vo
     try leaveblock(fs);
     try fixforjump(fs, prep, lcode.luaK_getlabel(fs), 0);
     if (isgen != 0) {
-        _ = lcode.luaK_codeABC(fs, .TFORCALL, base, 0, nvars);
+        _ = try lcode.luaK_codeABC(fs, .TFORCALL, base, 0, nvars);
         try lcode.luaK_fixline(fs, line);
     }
-    const endfor = lcode.luaK_codeABx(fs, forloop[@intCast(isgen)], base, 0);
+    const endfor = try lcode.luaK_codeABx(fs, forloop[@intCast(isgen)], base, 0);
     try fixforjump(fs, endfor, prep + 1, 1);
     try lcode.luaK_fixline(fs, line);
 }
@@ -1626,7 +1627,7 @@ fn fornum(ls: *llex.LexState, varname: *lua.lua_TString, line: i32) !void {
     if (try testnext(ls, ',')) {
         try exp1(ls);
     } else {
-        lcode.luaK_int(fs, fs.freereg, 1);
+        try lcode.luaK_int(fs, fs.freereg, 1);
         try lcode.luaK_reserveregs(fs, 1);
     }
     try adjustlocalvars(ls, 2);
@@ -1713,7 +1714,7 @@ fn getglobalattribute(ls: *llex.LexState, df: u8) !u8 {
 fn checktoclose(fs: *FuncState, level: i32) !void {
     if (level != -1) {
         marktobeclosed(fs);
-        _ = lcode.luaK_codeABC(fs, .TBC, reglevel(fs, level), 0, 0);
+        _ = try lcode.luaK_codeABC(fs, .TBC, reglevel(fs, level), 0, 0);
     }
 }
 
@@ -1747,7 +1748,8 @@ fn localstat(ls: *llex.LexState) !void {
     }
     const lastvar = getlocalvardesc(fs, vidx);
     if (nvars == nexps and lastvar.kind == RDKCONST and
-        lcode.luaK_exp2const(fs, &e, &lastvar.val)) {
+        lcode.luaK_exp2const(fs, &e, &lastvar.val))
+    {
         lastvar.kind = RDKCTC;
         try adjustlocalvars(ls, nvars - 1);
         fs.nactvar += 1;
@@ -1845,7 +1847,7 @@ fn mainfunc(ls: *llex.LexState, fs: *FuncState) !void {
     var bl: BlockCnt = .{};
     var env: *lua.Upvaldesc = undefined;
     try open_func(ls, fs, &bl);
-    setvararg(fs);
+    try setvararg(fs);
     env = try allocupvalue(fs);
     env.instack = 1;
     env.idx = 0;

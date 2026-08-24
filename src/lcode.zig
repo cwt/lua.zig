@@ -83,7 +83,7 @@ fn previousinstruction(fs: *FuncState) ?*Instruction {
     return null;
 }
 
-pub fn luaK_nil(fs: *FuncState, from: i32, n: i32) void {
+pub fn luaK_nil(fs: *FuncState, from: i32, n: i32) !void {
     const l = from + n - 1;
     const previous = previousinstruction(fs);
     if (previous) |pi| {
@@ -101,7 +101,7 @@ pub fn luaK_nil(fs: *FuncState, from: i32, n: i32) void {
             }
         }
     }
-    _ = luaK_codeABC(fs, .LOADNIL, from, n - 1, 0);
+    _ = try luaK_codeABC(fs, .LOADNIL, from, n - 1, 0);
 }
 
 fn getjump(fs: *FuncState, pc: i32) i32 {
@@ -138,8 +138,8 @@ pub fn luaK_concat(fs: *FuncState, l1: *i32, l2: i32) !void {
     }
 }
 
-pub fn luaK_jump(fs: *FuncState) i32 {
-    return codesJ(fs, .JMP, NO_JUMP, 0);
+pub fn luaK_jump(fs: *FuncState) !i32 {
+    return try codesJ(fs, .JMP, NO_JUMP, 0);
 }
 
 pub fn luaK_ret(fs: *FuncState, first: i32, nret: i32) !void {
@@ -150,12 +150,12 @@ pub fn luaK_ret(fs: *FuncState, first: i32, nret: i32) !void {
     };
     try lparser.luaY_checklimit(fs, nret + 1, lvm.MAXARG_B, "returns");
     const b = @min(nret + 1, lvm.MAXARG_B);
-    _ = luaK_codeABC(fs, op, first, b, 0);
+    _ = try luaK_codeABC(fs, op, first, b, 0);
 }
 
-fn condjump(fs: *FuncState, op: lvm.OpCode, a: i32, b: i32, c: i32, k: i32) i32 {
-    _ = luaK_codeABCk(fs, op, a, b, c, k);
-    return luaK_jump(fs);
+fn condjump(fs: *FuncState, op: lvm.OpCode, a: i32, b: i32, c: i32, k: i32) !i32 {
+    _ = try luaK_codeABCk(fs, op, a, b, c, k);
+    return try luaK_jump(fs);
 }
 
 pub fn luaK_getlabel(fs: *FuncState) i32 {
@@ -262,62 +262,44 @@ pub fn luaK_code(fs: *FuncState, i: Instruction) !i32 {
     return @intCast(fs.code.items.len - 1);
 }
 
-pub fn luaK_codeABCk(fs: *FuncState, o: lvm.OpCode, a: i32, b: i32, c: i32, k: i32) i32 {
+pub fn luaK_codeABCk(fs: *FuncState, o: lvm.OpCode, a: i32, b: i32, c: i32, k: i32) !i32 {
     std.debug.assert(a <= lvm.MAXARG_A and b <= lvm.MAXARG_B and
         c <= lvm.MAXARG_C and (k & ~@as(i32, 1)) == 0);
-    return luaK_code(fs, lvm.CREATE_ABCk(o, a, b, c, k)) catch {
-        _ = llex.luaX_syntaxerror(fs.ls, "out of memory") catch {};
-        return 0;
-    };
+    return try luaK_code(fs, lvm.CREATE_ABCk(o, a, b, c, k));
 }
 
-pub fn luaK_codevABCk(fs: *FuncState, o: lvm.OpCode, a: i32, b: i32, c: i32, k: i32) i32 {
+pub fn luaK_codevABCk(fs: *FuncState, o: lvm.OpCode, a: i32, b: i32, c: i32, k: i32) !i32 {
     std.debug.assert(a <= lvm.MAXARG_A and b <= lvm.MAXARG_vB and
         c <= lvm.MAXARG_vC and (k & ~@as(i32, 1)) == 0);
-    return luaK_code(fs, lvm.CREATE_vABCk(o, a, b, c, k)) catch {
-        _ = llex.luaX_syntaxerror(fs.ls, "out of memory") catch {};
-        return 0;
-    };
+    return try luaK_code(fs, lvm.CREATE_vABCk(o, a, b, c, k));
 }
 
-pub fn luaK_codeABx(fs: *FuncState, o: lvm.OpCode, a: i32, bx: i32) i32 {
+pub fn luaK_codeABx(fs: *FuncState, o: lvm.OpCode, a: i32, bx: i32) !i32 {
     std.debug.assert(a <= lvm.MAXARG_A and bx <= lvm.MAXARG_Bx);
-    return luaK_code(fs, lvm.CREATE_ABx(o, a, bx)) catch {
-        _ = llex.luaX_syntaxerror(fs.ls, "out of memory") catch {};
-        return 0;
-    };
+    return try luaK_code(fs, lvm.CREATE_ABx(o, a, bx));
 }
 
-fn codeAsBx(fs: *FuncState, o: lvm.OpCode, a: i32, bx: i32) i32 {
+fn codeAsBx(fs: *FuncState, o: lvm.OpCode, a: i32, bx: i32) !i32 {
     const b = bx + lvm.OFFSET_sBx;
     std.debug.assert(b <= lvm.MAXARG_Bx);
-    return luaK_code(fs, lvm.CREATE_ABx(o, a, b)) catch {
-        _ = llex.luaX_syntaxerror(fs.ls, "out of memory") catch {};
-        return 0;
-    };
+    return try luaK_code(fs, lvm.CREATE_ABx(o, a, b));
 }
 
-fn codesJ(fs: *FuncState, o: lvm.OpCode, sj: i32, k: i32) i32 {
+fn codesJ(fs: *FuncState, o: lvm.OpCode, sj: i32, k: i32) !i32 {
     std.debug.assert(sj + lvm.OFFSET_sJ <= lvm.MAXARG_sJ and (k & ~@as(i32, 1)) == 0);
-    return luaK_code(fs, lvm.CREATE_sJ(o, sj, k)) catch {
-        _ = llex.luaX_syntaxerror(fs.ls, "out of memory") catch {};
-        return 0;
-    };
+    return try luaK_code(fs, lvm.CREATE_sJ(o, sj, k));
 }
 
-fn codeextraarg(fs: *FuncState, a: i32) i32 {
+fn codeextraarg(fs: *FuncState, a: i32) !i32 {
     std.debug.assert(a <= lvm.MAXARG_Ax);
-    return luaK_code(fs, lvm.CREATE_Ax(.EXTRAARG, a)) catch {
-        _ = llex.luaX_syntaxerror(fs.ls, "out of memory") catch {};
-        return 0;
-    };
+    return try luaK_code(fs, lvm.CREATE_Ax(.EXTRAARG, a));
 }
 
-fn luaK_codek(fs: *FuncState, reg: i32, k: i32) i32 {
+fn luaK_codek(fs: *FuncState, reg: i32, k: i32) !i32 {
     if (k <= lvm.MAXARG_Bx)
-        return luaK_codeABx(fs, .LOADK, reg, k);
-    _ = luaK_codeABx(fs, .LOADKX, reg, 0);
-    _ = codeextraarg(fs, k);
+        return try luaK_codeABx(fs, .LOADK, reg, k);
+    _ = try luaK_codeABx(fs, .LOADKX, reg, 0);
+    _ = try codeextraarg(fs, k);
     return 1;
 }
 
@@ -429,19 +411,19 @@ fn int2sC(i: i32) i32 {
     return i + lvm.OFFSET_sC;
 }
 
-pub fn luaK_int(fs: *FuncState, reg: i32, i: i64) void {
+pub fn luaK_int(fs: *FuncState, reg: i32, i: i64) !void {
     if (fitsBx(i))
-        _ = codeAsBx(fs, .LOADI, reg, @intCast(i))
+        _ = try codeAsBx(fs, .LOADI, reg, @intCast(i))
     else
-        _ = luaK_codek(fs, reg, intK(fs, i) catch 0);
+        _ = try luaK_codek(fs, reg, try intK(fs, i));
 }
 
-fn luaK_float(fs: *FuncState, reg: i32, f: f64) void {
+fn luaK_float(fs: *FuncState, reg: i32, f: f64) !void {
     var fi: i64 = 0;
     if (flttointeger(f, &fi) and fitsBx(fi))
-        _ = codeAsBx(fs, .LOADF, reg, @intCast(fi))
+        _ = try codeAsBx(fs, .LOADF, reg, @intCast(fi))
     else
-        _ = luaK_codek(fs, reg, numberK(fs, f) catch 0);
+        _ = try luaK_codek(fs, reg, try numberK(fs, f));
 }
 
 fn const2exp(v: *lua.TValue, e: *expdesc) void {
@@ -486,10 +468,10 @@ pub fn luaK_setreturns(fs: *FuncState, e: *expdesc, nresults: i32) !void {
     }
 }
 
-fn str2K(fs: *FuncState, e: *expdesc) i32 {
+fn str2K(fs: *FuncState, e: *expdesc) !i32 {
     std.debug.assert(e.k == .VKSTR);
     const s = e.u.strval;
-    e.u = .{ .info = stringK(fs, s) catch 0 };
+    e.u = .{ .info = try stringK(fs, s) };
     e.k = .VK;
     return e.u.info;
 }
@@ -510,7 +492,7 @@ pub fn luaK_vapar2local(fs: *FuncState, vp: *expdesc) void {
     vp.k = .VLOCAL;
 }
 
-pub fn luaK_dischargevars(fs: *FuncState, e: *expdesc) void {
+pub fn luaK_dischargevars(fs: *FuncState, e: *expdesc) !void {
     switch (e.k) {
         .VCONST => {
             var tmp: expdesc = undefined;
@@ -530,41 +512,41 @@ pub fn luaK_dischargevars(fs: *FuncState, e: *expdesc) void {
         },
         .VUPVAL => {
             const info = e.u.info;
-            e.u = .{ .info = luaK_codeABC(fs, .GETUPVAL, 0, info, 0) };
+            e.u = .{ .info = try luaK_codeABC(fs, .GETUPVAL, 0, info, 0) };
             e.k = .VRELOC;
         },
         .VINDEXUP => {
             const t = e.u.ind.t;
             const idx = e.u.ind.idx;
-            e.u = .{ .info = luaK_codeABC(fs, .GETTABUP, 0, t, idx) };
+            e.u = .{ .info = try luaK_codeABC(fs, .GETTABUP, 0, t, idx) };
             e.k = .VRELOC;
         },
         .VINDEXI => {
             const t = e.u.ind.t;
             const idx = e.u.ind.idx;
             freereg(fs, t);
-            e.u = .{ .info = luaK_codeABC(fs, .GETI, 0, t, idx) };
+            e.u = .{ .info = try luaK_codeABC(fs, .GETI, 0, t, idx) };
             e.k = .VRELOC;
         },
         .VINDEXSTR => {
             const t = e.u.ind.t;
             const idx = e.u.ind.idx;
             freereg(fs, t);
-            e.u = .{ .info = luaK_codeABC(fs, .GETFIELD, 0, t, idx) };
+            e.u = .{ .info = try luaK_codeABC(fs, .GETFIELD, 0, t, idx) };
             e.k = .VRELOC;
         },
         .VINDEXED => {
             const t = e.u.ind.t;
             const idx = e.u.ind.idx;
             freeregs(fs, t, idx);
-            e.u = .{ .info = luaK_codeABC(fs, .GETTABLE, 0, t, idx) };
+            e.u = .{ .info = try luaK_codeABC(fs, .GETTABLE, 0, t, idx) };
             e.k = .VRELOC;
         },
         .VVARGIND => {
             const t = e.u.ind.t;
             const idx = e.u.ind.idx;
             freeregs(fs, t, idx);
-            e.u = .{ .info = luaK_codeABC(fs, .GETVARG, 0, t, idx) };
+            e.u = .{ .info = try luaK_codeABC(fs, .GETVARG, 0, t, idx) };
             e.k = .VRELOC;
         },
         .VVARARG, .VCALL => {
@@ -574,26 +556,26 @@ pub fn luaK_dischargevars(fs: *FuncState, e: *expdesc) void {
     }
 }
 
-fn discharge2reg(fs: *FuncState, e: *expdesc, reg: i32) void {
-    luaK_dischargevars(fs, e);
+fn discharge2reg(fs: *FuncState, e: *expdesc, reg: i32) !void {
+    try luaK_dischargevars(fs, e);
     switch (e.k) {
-        .VNIL => luaK_nil(fs, reg, 1),
-        .VFALSE => _ = luaK_codeABC(fs, .LOADFALSE, reg, 0, 0),
-        .VTRUE => _ = luaK_codeABC(fs, .LOADTRUE, reg, 0, 0),
+        .VNIL => try luaK_nil(fs, reg, 1),
+        .VFALSE => _ = try luaK_codeABC(fs, .LOADFALSE, reg, 0, 0),
+        .VTRUE => _ = try luaK_codeABC(fs, .LOADTRUE, reg, 0, 0),
         .VKSTR => {
-            _ = str2K(fs, e);
-            _ = luaK_codek(fs, reg, e.u.info);
+            _ = try str2K(fs, e);
+            _ = try luaK_codek(fs, reg, e.u.info);
         },
-        .VK => _ = luaK_codek(fs, reg, e.u.info),
-        .VKFLT => luaK_float(fs, reg, e.u.nval),
-        .VKINT => luaK_int(fs, reg, e.u.ival),
+        .VK => _ = try luaK_codek(fs, reg, e.u.info),
+        .VKFLT => try luaK_float(fs, reg, e.u.nval),
+        .VKINT => try luaK_int(fs, reg, e.u.ival),
         .VRELOC => {
             const pc = &fs.code.items[@as(usize, @intCast(e.u.info))];
             lvm.SETARG_A(pc, reg);
         },
         .VNONRELOC => {
             if (reg != e.u.info)
-                _ = luaK_codeABC(fs, .MOVE, reg, e.u.info, 0);
+                _ = try luaK_codeABC(fs, .MOVE, reg, e.u.info, 0);
         },
         else => {
             std.debug.assert(e.k == .VJMP);
@@ -607,13 +589,13 @@ fn discharge2reg(fs: *FuncState, e: *expdesc, reg: i32) void {
 fn discharge2anyreg(fs: *FuncState, e: *expdesc) !void {
     if (e.k != .VNONRELOC) {
         try luaK_reserveregs(fs, 1);
-        discharge2reg(fs, e, fs.freereg - 1);
+        try discharge2reg(fs, e, fs.freereg - 1);
     }
 }
 
-fn code_loadbool(fs: *FuncState, a: i32, op: lvm.OpCode) i32 {
+fn code_loadbool(fs: *FuncState, a: i32, op: lvm.OpCode) !i32 {
     _ = luaK_getlabel(fs);
-    return luaK_codeABC(fs, op, a, 0, 0);
+    return try luaK_codeABC(fs, op, a, 0, 0);
 }
 
 fn need_value(fs: *FuncState, list: i32) bool {
@@ -626,7 +608,7 @@ fn need_value(fs: *FuncState, list: i32) bool {
 }
 
 fn exp2reg(fs: *FuncState, e: *expdesc, reg: i32) !void {
-    discharge2reg(fs, e, reg);
+    try discharge2reg(fs, e, reg);
     if (e.k == .VJMP)
         try luaK_concat(fs, &e.t, e.u.info);
     if (hasjumps(e)) {
@@ -634,9 +616,9 @@ fn exp2reg(fs: *FuncState, e: *expdesc, reg: i32) !void {
         var p_f: i32 = NO_JUMP;
         var p_t: i32 = NO_JUMP;
         if (need_value(fs, e.t) or need_value(fs, e.f)) {
-            const fj = if (e.k == .VJMP) NO_JUMP else luaK_jump(fs);
-            p_f = code_loadbool(fs, reg, .LFALSESKIP);
-            p_t = code_loadbool(fs, reg, .LOADTRUE);
+            const fj = if (e.k == .VJMP) NO_JUMP else try luaK_jump(fs);
+            p_f = try code_loadbool(fs, reg, .LFALSESKIP);
+            p_t = try code_loadbool(fs, reg, .LOADTRUE);
             try luaK_patchtohere(fs, fj);
         }
         final = luaK_getlabel(fs);
@@ -650,14 +632,14 @@ fn exp2reg(fs: *FuncState, e: *expdesc, reg: i32) !void {
 }
 
 pub fn luaK_exp2nextreg(fs: *FuncState, e: *expdesc) !void {
-    luaK_dischargevars(fs, e);
+    try luaK_dischargevars(fs, e);
     freeexp(fs, e);
     try luaK_reserveregs(fs, 1);
     try exp2reg(fs, e, fs.freereg - 1);
 }
 
 pub fn luaK_exp2anyreg(fs: *FuncState, e: *expdesc) !i32 {
-    luaK_dischargevars(fs, e);
+    try luaK_dischargevars(fs, e);
     if (e.k == .VNONRELOC) {
         if (!hasjumps(e))
             return e.u.info;
@@ -675,7 +657,7 @@ pub fn luaK_codecheckglobal(fs: *FuncState, var_: *expdesc, k: i32, line: i32) !
     try luaK_fixline(fs, line);
     var k2 = k;
     if (k2 >= lvm.MAXARG_Bx) k2 = 0 else k2 += 1;
-    _ = luaK_codeABx(fs, .ERRNNIL, var_.u.info, k2);
+    _ = try luaK_codeABx(fs, .ERRNNIL, var_.u.info, k2);
     try luaK_fixline(fs, line);
     freeexp(fs, var_);
 }
@@ -689,18 +671,18 @@ pub fn luaK_exp2val(fs: *FuncState, e: *expdesc) !void {
     if (e.k == .VJMP or hasjumps(e))
         _ = try luaK_exp2anyreg(fs, e)
     else
-        luaK_dischargevars(fs, e);
+        try luaK_dischargevars(fs, e);
 }
 
-fn luaK_exp2K(fs: *FuncState, e: *expdesc) bool {
+fn luaK_exp2K(fs: *FuncState, e: *expdesc) !bool {
     if (!hasjumps(e)) {
         const info: i32 = switch (e.k) {
-            .VTRUE => boolT(fs) catch 0,
-            .VFALSE => boolF(fs) catch 0,
-            .VNIL => nilK(fs) catch 0,
-            .VKINT => intK(fs, e.u.ival) catch 0,
-            .VKFLT => numberK(fs, e.u.nval) catch 0,
-            .VKSTR => stringK(fs, e.u.strval) catch 0,
+            .VTRUE => try boolT(fs),
+            .VFALSE => try boolF(fs),
+            .VNIL => try nilK(fs),
+            .VKINT => try intK(fs, e.u.ival),
+            .VKFLT => try numberK(fs, e.u.nval),
+            .VKSTR => try stringK(fs, e.u.strval),
             .VK => e.u.info,
             else => return false,
         };
@@ -714,7 +696,7 @@ fn luaK_exp2K(fs: *FuncState, e: *expdesc) bool {
 }
 
 fn exp2RK(fs: *FuncState, e: *expdesc) !bool {
-    if (luaK_exp2K(fs, e))
+    if (try luaK_exp2K(fs, e))
         return true;
     _ = try luaK_exp2anyreg(fs, e);
     return false;
@@ -722,7 +704,7 @@ fn exp2RK(fs: *FuncState, e: *expdesc) !bool {
 
 fn codeABRK(fs: *FuncState, o: lvm.OpCode, a: i32, b: i32, ec: *expdesc) !void {
     const k = try exp2RK(fs, ec);
-    _ = luaK_codeABCk(fs, o, a, b, ec.u.info, if (k) 1 else 0);
+    _ = try luaK_codeABCk(fs, o, a, b, ec.u.info, if (k) 1 else 0);
 }
 
 pub fn luaK_storevar(fs: *FuncState, vp: *expdesc, ex: *expdesc) !void {
@@ -734,7 +716,7 @@ pub fn luaK_storevar(fs: *FuncState, vp: *expdesc, ex: *expdesc) !void {
         },
         .VUPVAL => {
             const e = try luaK_exp2anyreg(fs, ex);
-            _ = luaK_codeABC(fs, .SETUPVAL, e, vp.u.info, 0);
+            _ = try luaK_codeABC(fs, .SETUPVAL, e, vp.u.info, 0);
         },
         .VINDEXUP => {
             try codeABRK(fs, .SETTABUP, vp.u.ind.t, vp.u.ind.idx, ex);
@@ -769,17 +751,17 @@ fn jumponcond(fs: *FuncState, e: *expdesc, cond: i32) !i32 {
         const ie = fs.code.items[@as(usize, @intCast(e.u.info))];
         if (lvm.GET_OPCODE(ie) == .NOT) {
             removelastinstruction(fs);
-            return condjump(fs, .TEST, lvm.GETARG_B(ie), 0, 0, if (cond == 0) 1 else 0);
+            return try condjump(fs, .TEST, lvm.GETARG_B(ie), 0, 0, if (cond == 0) 1 else 0);
         }
     }
     try discharge2anyreg(fs, e);
     freeexp(fs, e);
-    return condjump(fs, .TESTSET, lvm.NO_REG, e.u.info, 0, cond);
+    return try condjump(fs, .TESTSET, lvm.NO_REG, e.u.info, 0, cond);
 }
 
 pub fn luaK_goiftrue(fs: *FuncState, e: *expdesc) !void {
     var pc: i32 = undefined;
-    luaK_dischargevars(fs, e);
+    try luaK_dischargevars(fs, e);
     switch (e.k) {
         .VJMP => {
             try negatecondition(fs, e);
@@ -799,7 +781,7 @@ pub fn luaK_goiftrue(fs: *FuncState, e: *expdesc) !void {
 
 fn luaK_goiffalse(fs: *FuncState, e: *expdesc) !void {
     var pc: i32 = undefined;
-    luaK_dischargevars(fs, e);
+    try luaK_dischargevars(fs, e);
     switch (e.k) {
         .VJMP => {
             pc = e.u.info;
@@ -830,7 +812,7 @@ fn codenot(fs: *FuncState, e: *expdesc) !void {
         .VRELOC, .VNONRELOC => {
             try discharge2anyreg(fs, e);
             freeexp(fs, e);
-            e.u = .{ .info = luaK_codeABC(fs, .NOT, 0, e.u.info, 0) };
+            e.u = .{ .info = try luaK_codeABC(fs, .NOT, 0, e.u.info, 0) };
             e.k = .VRELOC;
         },
         else => std.debug.assert(false),
@@ -901,12 +883,12 @@ pub fn luaK_self(fs: *FuncState, e: *expdesc, key: *expdesc) !void {
     e.k = .VNONRELOC;
     try luaK_reserveregs(fs, 2);
     std.debug.assert(key.k == .VKSTR);
-    if (luaK_exp2K(fs, key)) {
-        _ = luaK_codeABCk(fs, .SELF, base, ereg, key.u.info, 0);
+    if (try luaK_exp2K(fs, key)) {
+        _ = try luaK_codeABCk(fs, .SELF, base, ereg, key.u.info, 0);
     } else {
         _ = try luaK_exp2anyreg(fs, key);
-        _ = luaK_codeABC(fs, .MOVE, base + 1, ereg, 0);
-        _ = luaK_codeABC(fs, .GETTABLE, base, ereg, key.u.info);
+        _ = try luaK_codeABC(fs, .MOVE, base + 1, ereg, 0);
+        _ = try luaK_codeABC(fs, .GETTABLE, base, ereg, key.u.info);
     }
     freeexp(fs, key);
 }
@@ -919,7 +901,7 @@ fn fillidxk(t: *expdesc, idx: i32, k: ExpKind) void {
 pub fn luaK_indexed(fs: *FuncState, t: *expdesc, k: *expdesc) !void {
     var keystr: i32 = -1;
     if (k.k == .VKSTR)
-        keystr = str2K(fs, k);
+        keystr = try str2K(fs, k);
     std.debug.assert(!hasjumps(t) and
         (t.k == .VLOCAL or t.k == .VVARGVAR or t.k == .VNONRELOC or t.k == .VUPVAL));
     if (t.k == .VUPVAL and !isKstr(fs, k)) {
@@ -973,7 +955,7 @@ fn binopr2TM(opr: lparser.BinOpr) ltm.TMS {
 fn codeunexpval(fs: *FuncState, op: lvm.OpCode, e: *expdesc, line: i32) !void {
     const r = try luaK_exp2anyreg(fs, e);
     freeexp(fs, e);
-    e.u = .{ .info = luaK_codeABC(fs, op, 0, r, 0) };
+    e.u = .{ .info = try luaK_codeABC(fs, op, 0, r, 0) };
     e.k = .VRELOC;
     try luaK_fixline(fs, line);
 }
@@ -983,12 +965,12 @@ fn finishbinexpval(fs: *FuncState, e1: *expdesc, e2: *expdesc, op: lvm.OpCode, v
     // Emit the arithmetic opcode with A=0 as a placeholder. When 'e1' is later
     // discharged to a register, the VRELOC fixup (discharge2reg) rewrites A to
     // the final result register, matching the reference C behaviour.
-    _ = luaK_codeABCk(fs, op, 0, v1, v2, 0);
+    _ = try luaK_codeABCk(fs, op, 0, v1, v2, 0);
     freeexps(fs, e1, e2);
     e1.u = .{ .info = @intCast(fs.code.items.len - 1) };
     e1.k = .VRELOC;
     try luaK_fixline(fs, line);
-    _ = luaK_codeABCk(fs, mmop, v1, v2, @intFromEnum(event), if (flip) 1 else 0);
+    _ = try luaK_codeABCk(fs, mmop, v1, v2, @intFromEnum(event), if (flip) 1 else 0);
     try luaK_fixline(fs, line);
 }
 
@@ -1038,7 +1020,7 @@ fn codebinNoK(fs: *FuncState, opr: lparser.BinOpr, e1: *expdesc, e2: *expdesc, f
 
 fn codearith(fs: *FuncState, opr: lparser.BinOpr, e1: *expdesc, e2: *expdesc, flip: bool, line: i32) !void {
     var dummy: lua.TValue = undefined;
-    if (tonumeral(e2, &dummy) and luaK_exp2K(fs, e2)) {
+    if (tonumeral(e2, &dummy) and try luaK_exp2K(fs, e2)) {
         try codebinK(fs, opr, e1, e2, flip, line);
     } else {
         try codebinNoK(fs, opr, e1, e2, flip, line);
@@ -1065,7 +1047,7 @@ fn codebitwise(fs: *FuncState, opr: lparser.BinOpr, e1: *expdesc, e2: *expdesc, 
         swapexps(e1, e2);
         flip = true;
     }
-    if (e2.k == .VKINT and luaK_exp2K(fs, e2)) {
+    if (e2.k == .VKINT and try luaK_exp2K(fs, e2)) {
         try codebinK(fs, opr, e1, e2, flip, line);
     } else {
         try codebinNoK(fs, opr, e1, e2, flip, line);
@@ -1092,7 +1074,7 @@ fn codeorder(fs: *FuncState, opr: lparser.BinOpr, e1: *expdesc, e2: *expdesc) !v
         op = binopr2op(opr, .OPR_LT, .LT);
     }
     freeexps(fs, e1, e2);
-    e1.u = .{ .info = condjump(fs, op, r1, r2, @intFromBool(isfloat), 1) };
+    e1.u = .{ .info = try condjump(fs, op, r1, r2, @intFromBool(isfloat), 1) };
     e1.t = NO_JUMP;
     e1.f = NO_JUMP;
     e1.k = .VJMP;
@@ -1120,7 +1102,7 @@ fn codeeq(fs: *FuncState, opr: lparser.BinOpr, e1: *expdesc, e2: *expdesc) !void
         r2 = try luaK_exp2anyreg(fs, e2);
     }
     freeexps(fs, e1, e2);
-    e1.u = .{ .info = condjump(fs, op, r1, r2, @intFromBool(isfloat), if (opr == .OPR_EQ) 1 else 0) };
+    e1.u = .{ .info = try condjump(fs, op, r1, r2, @intFromBool(isfloat), if (opr == .OPR_EQ) 1 else 0) };
     e1.t = NO_JUMP;
     e1.f = NO_JUMP;
     e1.k = .VJMP;
@@ -1131,10 +1113,11 @@ fn undefined_exp() expdesc {
 }
 
 pub fn luaK_prefix(fs: *FuncState, opr: lparser.UnOpr, e: *expdesc, line: i32) !void {
-    luaK_dischargevars(fs, e);
+    try luaK_dischargevars(fs, e);
     switch (opr) {
         .OPR_MINUS, .OPR_BNOT => {
-            if (constfolding(fs, @intFromEnum(opr) + lua.LUA_OPUNM, e, &undefined_exp())) return;
+            var undef = undefined_exp();
+            if (constfolding(fs, @intFromEnum(opr) + lua.LUA_OPUNM, e, &undef)) return;
             try codeunexpval(fs, unopr2op(opr), e, line);
         },
         .OPR_LEN => {
@@ -1146,7 +1129,7 @@ pub fn luaK_prefix(fs: *FuncState, opr: lparser.UnOpr, e: *expdesc, line: i32) !
 }
 
 pub fn luaK_infix(fs: *FuncState, op: lparser.BinOpr, v: *expdesc) !void {
-    luaK_dischargevars(fs, v);
+    try luaK_dischargevars(fs, v);
     switch (op) {
         .OPR_AND => _ = try luaK_goiftrue(fs, v),
         .OPR_OR => _ = try luaK_goiffalse(fs, v),
@@ -1180,13 +1163,13 @@ fn codeconcat(fs: *FuncState, e1: *expdesc, e2: *expdesc, line: i32) !void {
             return;
         }
     }
-    _ = luaK_codeABC(fs, .CONCAT, e1.u.info, 2, 0);
+    _ = try luaK_codeABC(fs, .CONCAT, e1.u.info, 2, 0);
     freeexp(fs, e2);
     try luaK_fixline(fs, line);
 }
 
 pub fn luaK_posfix(fs: *FuncState, opr: lparser.BinOpr, e1: *expdesc, e2: *expdesc, line: i32) !void {
-    luaK_dischargevars(fs, e2);
+    try luaK_dischargevars(fs, e2);
     if (constfolding(fs, @intFromEnum(opr) + lua.LUA_OPADD, e1, e2)) return;
     switch (opr) {
         .OPR_AND => {
@@ -1263,17 +1246,17 @@ pub fn luaK_settablesize(fs: *FuncState, pc: i32, ra: i32, asize: i32, hsize: i3
     fs.code.items[@as(usize, @intCast(pc + 1))] = lvm.CREATE_Ax(.EXTRAARG, extra);
 }
 
-pub fn luaK_setlist(fs: *FuncState, base: i32, nelems: i32, tostore: i32) void {
+pub fn luaK_setlist(fs: *FuncState, base: i32, nelems: i32, tostore: i32) !void {
     std.debug.assert(tostore != 0);
     var ts = tostore;
     if (tostore == lua.LUA_MULTRET) ts = 0;
     if (nelems <= lvm.MAXARG_vC) {
-        _ = luaK_codevABCk(fs, .SETLIST, base, ts, nelems, 0);
+        _ = try luaK_codevABCk(fs, .SETLIST, base, ts, nelems, 0);
     } else {
         const extra = @divTrunc(nelems, lvm.MAXARG_vC + 1);
         const ne = @rem(nelems, lvm.MAXARG_vC + 1);
-        _ = luaK_codevABCk(fs, .SETLIST, base, ts, ne, 1);
-        _ = codeextraarg(fs, extra);
+        _ = try luaK_codevABCk(fs, .SETLIST, base, ts, ne, 1);
+        _ = try codeextraarg(fs, extra);
     }
     fs.freereg = @intCast(base + 1);
 }
@@ -1339,8 +1322,8 @@ pub fn luaK_finish(fs: *FuncState) !void {
     }
 }
 
-pub fn luaK_codeABC(fs: *FuncState, o: lvm.OpCode, a: i32, b: i32, c: i32) i32 {
-    return luaK_codeABCk(fs, o, a, b, c, 0);
+pub fn luaK_codeABC(fs: *FuncState, o: lvm.OpCode, a: i32, b: i32, c: i32) !i32 {
+    return try luaK_codeABCk(fs, o, a, b, c, 0);
 }
 
 pub fn luaK_exp2const(fs: *FuncState, e: *const expdesc, v: *lua.TValue) bool {

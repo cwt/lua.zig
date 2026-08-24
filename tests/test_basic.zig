@@ -4891,3 +4891,25 @@ test "BUG-127: integral float keys >= 9.0e18 classified as integer keys in table
     , "=(bug127)");
     try std.testing.expectEqual(@as(i32, lua.LUA_OK), status);
 }
+
+test "BUG-128: compiler instruction emission propagates OOM and produces valid bytecode under normal conditions" {
+    const gpa = std.testing.allocator;
+    var L: lua.lua_State = undefined;
+    try lua.luaL_newstate(&L, gpa);
+    defer lua.lua_close(&L);
+    try lua.luaL_openlibs(&L);
+
+    // Verify a complex script with many instructions, constants, and jumps compiles and executes cleanly
+    const status = try lua.luaL_dostring(&L,
+        \\local x = 0
+        \\for i = 1, 100 do
+        \\    if i % 2 == 0 then
+        \\        x = x + i
+        \\    else
+        \\        x = x - i
+        \\    end
+        \\end
+        \\assert(x == 50)
+    , "=(bug128)");
+    try std.testing.expectEqual(@as(i32, lua.LUA_OK), status);
+}
