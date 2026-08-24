@@ -2,19 +2,19 @@
 type: directory_index
 title: Bug Reports & Defect Catalog
 description: Index of all tracked defects, conformance fixes, and architectural bugs
-  in luazig (BUG-001 through BUG-115).
+  in luazig (BUG-001 through BUG-138).
 tags:
 - bugs
 - defects
 - index
 - catalog
-timestamp: '2026-08-24T14:28:00Z'
+timestamp: '2026-08-24T15:10:00Z'
 ---
 
 # Bug Reports & Defect Catalog — luazig
 
 > Working catalog of defects, bug-avoidance audits, and conformance fixes in the `luazig` codebase.
-> Bugs are numbered `BUG-001` through `BUG-115`.
+> Bugs are numbered `BUG-001` through `BUG-138`.
 > Each document records the location, defect, impact, and fix or resolution.
 
 ## Legend
@@ -142,11 +142,35 @@ timestamp: '2026-08-24T14:28:00Z'
 | [BUG-113](113.md) | `lua.zig`: $O(N)$ linear scan in `getGCObject` during GC marking (quadratic GC latency) | `MED` | ✅ FIXED |
 | [BUG-114](114.md) | `lauxlib.zig` / `iolib.zig` / `oslib.zig`: Direct system calls bypassing `std.Io` parameter | `LOW` | ✅ FIXED |
 | [BUG-115](115.md) | `io.popen` was a stub: always returned `(nil, "'popen' not supported")` | `HIGH` | ✅ FIXED |
+| [BUG-116](116.md) | `lundump.zig`: `loadInt` zigzag-decodes counts — every binary chunk fails to load (rev 152 regression) + all loader errors misreported as "truncated chunk" | `CRITICAL` | ⏳ OPEN |
+| [BUG-117](117.md) | `ldump.zig`/`lundump.zig`: dump wire format incompatible with Lua 5.5.1 both directions (`dumpInt` zigzag counts) | `HIGH` | ⏳ OPEN |
+| [BUG-118](118.md) | `ltable.zig`: `clearHashKey` nils node keys → mid-chain slot reuse breaks `.next` chains, silently losing entries | `CRITICAL` | ⏳ OPEN |
+| [BUG-119](119.md) | `lua.zig`: `reallocStack` cross-thread upvalue fix-up writes `&t.stack[...]` instead of `&L.stack[...]` (and matches freed memory ranges) | `HIGH` | ⏳ OPEN |
+| [BUG-120](120.md) | `lua.zig`: coroutine threads invisible to the GC — unreachable coroutines leak until `lua_close` | `HIGH` | ⏳ OPEN |
+| [BUG-121](121.md) | `lua.zig`: `__gc` resurrection unsupported — finalized objects freed even when the finalizer re-referenced them → UAF | `HIGH` | ⏳ OPEN |
+| [BUG-122](122.md) | `lua.zig`: unguarded stack writes in `close_one_slot`/`closeupvals` when the safe top reaches stack capacity | `HIGH` | ⏳ OPEN |
+| [BUG-123](123.md) | float→string via Zig `{d}` + undersized buffers: CONCAT silently emits empty string for large floats, io.write diverges, `lua_tolstring` returns null (supersedes BUG-014 scope) | `HIGH` | ⏳ OPEN |
+| [BUG-124](124.md) | `lua.zig`: `lua_rawequal` divergences — int/float cross-type false, non-interned string content ignored, invented C-closure equality | `MED` | ⏳ OPEN |
+| [BUG-125](125.md) | `lua.zig`: C-API `lua_concat` still uses the left-to-right single-metamethod algorithm (self-pairing, early return) | `MED` | ⏳ OPEN |
+| [BUG-126](126.md) | `lauxlib.zig`: `luaL_ref` pre-seeds `t[1]=0` (numbering off-by-one, pollutes iteration); `luaL_unref` accepts ref==0 | `MED` | ⏳ OPEN |
+| [BUG-127](127.md) | `ltable.zig`: `asInt` rejects integral float keys ≥ 9.0e18 accepted by the reference as integer keys | `MED` | ⏳ OPEN |
+| [BUG-128](128.md) | `lcode.zig`: OOM during instruction emission swallowed, emitters return dummy PC 0 (BUG-093/094/108 regression) | `HIGH` | ⏳ OPEN |
+| [BUG-129](129.md) | CLI divergences: no LUA_INIT/LUA_INIT_5_5/-E, missing progname error prefix, no negative arg[] indices | `LOW` | ⏳ OPEN |
+| [BUG-130](130.md) | `lauxlib.zig`: `LUA_ERRFILE = 5` collides with `LUA_ERRERR`; constant removed upstream in 5.5 | `LOW` | ⏳ OPEN |
+| [BUG-131](131.md) | Minor output-text divergences: `string.rep` overflow message, zero-padded `%p` pointer formatting | `LOW` | ⏳ OPEN |
+| [BUG-132](132.md) | `iolib.zig`: `catch unreachable` on integer/float formatting in `g_write` | `LOW` | ⏳ OPEN |
+| [BUG-133](133.md) | Residual swallowed-error inventory (~90 sites): iolib child reaping, pcallk errormsg dispatch, pushstring results discarded | `LOW` | ⏳ OPEN |
+| [BUG-134](134.md) | `std.debug.print` used for runtime warnings / GC & finalizer errors / lundump header diagnostics instead of threaded io | `LOW` | ⏳ OPEN |
+| [BUG-135](135.md) | `lvm.zig`: OP_SETLIST stores per-element via `setInt` instead of array pre-allocation + direct stores | `MED` | ⏳ OPEN |
+| [BUG-136](136.md) | `lua.zig`: `getGCObject` O(N) allgc fallback scans remain for tables/closures/userdata/upvalues (BUG-113 fixed strings only) | `LOW` | ⏳ OPEN |
+| [BUG-137](137.md) | Dead code inventory: committed `libm.zig.orig`, unused `lua_numbertocstring`/`hasFinalizer`/`lenhint`, duplicated `registerGC` switch, identical lundump branches, stale strcache comment | `LOW` | ⏳ OPEN |
+| [BUG-138](138.md) | Misc API divergences: io.popen("r") child stdin ignored, luaL_dostring collapses pcall errors, lua_xmove truncates, io.tmpfile no EEXIST retry | `LOW` | ⏳ OPEN |
 
 ## Systematic Bug Audits
 - [BUG-050](050.md) – [BUG-054](054.md): Systematic Bug-Pattern Audit (2026-07-31) cross-cutting codebase analysis.
 - [BUG-055](055.md) – [BUG-085](085.md): Comprehensive Memory & Static Analysis Audit (2026-08-08).
 - [BUG-086](086.md) – [BUG-114](114.md): Concurrency, Coroutines, GC & Platform Conformance Audit (2026-08-08).
+- [BUG-116](116.md) – [BUG-138](138.md): Deep Audit vs Lua 5.5.1 Reference (2026-08-24) — full-source review with differential testing against `lua/lua`; found the rev-152 loader regression (all `.luac` loading broken, 127/132 tests), dump-format wire incompatibility, table chain-corruption hazard, GC gaps (threads never collected, `__gc` resurrection UAF), float-to-string regressions, and assorted conformance divergences.
 
 ---
 - [← Documentation Root](../index.md)
