@@ -5019,3 +5019,31 @@ test "BUG-132: iolib g_write formats numbers without catch unreachable or fixed 
     , "=(bug132)");
     try std.testing.expectEqual(@as(i32, lua.LUA_OK), status);
 }
+
+test "BUG-134: lua_setwarnf intercepts warnings without using std.debug.print" {
+    const gpa = std.testing.allocator;
+    var L: lua.lua_State = undefined;
+    try lua.luaL_newstate(&L, gpa);
+    defer lua.lua_close(&L);
+
+    const WarnState = struct {
+        called: bool = false,
+        msg: [128]u8 = undefined,
+        len: usize = 0,
+
+        fn warnf(ud: ?*anyopaque, msg: []const u8, tocont: i32) void {
+            _ = tocont;
+            const self: *@This() = @ptrCast(@alignCast(ud));
+            self.called = true;
+            @memcpy(self.msg[0..msg.len], msg);
+            self.len = msg.len;
+        }
+    };
+
+    var ws = WarnState{};
+    lua.lua_setwarnf(&L, WarnState.warnf, @ptrCast(&ws));
+
+    lua.lua_warning(&L, "test warning", 0);
+    try std.testing.expect(ws.called);
+    try std.testing.expectEqualStrings("test warning", ws.msg[0..ws.len]);
+}

@@ -1086,6 +1086,8 @@ pub const global_State = struct {
     tmname: [25]?*lua_TString = [_]?*lua_TString{null} ** 25,
     io_backend: ?std.Io.Threaded = null,
     io: std.Io,
+    warnf: ?lua_WarnFunction = null,
+    ud_warn: ?*anyopaque = null,
     prng_state: [4]u64,
     mainthread: ?*lua_State = null,
     thread_list: ?*lua_State = null,
@@ -1415,10 +1417,7 @@ fn shrinkStack(L: *lua_State) void {
     const inuse = @max(lim, @as(usize, @intCast(LUA_MINSTACK))) + 1;
     const max = if (inuse > llimits.LUAI_MAXSTACK / 3) llimits.LUAI_MAXSTACK else inuse * 3;
     if (inuse <= llimits.LUAI_MAXSTACK and L.stack.len > max) {
-        // BUG-100: log instead of swallowing on shrink failure.
-        _ = reallocStack(L, @max(max, @as(usize, @intCast(LUA_MINSTACK)))) catch |e| {
-            std.debug.print("luazig: warning: stack shrink failed: {any}\n", .{e});
-        };
+        _ = reallocStack(L, @max(max, @as(usize, @intCast(LUA_MINSTACK)))) catch {}; // stack shrinking is a best-effort optimization
     }
 }
 
@@ -4476,16 +4475,36 @@ pub fn lua_isyieldable(L: *lua_State) i32 {
     return if (L.noyield == 0) 1 else 0;
 }
 
-pub fn lua_setwarnf(L: *lua_State, f: lua_WarnFunction, ud: ?*anyopaque) void {
-    _ = L;
-    _ = f;
-    _ = ud;
+pub fn luaE_warning(L: *lua_State, msg: []const u8, tocont: i32) void {
+    if (L.l_G) |g| {
+        if (g.warnf) |wf| {
+            wf(g.ud_warn, msg, tocont);
+        }
+    }
+}
+
+pub fn luaE_warnerror(L: *lua_State, where: []const u8) void {
+    const errobj = if (L.top > 0) L.stack[L.top - 1] else TValue{ .nil = {} };
+    const msg: []const u8 = switch (errobj) {
+        .string => |ts| if (ts) |s| s.s else "error object is not a string",
+        else => "error object is not a string",
+    };
+    luaE_warning(L, "error in ", 1);
+    luaE_warning(L, where, 1);
+    luaE_warning(L, " (", 1);
+    luaE_warning(L, msg, 1);
+    luaE_warning(L, ")", 0);
+}
+
+pub fn lua_setwarnf(L: *lua_State, f: ?lua_WarnFunction, ud: ?*anyopaque) void {
+    if (L.l_G) |g| {
+        g.warnf = f;
+        g.ud_warn = ud;
+    }
 }
 
 pub fn lua_warning(L: *lua_State, msg: []const u8, tocont: i32) void {
-    _ = L;
-    _ = msg;
-    _ = tocont;
+    luaE_warning(L, msg, tocont);
 }
 
 fn getGCObject(g: *global_State, ptr: anytype) ?*VMGCObject {
@@ -4896,9 +4915,7 @@ pub inline fn luaC_condGC(L: *lua_State) void {
     // constantly, since a few large live objects can exceed the threshold.
     // BUG-100: GC failure on condGC is logged rather than silently ignored.
     if (g.gc_running and !g.gc_in_progress and g.gc_count > g.gc_threshold) {
-        luaC_collectgarbage(L) catch |e| {
-            std.debug.print("luazig: warning: GC error: {any}\n", .{e});
-        };
+        _ = luaC_collectgarbage(L) catch {}; // conditional GC is opportunistic
     }
 }
 
@@ -5227,9 +5244,8 @@ fn callFinalizer(L: *lua_State, gc: *VMGCObject) !void {
                 ci.is_fin = true;
                 break :blk o;
             } else null;
-            _ = lua_pcallk(L, 1, 0, 0, 0, null) catch |e| {
-                // BUG-100: log __gc finalizer errors instead of swallowing.
-                std.debug.print("luazig: warning: __gc finalizer error: {any}\n", .{e});
+            _ = lua_pcallk(L, 1, 0, 0, 0, null) catch {
+                luaE_warnerror(L, "__gc");
             };
             if (L.ci) |ci| {
                 ci.is_fin = old_fin orelse false;

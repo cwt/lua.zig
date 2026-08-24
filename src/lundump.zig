@@ -296,27 +296,26 @@ const LoadState = struct {
     }
 
     fn checkliteral(self: *LoadState, expected: []const u8, msg: []const u8) !void {
+        _ = msg;
         var buf: [32]u8 = undefined;
         const len = expected.len;
         if (len > buf.len) return error.BufferOverflow;
         try self.loadBlock(buf[0..len]);
         if (!std.mem.eql(u8, expected, buf[0..len])) {
-            std.debug.print("Header mismatch: {s}\n", .{msg});
             return error.BadHeader;
         }
     }
 
     fn checknum(self: *LoadState, expected_size: u8, expected_val: anytype, tname: []const u8) !void {
+        _ = tname;
         const size = try self.loadByte();
         if (size != expected_size) {
-            std.debug.print("{s} size mismatch: expected {d}, got {d}\n", .{ tname, expected_size, size });
             return error.TypeSizeMismatch;
         }
         const T = @TypeOf(expected_val);
         var val: T = undefined;
         try self.loadBlock(std.mem.asBytes(&val));
         if (val != expected_val) {
-            std.debug.print("{s} format mismatch: expected {any}, got {any}\n", .{ tname, expected_val, val });
             return error.TypeFormatMismatch;
         }
     }
