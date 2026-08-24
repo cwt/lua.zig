@@ -33,6 +33,7 @@ pub const LUA_YIELD: i32 = llimits.LUA_YIELD;
 pub const LUA_ERRRUN: i32 = llimits.LUA_ERRRUN;
 pub const LUA_ERRMEM: i32 = llimits.LUA_ERRMEM;
 pub const LUA_ERRERR: i32 = llimits.LUA_ERRERR;
+pub const LUA_ERRFILE: i32 = llimits.LUA_ERRFILE;
 pub const LUA_ERRSYNTAX: i32 = llimits.LUA_ERRSYNTAX;
 pub const LUA_MINSTACK: i32 = llimits.LUA_MINSTACK;
 pub const LUA_NUMTYPES: i32 = llimits.LUA_NUMTYPES;

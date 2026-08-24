@@ -42,6 +42,7 @@ pub const LUA_ERRRUN: i32 = 2;
 pub const LUA_ERRSYNTAX: i32 = 3;
 pub const LUA_ERRMEM: i32 = 4;
 pub const LUA_ERRERR: i32 = 5;
+pub const LUA_ERRFILE: i32 = LUA_ERRERR + 1;
 
 // Maximum number of nested C calls (for yieldability)
 pub const LUAI_MAXCCALLS: u32 = 200;
@@ -131,4 +132,3 @@ pub const LUA_OPBNOT: i32 = 13;
 pub const LUA_OPEQ: i32 = 0;
 pub const LUA_OPLT: i32 = 1;
 pub const LUA_OPLE: i32 = 2;
-

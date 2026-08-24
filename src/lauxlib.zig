@@ -578,7 +578,7 @@ pub fn luaL_unref(L: *lua.lua_State, t: i32, ref: i32) !void {
 // ===================================================================
 
 pub const LUAL_NUMSIZES: usize = @sizeOf(lua.lua_Integer) * 16 + @sizeOf(lua.lua_Number);
-pub const LUA_ERRFILE: i32 = 5;
+pub const LUA_ERRFILE: i32 = lua.LUA_ERRFILE;
 pub const LUA_GNAME: []const u8 = "_G";
 pub const LUA_LOADED_TABLE: []const u8 = "_LOADED";
 pub const LUA_PRELOAD_TABLE: []const u8 = "_PRELOAD";
@@ -666,9 +666,12 @@ pub fn luaL_loadfilex(L: *lua.lua_State, filename: ?[]const u8, mode: []const u8
     } else "=stdin";
 
     if (filename) |fn_| {
-        const content = std.Io.Dir.cwd().readFileAlloc(g.io, fn_, L.allocator, .unlimited) catch {
-            _ = lua.lua_pushstring(L, "cannot open file") orelse {};
-            return lua.LUA_ERRERR;
+        const content = std.Io.Dir.cwd().readFileAlloc(g.io, fn_, L.allocator, .unlimited) catch |err| {
+            const serr = @errorName(err);
+            const msg = std.fmt.allocPrint(L.allocator, "cannot open {s}: {s}", .{ fn_, serr }) catch "cannot open file";
+            defer if (!std.mem.eql(u8, msg, "cannot open file")) L.allocator.free(msg);
+            _ = lua.lua_pushstring(L, msg);
+            return LUA_ERRFILE;
         };
         defer L.allocator.free(content);
 
@@ -679,7 +682,7 @@ pub fn luaL_loadfilex(L: *lua.lua_State, filename: ?[]const u8, mode: []const u8
 
     // stdin: not yet supported via reader (would need a streaming reader).
     _ = lua.lua_pushstring(L, "stdin not supported") orelse {};
-    return lua.LUA_ERRERR;
+    return LUA_ERRFILE;
 }
 
 /// Load buffer as Lua chunk (with mode).

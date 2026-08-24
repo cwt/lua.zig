@@ -4956,3 +4956,18 @@ test "BUG-129: CLI createargtable with negative options and progname error prefi
     try std.testing.expectEqualStrings("y", lua.lua_tostring(&L, -1).?);
     lua.lua_pop(&L, 1);
 }
+
+test "BUG-130: LUA_ERRFILE is distinct from LUA_ERRERR and returned by luaL_loadfilex on missing file" {
+    const gpa = std.testing.allocator;
+    var L: lua.lua_State = undefined;
+    try lua.luaL_newstate(&L, gpa);
+    defer lua.lua_close(&L);
+
+    try std.testing.expectEqual(@as(i32, 5), lua.LUA_ERRERR);
+    try std.testing.expectEqual(@as(i32, 6), lua.LUA_ERRFILE);
+    try std.testing.expectEqual(@as(i32, 6), lua.lauxlib.LUA_ERRFILE);
+
+    const status = lua.lauxlib.luaL_loadfilex(&L, "nonexistent_file_12345.lua", "bt");
+    try std.testing.expectEqual(lua.LUA_ERRFILE, status);
+    try std.testing.expect(lua.lua_tostring(&L, -1) != null);
+}
