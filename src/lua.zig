@@ -3627,6 +3627,8 @@ pub fn lua_pcallk(L: *lua_State, nargs: i32, nresults: i32, errfunc: i32, ctx: l
                 L.stack[L.top] = TValue{ .nil = {} };
                 L.top += 1;
             }
+            // luaG_errormsg dispatches to the error handler and saves the result in L.err_obj;
+            // catching the returned error union keeps L.err_obj populated for the pcall recovery path.
             _ = luaG_errormsg(L) catch {};
         } else if (err == error.StackOverflow) {
             const msg = "stack overflow";
@@ -3637,6 +3639,8 @@ pub fn lua_pcallk(L: *lua_State, nargs: i32, nresults: i32, errfunc: i32, ctx: l
                 L.stack[L.top] = TValue{ .nil = {} };
                 L.top += 1;
             }
+            // luaG_errormsg dispatches to the error handler and saves the result in L.err_obj;
+            // catching the returned error union keeps L.err_obj populated for the pcall recovery path.
             _ = luaG_errormsg(L) catch {};
         } else if (err == error.RuntimeError) {
             // Error object already in L.err_obj (captured by luaG_errormsg at origin)
@@ -3645,6 +3649,8 @@ pub fn lua_pcallk(L: *lua_State, nargs: i32, nresults: i32, errfunc: i32, ctx: l
                 L.stack[L.top] = TValue{ .string = ts };
                 L.top += 1;
             } else |_| {}
+            // luaG_errormsg dispatches to the error handler and saves the result in L.err_obj;
+            // catching the returned error union keeps L.err_obj populated for the pcall recovery path.
             _ = luaG_errormsg(L) catch {};
         }
         break :b @as(?*CallInfo, null);
@@ -3679,6 +3685,8 @@ pub fn lua_pcallk(L: *lua_State, nargs: i32, nresults: i32, errfunc: i32, ctx: l
                             L.stack[L.top] = TValue{ .nil = {} };
                             L.top += 1;
                         }
+                        // luaG_errormsg dispatches to the error handler and saves the result in L.err_obj;
+                        // catching the returned error union keeps L.err_obj populated for the pcall recovery path.
                         _ = luaG_errormsg(L) catch {};
                     }
                 };

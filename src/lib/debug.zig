@@ -193,23 +193,31 @@ fn db_gethook(L: *lua.lua_State) !i32 {
     var mask_buf: [4]u8 = undefined;
     var mask_len: usize = 0;
     const umask = @as(u32, @bitCast(mask));
-    if ((umask & lua.LUA_MASKCALL) != 0) { mask_buf[mask_len] = 'c'; mask_len += 1; }
-    if ((umask & lua.LUA_MASKRET) != 0)  { mask_buf[mask_len] = 'r'; mask_len += 1; }
-    if ((umask & lua.LUA_MASKLINE) != 0) { mask_buf[mask_len] = 'l'; mask_len += 1; }
+    if ((umask & lua.LUA_MASKCALL) != 0) {
+        mask_buf[mask_len] = 'c';
+        mask_len += 1;
+    }
+    if ((umask & lua.LUA_MASKRET) != 0) {
+        mask_buf[mask_len] = 'r';
+        mask_len += 1;
+    }
+    if ((umask & lua.LUA_MASKLINE) != 0) {
+        mask_buf[mask_len] = 'l';
+        mask_len += 1;
+    }
     _ = lua.lua_pushlstring(L, &mask_buf, mask_len);
     lua.lua_pushinteger(L, count);
 
     return 3;
 }
 
-fn treatstackoption(L: *lua.lua_State, L1: *lua.lua_State, fname: []const u8) void {
+fn treatstackoption(L: *lua.lua_State, L1: *lua.lua_State, fname: []const u8) !void {
     if (L == L1) {
         lua.lua_rotate(L, -2, 1);
     } else {
         lua.lua_xmove(L1, L, 1);
     }
-    // BUG-100: propagate errors instead of swallowing them.
-    _ = lua.lua_setfield(L, -2, fname) catch {};
+    try lua.lua_setfield(L, -2, fname);
 }
 
 fn db_getinfo(L: *lua.lua_State) !i32 {
@@ -322,10 +330,10 @@ fn db_getinfo(L: *lua.lua_State) !i32 {
     }
 
     if (std.mem.indexOfScalar(u8, options, 'L') != null) {
-        treatstackoption(L, L1, "activelines");
+        try treatstackoption(L, L1, "activelines");
     }
     if (std.mem.indexOfScalar(u8, options, 'f') != null) {
-        treatstackoption(L, L1, "func");
+        try treatstackoption(L, L1, "func");
     }
 
     return 1;
@@ -471,7 +479,6 @@ fn db_traceback(L: *lua.lua_State) !i32 {
     } else {
         const level = @as(i32, @intCast(lauxlib.luaL_optinteger(L, arg + 2, if (L == L1) 1 else 0)));
         try lauxlib.luaL_traceback(L, L1, if (msg) |m| m else "", level);
-
     }
     return 1;
 }
@@ -484,22 +491,22 @@ pub fn opendbalib(L: *lua.lua_State) !void {
     lua.lua_createtable(L, 0, 16);
 
     inline for (.{
-        .{ .name = "getregistry",  .func = db_getregistry  },
+        .{ .name = "getregistry", .func = db_getregistry },
         .{ .name = "getmetatable", .func = db_getmetatable },
         .{ .name = "setmetatable", .func = db_setmetatable },
         .{ .name = "getuservalue", .func = db_getuservalue },
         .{ .name = "setuservalue", .func = db_setuservalue },
-        .{ .name = "gethook",      .func = db_gethook      },
-        .{ .name = "sethook",      .func = db_sethook      },
-        .{ .name = "getinfo",      .func = db_getinfo      },
-        .{ .name = "getlocal",     .func = db_getlocal     },
-        .{ .name = "setlocal",     .func = db_setlocal     },
-        .{ .name = "getupvalue",   .func = db_getupvalue   },
-        .{ .name = "setupvalue",   .func = db_setupvalue   },
-        .{ .name = "upvalueid",    .func = db_upvalueid    },
-        .{ .name = "upvaluejoin",  .func = db_upvaluejoin  },
-        .{ .name = "debug",        .func = db_debug        },
-        .{ .name = "traceback",    .func = db_traceback    },
+        .{ .name = "gethook", .func = db_gethook },
+        .{ .name = "sethook", .func = db_sethook },
+        .{ .name = "getinfo", .func = db_getinfo },
+        .{ .name = "getlocal", .func = db_getlocal },
+        .{ .name = "setlocal", .func = db_setlocal },
+        .{ .name = "getupvalue", .func = db_getupvalue },
+        .{ .name = "setupvalue", .func = db_setupvalue },
+        .{ .name = "upvalueid", .func = db_upvalueid },
+        .{ .name = "upvaluejoin", .func = db_upvaluejoin },
+        .{ .name = "debug", .func = db_debug },
+        .{ .name = "traceback", .func = db_traceback },
     }) |reg| {
         lua.lua_pushcfunction(L, reg.func);
         try lua.lua_setfield(L, -2, reg.name);

@@ -681,7 +681,7 @@ pub fn luaL_loadfilex(L: *lua.lua_State, filename: ?[]const u8, mode: []const u8
     }
 
     // stdin: not yet supported via reader (would need a streaming reader).
-    _ = lua.lua_pushstring(L, "stdin not supported") orelse {};
+    _ = lua.lua_pushstring(L, "stdin not supported");
     return LUA_ERRFILE;
 }
 

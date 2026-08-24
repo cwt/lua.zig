@@ -254,7 +254,7 @@ fn io_popen(L_: *L) !i32 {
         .stderr = .inherit,
     }) catch {
         lua.lua_pushnil(L_);
-        _ = lua.lua_pushstring(L_, "cannot open pipe") orelse {};
+        _ = lua.lua_pushstring(L_, "cannot open pipe");
         return 2;
     };
 
@@ -264,19 +264,20 @@ fn io_popen(L_: *L) !i32 {
         if (child.stdout) |f| {
             pipe_fd = f.handle;
         } else {
-            // Should not happen, but clean up.
+            // Child spawned without expected stdout pipe; reap child to prevent zombie.
             _ = child.wait(io.io) catch {};
             lua.lua_pushnil(L_);
-            _ = lua.lua_pushstring(L_, "cannot open pipe") orelse {};
+            _ = lua.lua_pushstring(L_, "cannot open pipe");
             return 2;
         }
     } else {
         if (child.stdin) |f| {
             pipe_fd = f.handle;
         } else {
+            // Child spawned without expected stdin pipe; reap child to prevent zombie.
             _ = child.wait(io.io) catch {};
             lua.lua_pushnil(L_);
-            _ = lua.lua_pushstring(L_, "cannot open pipe") orelse {};
+            _ = lua.lua_pushstring(L_, "cannot open pipe");
             return 2;
         }
     }
@@ -300,13 +301,13 @@ fn io_tmpfile(L_: *L) !i32 {
     const ptr_val = @intFromPtr(L_);
     const path = std.fmt.bufPrint(&buf, "/tmp/luazig_{x:0>8}_{x:0>8}", .{ seed, ptr_val & 0xFFFFFFFF }) catch {
         lua.lua_pushnil(L_);
-        _ = lua.lua_pushstring(L_, "cannot create tmp file") orelse {};
+        _ = lua.lua_pushstring(L_, "cannot create tmp file");
         return 2;
     };
     buf[path.len] = 0;
     const a = std.posix.openatZ(std.posix.AT.FDCWD, buf[0..path.len :0].ptr, .{ .ACCMODE = .RDWR, .CREAT = true, .EXCL = true }, 0o600) catch {
         lua.lua_pushnil(L_);
-        _ = lua.lua_pushstring(L_, "cannot create tmp file") orelse {};
+        _ = lua.lua_pushstring(L_, "cannot create tmp file");
         return 2;
     };
     errdefer _ = std.c.close(a);
@@ -324,7 +325,7 @@ fn io_type(L_: *L) !i32 {
         _ = try lua.lua_getfield(L_, lua.LUA_REGISTRYINDEX, LUA_FILEHANDLE);
         if (lua.lua_rawequal(L_, -1, -2) != 0) {
             lua.lua_pop(L_, 2);
-            _ = lua.lua_pushstring(L_, "file") orelse {};
+            _ = lua.lua_pushstring(L_, "file");
             return 1;
         }
         lua.lua_pop(L_, 2);
@@ -364,7 +365,7 @@ fn read_chars(L_: *L, p: *LStream, n: usize) bool {
         got += r;
     }
     if (got == 0) return false;
-    _ = lua.lua_pushlstring(L_, buf[0..got], got) orelse {};
+    _ = lua.lua_pushlstring(L_, buf[0..got], got);
     return true;
 }
 
@@ -383,7 +384,7 @@ fn read_all(L_: *L, p: *LStream) bool {
         if (n == 0) break;
         buf.appendSlice(L_.allocator, chunk[0..n]) catch return false;
     }
-    _ = lua.lua_pushlstring(L_, buf.items, buf.items.len) orelse {};
+    _ = lua.lua_pushlstring(L_, buf.items, buf.items.len);
     return true;
 }
 
@@ -396,7 +397,7 @@ fn read_line(L_: *L, p: *LStream) bool {
         buf.append(L_.allocator, c) catch break;
     }
     if (buf.items.len > 0) {
-        _ = lua.lua_pushlstring(L_, buf.items, buf.items.len) orelse {};
+        _ = lua.lua_pushlstring(L_, buf.items, buf.items.len);
         return true;
     }
     return false;
@@ -736,7 +737,7 @@ fn f_lines(L_: *L) !i32 {
         buf.append(L_.allocator, c) catch break;
     }
     if (buf.items.len > 0) {
-        _ = lua.lua_pushlstring(L_, buf.items, buf.items.len) orelse {};
+        _ = lua.lua_pushlstring(L_, buf.items, buf.items.len);
         return 1;
     }
     return 0;

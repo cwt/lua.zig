@@ -2,7 +2,6 @@ const std = @import("std");
 const lua = @import("../lua.zig");
 const lauxlib = @import("../lauxlib.zig");
 
-
 const L = lua.lua_State;
 const luaL_Reg = lauxlib.luaL_Reg;
 
@@ -316,7 +315,7 @@ fn os_exit(L_: *L) !i32 {
 }
 
 fn luaL_error(L_: *L, msg: []const u8) !i32 {
-    _ = lua.lua_pushstring(L_, msg) orelse {};
+    _ = lua.lua_pushstring(L_, msg);
     return lua.lua_error(L_);
 }
 
