@@ -5047,3 +5047,32 @@ test "BUG-134: lua_setwarnf intercepts warnings without using std.debug.print" {
     try std.testing.expect(ws.called);
     try std.testing.expectEqualStrings("test warning", ws.msg[0..ws.len]);
 }
+
+test "BUG-135: OP_SETLIST preallocation and direct storage for table constructors" {
+    const gpa = std.testing.allocator;
+    var L: lua.lua_State = undefined;
+    try lua.luaL_newstate(&L, gpa);
+    defer lua.lua_close(&L);
+    try lua.luaL_openlibs(&L);
+
+    // 1. Array constructor with multiple items
+    const status1 = try lua.luaL_dostring(&L,
+        \\local t = { 10, 20, 30, 40, 50, 60, 70, 80, 90, 100 }
+        \\assert(#t == 10)
+        \\for i = 1, 10 do
+        \\    assert(t[i] == i * 10)
+        \\end
+    , "=(bug135_1)");
+    try std.testing.expectEqual(@as(i32, lua.LUA_OK), status1);
+
+    // 2. Table constructor with varargs / trailing function call
+    const status2 = try lua.luaL_dostring(&L,
+        \\local function f() return 4, 5, 6 end
+        \\local t = { 1, 2, 3, f() }
+        \\assert(#t == 6)
+        \\for i = 1, 6 do
+        \\    assert(t[i] == i)
+        \\end
+    , "=(bug135_2)");
+    try std.testing.expectEqual(@as(i32, lua.LUA_OK), status2);
+}

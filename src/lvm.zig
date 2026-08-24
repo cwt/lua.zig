@@ -1784,17 +1784,19 @@ pub fn run(L: *lua.lua_State, active_ci: *lua.CallInfo) anyerror!void {
                 if (n == 0) {
                     n = L.top - ra_idx - 1;
                 }
+                last += n;
                 if (GETARG_k(instruction) != 0) {
                     const extra = code[ci.savedpc];
                     ci.savedpc += 1;
                     last += @as(usize, @intCast(GETARG_Ax(extra))) * 1024;
                 }
-                var idx = last + n;
-                var k: usize = n;
-                while (k > 0) : (k -= 1) {
-                    const val = L.stack[ra_idx + k];
-                    try ltable.setInt(h, @intCast(idx), val);
-                    idx -= 1;
+                if (last > h.array.items.len) {
+                    try ltable.ensureArraySize(h, last);
+                }
+                while (n > 0) : (n -= 1) {
+                    const val = L.stack[ra_idx + n];
+                    h.array.items[last - 1] = val;
+                    last -= 1;
                 }
             },
             .CLOSURE => {

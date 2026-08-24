@@ -222,6 +222,19 @@ pub fn deinit(t: *Table) void {
     t.allocator.destroy(t);
 }
 
+/// Ensure the array part has at least `size` elements, filling any new slots with nil.
+pub fn ensureArraySize(t: *Table, size: usize) !void {
+    if (size > t.array.items.len) {
+        const old_len = t.array.items.len;
+        try t.array.ensureTotalCapacity(t.allocator, size);
+        t.array.items.len = size;
+        for (t.array.items[old_len..size], old_len + 1..) |*slot, idx| {
+            slot.* = TValue{ .nil = {} };
+            clearHashKey(t, TValue{ .integer = @intCast(idx) });
+        }
+    }
+}
+
 pub fn arrayIsEmpty(t: *Table, i: usize) bool {
     // i is a 1-based array index
     if (i < 1 or i > t.array.items.len) return true;
