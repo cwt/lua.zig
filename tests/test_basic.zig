@@ -3901,36 +3901,6 @@ test "H.5 lua_atpanic sets and returns old panic handler" {
     try std.testing.expect(prev2 == handler);
 }
 
-test "H.5 lua_numbertocstring formats a number" {
-    const gpa = std.testing.allocator;
-    var L: lua.lua_State = undefined;
-    try lua.luaL_newstate(&L, gpa);
-    defer lua.lua_close(&L);
-
-    lua.lua_pushnumber(&L, 42.5);
-    var buf: [64]u8 = undefined;
-    const n = lua.lua_numbertocstring(&L, -1, &buf);
-    try std.testing.expect(n > 0);
-    const s = buf[0 .. n - 1];
-    try std.testing.expectEqualStrings("42.5", s);
-
-    lua.lua_settop(&L, 0);
-}
-
-test "H.5 lua_numbertocstring returns 0 for non-number" {
-    const gpa = std.testing.allocator;
-    var L: lua.lua_State = undefined;
-    try lua.luaL_newstate(&L, gpa);
-    defer lua.lua_close(&L);
-
-    _ = lua.lua_pushstring(&L, "not a number");
-    var buf: [64]u8 = undefined;
-    const n = lua.lua_numbertocstring(&L, -1, &buf);
-    try std.testing.expectEqual(@as(usize, 0), n);
-
-    lua.lua_settop(&L, 0);
-}
-
 test "H.5 luaL_loadstring loads a Lua chunk" {
     const gpa = std.testing.allocator;
     var L: lua.lua_State = undefined;
@@ -5095,4 +5065,21 @@ test "BUG-136: getGCObject O(1) back-pointer lookups across all object types dur
         \\assert(count == 100)
     , "=(bug136)");
     try std.testing.expectEqual(@as(i32, lua.LUA_OK), status);
+}
+
+test "BUG-137: short string caching and long string GC allocation" {
+    const gpa = std.testing.allocator;
+    var L: lua.lua_State = undefined;
+    try lua.luaL_newstate(&L, gpa);
+    defer lua.lua_close(&L);
+
+    const short_str = "short string <= 40 chars";
+    const ts1 = try lua.lstring.luaS_new(&L, short_str);
+    const ts2 = try lua.lstring.luaS_new(&L, short_str);
+    try std.testing.expectEqual(ts1, ts2);
+
+    const long_str = "this is a long string that exceeds LUAI_MAXSHORTLEN which is forty characters long";
+    const ts3 = try lua.lstring.luaS_new(&L, long_str);
+    const ts4 = try lua.lstring.luaS_new(&L, long_str);
+    try std.testing.expect(ts3 != ts4);
 }

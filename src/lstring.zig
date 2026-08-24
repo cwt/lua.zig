@@ -34,13 +34,11 @@ pub fn luaS_hash(str: []const u8, seed: usize) u32 {
     return h;
 }
 
-/// Return an interned `lua_TString` for the given byte slice.
+/// Return a `lua_TString` for the given byte slice.
 ///
-/// Mirrors the C reference `luaS_new`: first check the global string cache
-/// (`global_State.strcache`), a small content-addressed cache that reuses
-/// recently-created strings — including long strings, which are otherwise
-/// not interned. This guarantees that consecutive identical string literals
-/// share a single object (relied on by the 'literals' test suite).
+/// Short strings (<= LUAI_MAXSHORTLEN) are checked against `global_State.strcache`
+/// and interned in `global_State.strt`. Long strings (> LUAI_MAXSHORTLEN) are
+/// allocated freshly and registered as individual GC objects.
 pub fn luaS_new(
     L: *lua.lua_State,
     s: []const u8,

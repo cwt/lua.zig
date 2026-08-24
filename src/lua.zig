@@ -330,7 +330,6 @@ pub const lua_Table = struct {
     array: std.ArrayList(TValue),
     node: std.ArrayList(Node),
     lastfree: usize,
-    lenhint: usize,
     metatable: ?*lua_Table = null,
     flags: u8 = 0,
     gc: ?*VMGCObject = null,
@@ -5117,17 +5116,6 @@ pub fn luaC_collectgarbage(L: *lua_State) !void {
     }
 }
 
-/// True if `gc` is a table/userdata whose metatable defines a `__gc` field.
-/// Requires the metatable to still be alive (not swept).
-fn hasFinalizer(L: *lua_State, gc: *VMGCObject) bool {
-    const g = G(L);
-    const mt = metatableOf(L, gc) orelse return false;
-    if (getGCObject(g, mt)) |mt_gc| {
-        if (mt_gc.color == .white) return false;
-    }
-    return rawHasFinalizer(L, mt);
-}
-
 /// Check `__gc` in a metatable without any liveness guard (only safe before
 /// the sweep frees anything).
 fn rawHasFinalizer(L: *lua_State, mt: *lua_Table) bool {
@@ -5637,23 +5625,6 @@ pub fn lua_stringtonumber(L: *lua_State, s: []const u8) usize {
         return s.len + 1;
     }
     return 0;
-}
-
-/// Converts the number at stack index `idx` to a string and writes it into
-/// `buff`. Returns the number of bytes written (including a trailing null)
-/// on success, or 0 if the value is not a number. `buff` should be at least
-/// `LUA_N2SBUFFSZ` bytes.
-pub fn lua_numbertocstring(L: *lua_State, idx: i32, buff: []u8) usize {
-    const v = stackAt(L, idx);
-    switch (v) {
-        .number => |n| {
-            const s = std.fmt.bufPrint(buff, "{d}", .{n}) catch return 0;
-            if (s.len >= buff.len) return 0;
-            buff[s.len] = 0;
-            return s.len + 1;
-        },
-        else => return 0,
-    }
 }
 
 pub fn lua_atpanic(L: *lua_State, panicf: ?lua_CFunction) ?lua_CFunction {
