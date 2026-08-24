@@ -675,7 +675,6 @@ pub fn testTMode(o: OpCode) bool {
 
 pub fn run(L: *lua.lua_State, active_ci: *lua.CallInfo) anyerror!void {
     const ltable = @import("ltable.zig");
-    const lstring = @import("lstring.zig");
 
     var ci = active_ci;
     var cl = L.stack[ci.func].function.?.lua;
@@ -1346,46 +1345,7 @@ pub fn run(L: *lua.lua_State, active_ci: *lua.CallInfo) anyerror!void {
                 const ra_idx = ci.base + @as(usize, @intCast(GETARG_A(instruction)));
                 const n = @as(usize, @intCast(GETARG_B(instruction)));
                 if (n >= 2) {
-                    var list = std.ArrayListUnmanaged(u8).empty;
-                    defer list.deinit(L.allocator);
-                    // Right-to-left fold mirroring luaV_concat: at each step
-                    // consider the two rightmost operands; if both are (or
-                    // convert to) strings, merge a maximal run of consecutive
-                    // stringish operands; otherwise invoke the __concat
-                    // metamethod on the pair (left operand's metatable wins).
-                    // The metamethod is therefore called once per non-string
-                    // group, with the correct operand pair (the original
-                    // left-to-right loop wrongly paired a leading non-string
-                    // operand with itself, e.g. `c..d` -> "ccd").
-                    var k: usize = n;
-                    while (k > 1) {
-                        const lhs_idx = ra_idx + k - 2;
-                        const rhs_idx = ra_idx + k - 1;
-                        const lhs = L.stack[lhs_idx];
-                        const rhs = L.stack[rhs_idx];
-                        if (isStringish(lhs) and isStringish(rhs)) {
-                            var start = k - 2;
-                            while (start > 0 and isStringish(L.stack[ra_idx + start - 1])) : (start -= 1) {}
-                            list.clearRetainingCapacity();
-                            var j = start;
-                            while (j < k) : (j += 1) {
-                                switch (L.stack[ra_idx + j]) {
-                                    .string => |s| try list.appendSlice(L.allocator, s.?.s),
-                                    .number, .integer => {
-                                        var b: [128]u8 = undefined;
-                                        try list.appendSlice(L.allocator, lua.luaO_tostringbuff(L.stack[ra_idx + j], &b));
-                                    },
-                                    else => unreachable,
-                                }
-                            }
-                            const ts = try lstring.luaS_new(L, list.items);
-                            L.stack[ra_idx + start] = .{ .string = ts };
-                            k = start + 1;
-                        } else {
-                            try ltm.luaT_trybinTM(L, &lhs, &rhs, lhs_idx, .CONCAT);
-                            k -= 1;
-                        }
-                    }
+                    try lua.luaV_concat(L, n, ra_idx);
                 }
             },
             .CLOSE => {

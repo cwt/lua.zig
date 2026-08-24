@@ -4842,3 +4842,33 @@ test "BUG-124: rawequal cross-type int/float and function identity" {
     , "=(bug124)");
     try std.testing.expectEqual(@as(i32, lua.LUA_OK), status);
 }
+
+test "BUG-125: C-API lua_concat folds multi-operands with metamethod" {
+    const gpa = std.testing.allocator;
+    var L: lua.lua_State = undefined;
+    try lua.luaL_newstate(&L, gpa);
+    defer lua.lua_close(&L);
+    try lua.luaL_openlibs(&L);
+
+    // Push "a", obj with __concat, "b", 42
+    _ = lua.lua_pushstring(&L, "prefix_");
+    const status = try lua.luaL_dostring(&L,
+        \\return setmetatable({ v = "middle" }, {
+        \\    __concat = function(a, b)
+        \\        local sa = type(a) == "table" and a.v or tostring(a)
+        \\        local sb = type(b) == "table" and b.v or tostring(b)
+        \\        return sa .. "+" .. sb
+        \\    end
+        \\})
+    , "=(setup_obj)");
+    try std.testing.expectEqual(@as(i32, lua.LUA_OK), status);
+    _ = lua.lua_pushstring(&L, "_suffix");
+
+    // Stack now has 3 elements: "prefix_", table, "_suffix"
+    // Right-associative fold: table .. "_suffix" -> "middle+_suffix",
+    // then "prefix_" .. "middle+_suffix" -> "prefix_middle+_suffix"
+    try lua.lua_concat(&L, 3);
+    try std.testing.expectEqual(@as(usize, 1), L.top);
+    const res = lua.lua_tostring(&L, 1).?;
+    try std.testing.expectEqualStrings("prefix_middle+_suffix", res);
+}

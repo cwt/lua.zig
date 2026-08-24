@@ -5411,35 +5411,58 @@ pub fn lua_next(L: *lua_State, idx: i32) anyerror!i32 {
     return 0;
 }
 
+pub inline fn isStringish(v: TValue) bool {
+    return switch (v) {
+        .string, .number, .integer => true,
+        else => false,
+    };
+}
+
+pub fn luaV_concat(L: *lua_State, total: usize, ra_idx: usize) !void {
+    if (total <= 1) return;
+    var list = std.ArrayListUnmanaged(u8).empty;
+    defer list.deinit(L.allocator);
+    var k: usize = total;
+    while (k > 1) {
+        const lhs_idx = ra_idx + k - 2;
+        const rhs_idx = ra_idx + k - 1;
+        const lhs = L.stack[lhs_idx];
+        const rhs = L.stack[rhs_idx];
+        if (isStringish(lhs) and isStringish(rhs)) {
+            var start = k - 2;
+            while (start > 0 and isStringish(L.stack[ra_idx + start - 1])) : (start -= 1) {}
+            list.clearRetainingCapacity();
+            var j = start;
+            while (j < k) : (j += 1) {
+                switch (L.stack[ra_idx + j]) {
+                    .string => |s| try list.appendSlice(L.allocator, s.?.s),
+                    .number, .integer => {
+                        var b: [128]u8 = undefined;
+                        try list.appendSlice(L.allocator, luaO_tostringbuff(L.stack[ra_idx + j], &b));
+                    },
+                    else => unreachable,
+                }
+            }
+            const ts = try lstring.luaS_new(L, list.items);
+            L.stack[ra_idx + start] = .{ .string = ts };
+            k = start + 1;
+        } else {
+            try ltm.luaT_trybinTM(L, &lhs, &rhs, lhs_idx, .CONCAT);
+            k -= 1;
+        }
+    }
+}
+
 pub fn lua_concat(L: *lua_State, n: i32) !void {
     if (n <= 0) {
         _ = lua_pushstring(L, "");
         return;
     }
-    const top = L.top;
-    const start = top - @as(usize, @intCast(n));
-    var list = std.ArrayListUnmanaged(u8).empty;
-    defer list.deinit(L.allocator);
-    var k: usize = 0;
-    while (k < @as(usize, @intCast(n))) : (k += 1) {
-        const val = L.stack[start + k];
-        switch (val) {
-            .string => |s| try list.appendSlice(L.allocator, s.?.s),
-            .number, .integer => {
-                var buf: [128]u8 = undefined;
-                const slice = luaO_tostringbuff(val, &buf);
-                try list.appendSlice(L.allocator, slice);
-            },
-            else => {
-                const p1 = if (k > 0) L.stack[start + k - 1] else val;
-                const p2 = val;
-                try ltm.luaT_trybinTM(L, &p1, &p2, start, .CONCAT);
-                return;
-            },
-        }
-    }
-    const ts = try lstring.luaS_new(L, list.items);
-    L.stack[start] = .{ .string = ts };
+    if (n == 1) return;
+    const count = @as(usize, @intCast(n));
+    if (count > L.top) return error.RuntimeError;
+    const start = L.top - count;
+    try luaV_concat(L, count, start);
     L.top = start + 1;
 }
 
