@@ -4757,3 +4757,35 @@ test "BUG-120: coroutines are collected by GC when unreachable" {
     , "=(bug120)");
     try std.testing.expectEqual(@as(i32, lua.LUA_OK), status);
 }
+
+test "BUG-121: __gc resurrection keeps object alive while reachable" {
+    const gpa = std.testing.allocator;
+    var L: lua.lua_State = undefined;
+    try lua.luaL_newstate(&L, gpa);
+    defer lua.lua_close(&L);
+    try lua.luaL_openlibs(&L);
+
+    const status = try lua.luaL_dostring(&L,
+        \\local resurrected
+        \\local count = 0
+        \\local t = setmetatable({ tag = "alive" }, {
+        \\    __gc = function(self)
+        \\        count = count + 1
+        \\        resurrected = self
+        \\    end
+        \\})
+        \\t = nil
+        \\collectgarbage()
+        \\assert(resurrected ~= nil and resurrected.tag == "alive")
+        \\assert(count == 1)
+        \\-- Resurrected object is still reachable; collection must not free it or re-run finalizer
+        \\collectgarbage()
+        \\assert(resurrected ~= nil and resurrected.tag == "alive")
+        \\assert(count == 1)
+        \\-- Now make it unreachable; collection frees it without re-running finalizer
+        \\resurrected = nil
+        \\collectgarbage()
+        \\assert(count == 1)
+    , "=(bug121)");
+    try std.testing.expectEqual(@as(i32, lua.LUA_OK), status);
+}
