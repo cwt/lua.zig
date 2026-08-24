@@ -4789,3 +4789,23 @@ test "BUG-121: __gc resurrection keeps object alive while reachable" {
     , "=(bug121)");
     try std.testing.expectEqual(@as(i32, lua.LUA_OK), status);
 }
+
+test "BUG-122: TBC variables close safely with stack capacity checks" {
+    const gpa = std.testing.allocator;
+    var L: lua.lua_State = undefined;
+    try lua.luaL_newstate(&L, gpa);
+    defer lua.lua_close(&L);
+    try lua.luaL_openlibs(&L);
+
+    const status = try lua.luaL_dostring(&L,
+        \\local closed = 0
+        \\local function run()
+        \\    local x <close> = setmetatable({}, { __close = function() closed = closed + 1 end })
+        \\    local y <close> = setmetatable({}, { __close = function() closed = closed + 1 end })
+        \\    return 42
+        \\end
+        \\assert(run() == 42)
+        \\assert(closed == 2)
+    , "=(bug122)");
+    try std.testing.expectEqual(@as(i32, lua.LUA_OK), status);
+}

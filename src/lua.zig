@@ -452,6 +452,7 @@ pub fn findupval(L: *lua_State, idx: usize) !*UpVal {
 }
 
 fn close_one_slot(L: *lua_State, abs: usize, err_val: ?TValue) anyerror!?TValue {
+    if (abs >= L.stack.len) return null;
     const v = L.stack[abs];
     if (v == .nil) return null;
     if (v == .boolean and v.boolean == false) return null;
@@ -463,25 +464,16 @@ fn close_one_slot(L: *lua_State, abs: usize, err_val: ?TValue) anyerror!?TValue 
     const tm = if (mt) |m| ltm.luaT_gettm(m, .CLOSE, G(L).tmname[@intFromEnum(ltm.TMS.CLOSE)].?) else null;
     if (tm == null) {
         const msg = "attempt to call a nil value (metamethod 'close')";
-        const old_top = L.top;
         const ts = lstring.luaS_new(L, msg) catch {
-            L.stack[L.top] = TValue{ .nil = {} };
-            L.top += 1;
-            const err = L.stack[L.top - 1];
-            L.top = old_top;
-            return err;
+            return TValue{ .nil = {} };
         };
-        L.stack[L.top] = TValue{ .string = ts };
-        L.top += 1;
-        const err = L.stack[L.top - 1];
-        L.top = old_top;
-        return err;
+        return TValue{ .string = ts };
     }
     const old_top = L.top;
     if (err_val) |err| {
         ltm.luaT_callTM2(L, tm.?, &v, &err) catch |e| {
             if (e == error.Yield) return e;
-            const saved_err = if (L.top > old_top) L.stack[L.top - 1] else TValue{ .nil = {} };
+            const saved_err = if (L.top > old_top and L.top - 1 < L.stack.len) L.stack[L.top - 1] else TValue{ .nil = {} };
             L.top = old_top;
             if (e == error.NotAFunction) {
                 const tname = switch (tm.?) {
@@ -498,19 +490,16 @@ fn close_one_slot(L: *lua_State, abs: usize, err_val: ?TValue) anyerror!?TValue 
                 var buf: [128]u8 = undefined;
                 const msg = std.fmt.bufPrint(&buf, "attempt to call a {s} value (metamethod 'close')", .{tname}) catch "attempt to call a bad value (metamethod 'close')";
                 const ts = lstring.luaS_new(L, msg) catch {
-                    L.stack[old_top] = saved_err;
-                    return L.stack[old_top];
+                    return saved_err;
                 };
-                L.stack[old_top] = TValue{ .string = ts };
-                return L.stack[old_top];
+                return TValue{ .string = ts };
             }
-            L.stack[old_top] = saved_err;
-            return L.stack[old_top];
+            return saved_err;
         };
     } else {
         ltm.luaT_callTM1(L, tm.?, &v) catch |e| {
             if (e == error.Yield) return e;
-            const saved_err = if (L.top > old_top) L.stack[L.top - 1] else TValue{ .nil = {} };
+            const saved_err = if (L.top > old_top and L.top - 1 < L.stack.len) L.stack[L.top - 1] else TValue{ .nil = {} };
             L.top = old_top;
             if (e == error.NotAFunction) {
                 const tname = switch (tm.?) {
@@ -527,14 +516,11 @@ fn close_one_slot(L: *lua_State, abs: usize, err_val: ?TValue) anyerror!?TValue 
                 var buf: [128]u8 = undefined;
                 const msg = std.fmt.bufPrint(&buf, "attempt to call a {s} value (metamethod 'close')", .{tname}) catch "attempt to call a bad value (metamethod 'close')";
                 const ts = lstring.luaS_new(L, msg) catch {
-                    L.stack[old_top] = saved_err;
-                    return L.stack[old_top];
+                    return saved_err;
                 };
-                L.stack[old_top] = TValue{ .string = ts };
-                return L.stack[old_top];
+                return TValue{ .string = ts };
             }
-            L.stack[old_top] = saved_err;
-            return L.stack[old_top];
+            return saved_err;
         };
     }
     return null;
@@ -564,7 +550,7 @@ pub fn closeupvals(L: *lua_State, limit: usize, err_val: ?TValue) !void {
     var close_raised = false;
     var needs_err_push = (err_val != null);
     var err_idx: usize = 0;
-    if (needs_err_push) {
+    if (needs_err_push and L.top > 0) {
         err_idx = L.top - 1;
     }
 
@@ -573,19 +559,27 @@ pub fn closeupvals(L: *lua_State, limit: usize, err_val: ?TValue) !void {
         const abs = L.tbclist.items[last_idx];
         if (abs >= limit) {
             _ = L.tbclist.pop();
-            const current_err = if (has_err) L.stack[err_idx] else null;
+            const current_err = if (has_err and err_idx < L.stack.len) L.stack[err_idx] else null;
             // Extend L.top past this and all remaining TBC entries so GC
             // (triggered by a __close handler calling collectgarbage()) can
             // trace them. poscall sets L.top below the function's locals,
             // leaving TBC variables invisible to the GC collector.
             const gc_safe_top = @max(L.top, abs + 1);
+            if (gc_safe_top >= L.stack.len) {
+                try growStack(L, gc_safe_top + 10);
+            }
             const old_top = L.top;
             L.top = gc_safe_top;
             if (try close_one_slot(L, abs, current_err)) |new_err| {
                 L.top = old_top;
                 if (needs_err_push) {
-                    L.stack[err_idx] = new_err;
+                    if (err_idx < L.stack.len) {
+                        L.stack[err_idx] = new_err;
+                    }
                 } else {
+                    if (L.top >= L.stack.len) {
+                        try growStack(L, L.top + 5);
+                    }
                     L.stack[L.top] = new_err;
                     err_idx = L.top;
                     L.top += 1;
@@ -601,6 +595,9 @@ pub fn closeupvals(L: *lua_State, limit: usize, err_val: ?TValue) !void {
         }
     }
     if (close_raised) {
+        if (err_idx >= L.stack.len) {
+            try growStack(L, err_idx + 2);
+        }
         const final_err = L.stack[err_idx];
         L.top = err_idx + 1;
         L.stack[err_idx] = final_err;
