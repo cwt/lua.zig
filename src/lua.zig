@@ -1451,14 +1451,16 @@ fn reallocStack(L: *lua_State, new_cap: usize) !void {
     if (L.l_G) |g| {
         var th: ?*lua_State = g.thread_list;
         while (th) |t| {
-            var uv2 = t.openupval;
-            while (uv2) |uv2_| {
-                const uv_addr2 = @intFromPtr(uv2_.v);
-                if (uv_addr2 >= old_base and uv_addr2 < old_end) {
-                    const uv_idx2 = (uv_addr2 -| old_base) / @sizeOf(TValue);
-                    uv2_.v = &t.stack[uv_idx2];
+            if (t != L) {
+                var uv2 = t.openupval;
+                while (uv2) |uv2_| {
+                    const uv_addr2 = @intFromPtr(uv2_.v);
+                    if (uv_addr2 >= old_base and uv_addr2 < old_end) {
+                        const uv_idx2 = (uv_addr2 -| old_base) / @sizeOf(TValue);
+                        uv2_.v = &L.stack[uv_idx2];
+                    }
+                    uv2 = uv2_.next;
                 }
-                uv2 = uv2_.next;
             }
             th = t.twups;
         }
