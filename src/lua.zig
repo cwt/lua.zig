@@ -4508,89 +4508,33 @@ pub fn lua_warning(L: *lua_State, msg: []const u8, tocont: i32) void {
 }
 
 fn getGCObject(g: *global_State, ptr: anytype) ?*VMGCObject {
+    _ = g;
     if (@typeInfo(@TypeOf(ptr)) != .pointer) return null;
     if (@intFromPtr(ptr) == 0) return null;
     const T = @TypeOf(ptr);
     if (T == *lua_Table) {
-        if (ptr.gc) |gc| return gc;
-        var curr = g.allgc;
-        while (curr) |obj| : (curr = obj.next) {
-            if (obj.val == .table and obj.val.table == ptr) {
-                ptr.gc = obj;
-                return obj;
-            }
-        }
-        return null;
+        return ptr.gc;
     }
     if (T == *lua_Closure) {
-        const gc_opt = switch (ptr.*) {
+        return switch (ptr.*) {
             .c => |cc| cc.gc,
             .lua => |lc| lc.gc,
         };
-        if (gc_opt) |gc| return gc;
-        var curr = g.allgc;
-        while (curr) |obj| : (curr = obj.next) {
-            if (obj.val == .closure and obj.val.closure == ptr) {
-                switch (ptr.*) {
-                    .c => |cc| cc.gc = obj,
-                    .lua => |lc| lc.gc = obj,
-                }
-                return obj;
-            }
-        }
-        return null;
     }
     if (T == *lua_Udata) {
-        if (ptr.gc) |gc| return gc;
-        var curr = g.allgc;
-        while (curr) |obj| : (curr = obj.next) {
-            if (obj.val == .userdata and obj.val.userdata == ptr) {
-                ptr.gc = obj;
-                return obj;
-            }
-        }
-        return null;
+        return ptr.gc;
     }
     if (T == *lua_Proto) {
-        if (ptr.gc) |gc| return gc;
-        var curr = g.allgc;
-        while (curr) |obj| : (curr = obj.next) {
-            if (obj.val == .proto and obj.val.proto == ptr) {
-                ptr.gc = obj;
-                return obj;
-            }
-        }
-        return null;
+        return ptr.gc;
     }
     if (T == *lua_TString) {
-        // Short strings are interned in `strt` and never on allgc, so they
-        // have no VMGCObject/back-pointer; long/external strings are always
-        // GC-registered (registerGC sets `ts.gc`). A null `gc` therefore
-        // means a short string: do NOT linear-scan allgc (that made marking
-        // O(n^2) on workloads with many distinct interned strings).
         return ptr.gc;
     }
     if (T == *UpVal) {
-        if (ptr.gc) |gc| return gc;
-        var curr = g.allgc;
-        while (curr) |obj| : (curr = obj.next) {
-            if (obj.val == .upval and obj.val.upval == ptr) {
-                ptr.gc = obj;
-                return obj;
-            }
-        }
-        return null;
+        return ptr.gc;
     }
     if (T == *lua_State) {
-        if (ptr.gc) |gc| return gc;
-        var curr = g.allgc;
-        while (curr) |obj| : (curr = obj.next) {
-            if (obj.val == .thread and obj.val.thread == ptr) {
-                ptr.gc = obj;
-                return obj;
-            }
-        }
-        return null;
+        return ptr.gc;
     }
     return null;
 }

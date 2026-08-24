@@ -5076,3 +5076,23 @@ test "BUG-135: OP_SETLIST preallocation and direct storage for table constructor
     , "=(bug135_2)");
     try std.testing.expectEqual(@as(i32, lua.LUA_OK), status2);
 }
+
+test "BUG-136: getGCObject O(1) back-pointer lookups across all object types during GC" {
+    const gpa = std.testing.allocator;
+    var L: lua.lua_State = undefined;
+    try lua.luaL_newstate(&L, gpa);
+    defer lua.lua_close(&L);
+    try lua.luaL_openlibs(&L);
+
+    const status = try lua.luaL_dostring(&L,
+        \\local count = 0
+        \\for i = 1, 100 do
+        \\    local t = { a = i, b = function() return i end }
+        \\    local co = coroutine.create(function() return t end)
+        \\    count = count + 1
+        \\end
+        \\collectgarbage("collect")
+        \\assert(count == 100)
+    , "=(bug136)");
+    try std.testing.expectEqual(@as(i32, lua.LUA_OK), status);
+}
