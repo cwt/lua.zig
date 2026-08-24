@@ -4826,3 +4826,19 @@ test "BUG-123: float to string formatting in concat and conversion" {
     , "=(bug123)");
     try std.testing.expectEqual(@as(i32, lua.LUA_OK), status);
 }
+
+test "BUG-124: rawequal cross-type int/float and function identity" {
+    const gpa = std.testing.allocator;
+    var L: lua.lua_State = undefined;
+    try lua.luaL_newstate(&L, gpa);
+    defer lua.lua_close(&L);
+    try lua.luaL_openlibs(&L);
+
+    const status = try lua.luaL_dostring(&L,
+        \\assert(rawequal(1, 1.0) == true)
+        \\assert(rawequal(1.0, 1) == true)
+        \\assert(rawequal(1, 1.5) == false)
+        \\assert(rawequal("hello world this is a long string 1234567890", "hello world this is a long string 1234567890") == true)
+    , "=(bug124)");
+    try std.testing.expectEqual(@as(i32, lua.LUA_OK), status);
+}

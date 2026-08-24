@@ -304,19 +304,7 @@ pub inline fn luaT_equalobj(L: *lua.lua_State, t1: lua.TValue, t2: lua.TValue) !
             if (s == null or t2s == null) break :blk false;
             break :blk lstring.luaS_eqstr(s.?, t2s.?);
         },
-        .function => |f| blk: {
-            if (f == t2.function) break :blk true;
-            if (f) |cl1| {
-                if (t2.function) |cl2| {
-                    if (cl1.* == .c and cl2.* == .c) {
-                        if (cl1.c.f == cl2.c.f and cl1.c.upvals.len == 0 and cl2.c.upvals.len == 0) {
-                            break :blk true;
-                        }
-                    }
-                }
-            }
-            break :blk false;
-        },
+        .function => |f| f == t2.function,
         .thread => |t| t == t2.thread,
         .upval => |u| u == t2.upval,
         .proto => |p| p == t2.proto,

@@ -1950,36 +1950,51 @@ pub fn lua_arith(L: *lua_State, op: i32) !void {
     }
 }
 
+pub fn luaV_rawequalobj(t1: TValue, t2: TValue) bool {
+    if (t1 == .number and t2 == .number) {
+        return t1.number == t2.number;
+    }
+    if (t1 == .integer and t2 == .integer) {
+        return t1.integer == t2.integer;
+    }
+    if (t1 == .integer and t2 == .number) {
+        const i = t1.integer;
+        const f = t2.number;
+        return f == @as(f64, @floatFromInt(i)) and i == @as(i64, @intFromFloat(f));
+    }
+    if (t1 == .number and t2 == .integer) {
+        const f = t1.number;
+        const i = t2.integer;
+        return f == @as(f64, @floatFromInt(i)) and i == @as(i64, @intFromFloat(f));
+    }
+    if (@as(std.meta.Tag(TValue), t1) != @as(std.meta.Tag(TValue), t2)) {
+        return false;
+    }
+    return switch (t1) {
+        .nil => true,
+        .boolean => |b| b == t2.boolean,
+        .number => |n| n == t2.number,
+        .integer => |n| n == t2.integer,
+        .lightud => |p| p == t2.lightud,
+        .string => |s| blk: {
+            const t2s = t2.string;
+            if (s == null and t2s == null) break :blk true;
+            if (s == null or t2s == null) break :blk false;
+            break :blk lstring.luaS_eqstr(s.?, t2s.?);
+        },
+        .function => |f| f == t2.function,
+        .table => |t| t == t2.table,
+        .userdata => |u| u == t2.userdata,
+        .thread => |t| t == t2.thread,
+        .upval => |u| u == t2.upval,
+        .proto => |p| p == t2.proto,
+    };
+}
+
 pub fn lua_rawequal(L: *lua_State, idx1: i32, idx2: i32) i32 {
     const a = stackAt(L, idx1);
     const b = stackAt(L, idx2);
-    if (@as(std.meta.Tag(TValue), a) != @as(std.meta.Tag(TValue), b)) return 0;
-    return switch (a) {
-        .nil => 1,
-        .boolean => |v| if (v == b.boolean) 1 else 0,
-        .integer => |v| if (v == b.integer) 1 else 0,
-        .number => |v| if (v == b.number) 1 else 0,
-        .string => |v| if (v == b.string) 1 else 0,
-        .table => |v| if (v == b.table) 1 else 0,
-        .function => |v| blk: {
-            if (v == b.function) break :blk 1;
-            if (v) |cl1| {
-                if (b.function) |cl2| {
-                    if (cl1.* == .c and cl2.* == .c) {
-                        if (cl1.c.f == cl2.c.f and cl1.c.upvals.len == 0 and cl2.c.upvals.len == 0) {
-                            break :blk 1;
-                        }
-                    }
-                }
-            }
-            break :blk 0;
-        },
-        .userdata => |v| if (v == b.userdata) 1 else 0,
-        .thread => |v| if (v == b.thread) 1 else 0,
-        .lightud => |v| if (v == b.lightud) 1 else 0,
-        .upval => |v| if (v == b.upval) 1 else 0,
-        .proto => |v| if (v == b.proto) 1 else 0,
-    };
+    return if (luaV_rawequalobj(a, b)) 1 else 0;
 }
 
 pub fn lua_compare(L: *lua_State, idx1: i32, idx2: i32, op: i32) i32 {
