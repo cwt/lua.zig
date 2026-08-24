@@ -5083,3 +5083,40 @@ test "BUG-137: short string caching and long string GC allocation" {
     const ts4 = try lua.lstring.luaS_new(&L, long_str);
     try std.testing.expect(ts3 != ts4);
 }
+
+test "BUG-138: lua_xmove safely moves values and ensures target stack capacity" {
+    const gpa = std.testing.allocator;
+    var L1: lua.lua_State = undefined;
+    try lua.luaL_newstate(&L1, gpa);
+    defer lua.lua_close(&L1);
+
+    const L2 = try lua.lua_newthread(&L1);
+    lua.lua_pop(&L1, 1); // pop thread from L1 stack
+
+    lua.lua_pushinteger(&L1, 100);
+    lua.lua_pushinteger(&L1, 200);
+    lua.lua_pushinteger(&L1, 300);
+
+    lua.lua_xmove(&L1, L2, 3);
+    try std.testing.expectEqual(@as(i32, 0), lua.lua_gettop(&L1));
+    try std.testing.expectEqual(@as(i32, 3), lua.lua_gettop(L2));
+    try std.testing.expectEqual(@as(i64, 100), lua.lua_tointeger(L2, 1));
+    try std.testing.expectEqual(@as(i64, 200), lua.lua_tointeger(L2, 2));
+    try std.testing.expectEqual(@as(i64, 300), lua.lua_tointeger(L2, 3));
+}
+
+test "BUG-138: luaL_dostring returns exact status and preserves error codes" {
+    const gpa = std.testing.allocator;
+    var L: lua.lua_State = undefined;
+    try lua.luaL_newstate(&L, gpa);
+    defer lua.lua_close(&L);
+
+    const ok_status = try lua.luaL_dostring(&L, "local a = 10", "=(test_ok)");
+    try std.testing.expectEqual(lua.LUA_OK, ok_status);
+
+    const syntax_err = try lua.luaL_dostring(&L, "local a = ", "=(test_syntax)");
+    try std.testing.expectEqual(lua.LUA_ERRSYNTAX, syntax_err);
+
+    const run_err = try lua.luaL_dostring(&L, "error('fail')", "=(test_run)");
+    try std.testing.expectEqual(lua.LUA_ERRRUN, run_err);
+}

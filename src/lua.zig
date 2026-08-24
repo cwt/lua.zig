@@ -1476,14 +1476,15 @@ pub fn lua_checkstack(L: *lua_State, n: i32) i32 {
 }
 
 pub fn lua_xmove(from: *lua_State, to: *lua_State, n: i32) void {
-    if (n <= 0) return;
+    if (from == to or n <= 0) return;
     const nn = @as(usize, @intCast(n));
+    if (from.l_G != to.l_G) return;
     if (nn > from.top) return;
-    const avail = to.stack.len - to.top;
-    const to_copy = @min(nn, avail);
-    @memcpy(to.stack[to.top..][0..to_copy], from.stack[from.top - to_copy .. from.top]);
-    from.top -= to_copy;
-    to.top += to_copy;
+    _ = lua_checkstack(to, n);
+    if (to.top + nn > to.stack.len) return;
+    @memcpy(to.stack[to.top..][0..nn], from.stack[from.top - nn .. from.top]);
+    from.top -= nn;
+    to.top += nn;
 }
 
 pub fn stackAt(L: *lua_State, idx: i32) TValue {
@@ -3766,7 +3767,12 @@ pub fn lua_pcallk(L: *lua_State, nargs: i32, nresults: i32, errfunc: i32, ctx: l
 
 pub inline fn lua_pcall(L: *lua_State, nargs: i32, nresults: i32, errfunc: i32) i32 {
     return lua_pcallk(L, nargs, nresults, errfunc, 0, null) catch |e| {
-        return if (e == error.Yield) LUA_YIELD else LUA_ERRRUN;
+        return switch (e) {
+            error.Yield => LUA_YIELD,
+            error.OutOfMemory => LUA_ERRMEM,
+            error.ErrorError => LUA_ERRERR,
+            else => LUA_ERRRUN,
+        };
     };
 }
 
@@ -5836,9 +5842,7 @@ pub fn luaL_dostring(L: *lua_State, s: []const u8, name: []const u8) !i32 {
     if (status != LUA_OK) {
         return status;
     }
-    return lua_pcallk(L, 0, LUA_MULTRET, 0, 0, null) catch |e| {
-        return if (e == error.Yield) LUA_YIELD else LUA_ERRRUN;
-    };
+    return lua_pcall(L, 0, LUA_MULTRET, 0);
 }
 
 pub fn luaL_dostringReader(L: *lua_State, data: ?*anyopaque, size: ?*usize) anyerror!?[]const u8 {

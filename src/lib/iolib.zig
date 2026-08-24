@@ -246,8 +246,8 @@ fn io_popen(L_: *L) !i32 {
     // Spawn the child with pipes.
     var child = std.process.spawn(io.io, .{
         .argv = &argv,
-        .stdin = if (is_read) .ignore else .pipe,
-        .stdout = if (is_read) .pipe else .ignore,
+        .stdin = if (is_read) .inherit else .pipe,
+        .stdout = if (is_read) .pipe else .inherit,
         .stderr = .inherit,
     }) catch {
         lua.lua_pushnil(L_);
@@ -296,24 +296,25 @@ fn io_tmpfile(L_: *L) !i32 {
     var buf: [64]u8 = undefined;
     const seed = if (L_.l_G) |g| g.seed else 0;
     const ptr_val = @intFromPtr(L_);
-    const path = std.fmt.bufPrint(&buf, "/tmp/luazig_{x:0>8}_{x:0>8}", .{ seed, ptr_val & 0xFFFFFFFF }) catch {
-        lua.lua_pushnil(L_);
-        _ = lua.lua_pushstring(L_, "cannot create tmp file");
-        return 2;
-    };
-    buf[path.len] = 0;
-    const a = std.posix.openatZ(std.posix.AT.FDCWD, buf[0..path.len :0].ptr, .{ .ACCMODE = .RDWR, .CREAT = true, .EXCL = true }, 0o600) catch {
-        lua.lua_pushnil(L_);
-        _ = lua.lua_pushstring(L_, "cannot create tmp file");
-        return 2;
-    };
-    errdefer _ = std.c.close(a);
-    defer {
-        _ = std.c.unlink(buf[0..path.len :0]);
+    var attempts: usize = 0;
+    while (attempts < 100) : (attempts += 1) {
+        const path = std.fmt.bufPrint(&buf, "/tmp/luazig_{x:0>8}_{x:0>8}_{d}", .{ seed, ptr_val & 0xFFFFFFFF, attempts }) catch {
+            break;
+        };
+        buf[path.len] = 0;
+        if (std.posix.openatZ(std.posix.AT.FDCWD, buf[0..path.len :0].ptr, .{ .ACCMODE = .RDWR, .CREAT = true, .EXCL = true }, 0o600)) |a| {
+            errdefer _ = std.c.close(a);
+            defer {
+                _ = std.c.unlink(buf[0..path.len :0]);
+            }
+            const p = try newfile(L_);
+            p.* = LStream{ .fd = a, .closef = io_fclose, .buf = null, .buf_len = 0, .buf_mode = 0, .unget = null };
+            return 1;
+        } else |_| {}
     }
-    const p = try newfile(L_);
-    p.* = LStream{ .fd = a, .closef = io_fclose, .buf = null, .buf_len = 0, .buf_mode = 0, .unget = null };
-    return 1;
+    lua.lua_pushnil(L_);
+    _ = lua.lua_pushstring(L_, "cannot create tmp file");
+    return 2;
 }
 
 fn io_type(L_: *L) !i32 {
