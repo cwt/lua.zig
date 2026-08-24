@@ -2956,3 +2956,39 @@ still pass (first line unchanged).
 - **`docs/index.md`**: Updated Project Management link from `bugs.md` to `bugs/index.md`.
 - **`docs/bugs.md`**: Removed obsolete monolithic tracking file.
 
+---
+
+## 2026-08-24 — Systematic Resolution & Conformance Fixes: BUG-116 through BUG-138
+
+Completed analysis, verification, test coverage, and implementation of defects BUG-116 through BUG-138 against the Lua 5.5.1 C reference:
+
+### Summary of Fixes
+- **BUG-116 & BUG-117 (Bytecode loader & dumper wire format)**: Fixed `loadInt`/`dumpInt` to use plain varints (standard 7-bit continuation chunks with bit 7 flag) matching Lua 5.5.1's `loadUnsigned`/`dumpUnsigned`. Cleaned up error mapping in `lua_load` to report distinct messages (`truncated chunk`, `corrupted chunk`, `bad header`).
+- **BUG-118 (Table hash chain integrity)**: Fixed `clearHashKey` and weak table sweeps so that clearing a key marks the node key as a tombstone (`.nil = {}` key with `.next` chain preserved) without corrupting colliding hash collision chains.
+- **BUG-119 (Stack reallocation upvalue target fixup)**: Fixed `reallocStack` to correctly point open upvalues targeting reallocated stack slots to `&L.stack[...]` (instead of target threads `&t.stack[...]`), and fixed bounds check to compare against the old stack pointer range.
+- **BUG-120 (Thread GC visibility)**: Added coroutine threads as first-class GC objects in `VMGCObject.ValUnion.thread` (`lua.registerGC(L, L1)`), linked into `g.allgc` with full mark-and-sweep traversal.
+- **BUG-121 (`__gc` finalizer resurrection)**: Verified and tested two-phase resurrection lifecycle: resurrected objects transitioning from `finobj` back to `allgc` marked with `finalized = true` are kept alive and only swept in subsequent cycles once unreferenced.
+- **BUG-122 (Stack capacity during to-be-closed variable handling)**: Guarded `close_one_slot` / `closeupvals` stack writes against stack overflow by ensuring stack growth guarantees and updating `L.tbclist` indices on stack reallocation.
+- **BUG-123 (Float and numeric string conversions)**: Ported `luaO_tostringbuff` and `tostringbuffFloat` using `lua_number2str`/`lua_number2strx` formatting with dedicated 128-byte buffers across `OP_CONCAT`, `lua_tolstring`, `lua_concat`, and `iolib.g_write`, eliminating string truncation and `{d}` scientific notation divergences.
+- **BUG-124 (`lua_rawequal` & `luaV_rawequalobj` conformance)**: Unified raw equality semantics to conform strictly to Lua 5.5.1 `luaV_rawequalobj`: cross-type integer/float numeric equality (e.g. `1 == 1.0`), non-interned string content equality fallback, and removal of non-standard C-closure pointer comparison.
+- **BUG-125 (Multi-operand string concatenation & metamethod folding)**: Unified `luaV_concat` right-to-left folding across both `OP_CONCAT` and C-API `lua_concat`, supporting intermediate metamethod invocations.
+- **BUG-126 (`luaL_ref` / `luaL_unref`)**: Verified against upstream reference `lua/lauxlib.c:709-736` and documented as FALSE POSITIVE.
+- **BUG-127 (Integer classification for large float keys)**: Delegated `ltable.asInt` to `TValue.toIntegerExactOpt()`, supporting full 64-bit integer range (`-9223372036854775808` to `9223372036854775807`) for integral floating-point numbers.
+- **BUG-128 (Instruction emission OOM propagation)**: Propagated `!i32`/`!void` through `luaK_code*` and all parser grammar rules, eliminating silent OOM swallowing (`catch 0`).
+- **BUG-129 (CLI driver conformance)**: Populated negative `arg` table indices for interpreter flags/arguments, added `LUA_INIT_5_5` and `LUA_INIT` execution, supported `-E` (setting `LUA_NOENV`), and prefixed uncaught top-level error messages with `progname: `.
+- **BUG-130 (`LUA_ERRFILE` error constant)**: Defined `LUA_ERRFILE = 6` (`LUA_ERRERR + 1`) per `lua/lauxlib.h:27` and returned it from `luaL_loadfilex` on open/read errors.
+- **BUG-131 (String buffer sizing and pointer formatting)**: Defined `MAX_SIZE`, guarded `luaL_prepbuffsize` against string buffer overflow with `"resulting string too large"`, and formatted `%p` pointers in `luaL_tolstring` as `0x{x}` without fixed 0-padding.
+- **BUG-132 (I/O numeric formatting safety)**: Verified and tested `iolib.g_write` with `luaO_tostringbuff` and safe 128-byte buffer without any `catch unreachable`.
+- **BUG-133 (Residual swallowed-error cleanup)**: Eliminated all dummy `orelse {}` across `iolib`, `oslib`, and `lauxlib`, and annotated legitimate best-effort sites.
+- **BUG-134 (Runtime warning routing)**: Implemented `global_State.warnf`/`ud_warn`, `lua_setwarnf`, `lua_warning`, `luaE_warning`, and `luaE_warnerror`. Replaced all `std.debug.print` occurrences in `src/` with proper error reporting and warning dispatch.
+- **BUG-135 (`OP_SETLIST` table constructor optimization)**: Added `ltable.ensureArraySize` to preallocate the array part once in `OP_SETLIST` and store items directly into slice slots (`h.array.items[last - 1] = val`).
+- **BUG-136 (`getGCObject` linear scan elimination)**: Replaced O(N) `allgc` walk fallbacks in `getGCObject` across all types with direct O(1) `.gc` back-pointer returns.
+- **BUG-137 (Dead code & doc-comment cleanup)**: Deleted unreferenced `lua_numbertocstring` and `hasFinalizer`, removed unused `lenhint` from `lua_Table`, deleted backup `src/libm.zig.orig`, and updated `luaS_new` doc-comment.
+- **BUG-138 (API and standard library divergences)**: Fixed `io.popen` stdin/stdout pipe inheritance, implemented collision retry loop in `io.tmpfile`, mapped error codes faithfully in `lua_pcall` and `luaL_dostring`, and prevented silent truncation in `lua_xmove`.
+
+### Verification
+- 150/150 test suites pass (`zig build test`).
+- Binary executable builds clean (`zig build`).
+- Zero memory leaks detected.
+
+
