@@ -2943,3 +2943,16 @@ Verification: 131/131 unit tests, PASS 19 FAIL 0; the H.9 and CLI `-v` tests
 still pass (first line unchanged).
 
 §0.1 self-audit: no code semantics changed; banner strings only.
+
+---
+
+## 2026-08-24 — Docs: split docs/bugs.md into OKF v0.1 defect catalog (docs/bugs/001.md – 115.md)
+
+### Changes
+- **`docs/bugs/`**: Split the monolithic `docs/bugs.md` into 115 standalone OKF concept documents (`001.md` through `115.md`), including reconstructed `020.md`.
+- **Frontmatter & Metadata**: Every bug document contains standard OKF v0.1 YAML frontmatter with `type: defect`, `title`, `description`, semantic `tags` (module, severity, status), and ISO-8601 `timestamp`.
+- **`docs/bugs/index.md`**: Created a comprehensive directory catalog linking all 115 bugs with their severity, status, and summary tables.
+- **`docs/bugs/README.md`**: Created a relative symlink pointing to `index.md` per OKF specification §2.3.
+- **`docs/index.md`**: Updated Project Management link from `bugs.md` to `bugs/index.md`.
+- **`docs/bugs.md`**: Removed obsolete monolithic tracking file.
+

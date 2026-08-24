@@ -33,7 +33,7 @@ timestamp: 2026-08-07T23:40:00Z
 
 ### Project Management
 - [Roadmap](roadmap.md) — Phase-based development plan, dependencies between layers
-- [Bugs & Fixes](bugs.md) — Chronological lessons from debugging sessions (conformance fixes, root causes)
+- [Bugs & Fixes](bugs/index.md) — Chronological lessons from debugging sessions (conformance fixes, root causes)
 - [Log](log.md) — Running modification log
 
 ## Quick Reference
