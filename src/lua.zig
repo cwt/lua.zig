@@ -4947,11 +4947,10 @@ pub fn luaC_collectgarbage(L: *lua_State) !void {
                             }
                             // Clear weak hash part
                             for (t.node.items) |*nd| {
-                                if (nd.key != .nil) {
+                                if (nd.key != .nil and nd.val != .nil) {
                                     const key_white = mode.keys and isWhiteGCObject(g, nd.key);
                                     const val_white = mode.vals and isWhiteGCObject(g, nd.val);
                                     if (key_white or val_white) {
-                                        nd.key = .nil;
                                         nd.val = .nil;
                                     }
                                 }

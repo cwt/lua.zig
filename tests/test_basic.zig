@@ -4705,3 +4705,35 @@ test "BUG-117: string.dump and load round-trip bytecode wire format" {
     , "=(bug117)");
     try std.testing.expectEqual(@as(i32, lua.LUA_OK), status);
 }
+
+test "BUG-118: clearHashKey keeps key as dead node without breaking hash collision chains" {
+    const gpa = std.testing.allocator;
+    var L: lua.lua_State = undefined;
+    try lua.luaL_newstate(&L, gpa);
+    defer lua.lua_close(&L);
+    try lua.luaL_openlibs(&L);
+
+    const status = try lua.luaL_dostring(&L,
+        \\local t = {}
+        \\-- sparse insert into hash part
+        \\t[2] = "val2"
+        \\t[3] = "val3"
+        \\t[4] = "val4"
+        \\-- sequential append promotes t[1], t[2], etc.
+        \\t[1] = "val1"
+        \\t[2] = "val2_new"
+        \\-- insert string keys to trigger potential collisions on freed hash slots
+        \\for i = 1, 50 do
+        \\    t["k" .. i] = i
+        \\end
+        \\-- verify all entries are preserved
+        \\assert(t[1] == "val1")
+        \\assert(t[2] == "val2_new")
+        \\assert(t[3] == "val3")
+        \\assert(t[4] == "val4")
+        \\for i = 1, 50 do
+        \\    assert(t["k" .. i] == i)
+        \\end
+    , "=(bug118)");
+    try std.testing.expectEqual(@as(i32, lua.LUA_OK), status);
+}
