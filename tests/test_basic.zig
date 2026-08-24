@@ -4997,3 +4997,25 @@ test "BUG-131: string.rep overflow message and pointer tostring without fixed 0-
     , "=(bug131_2)");
     try std.testing.expectEqual(@as(i32, lua.LUA_OK), status2);
 }
+
+test "BUG-132: iolib g_write formats numbers without catch unreachable or fixed buffer overflow" {
+    const gpa = std.testing.allocator;
+    var L: lua.lua_State = undefined;
+    try lua.luaL_newstate(&L, gpa);
+    defer lua.lua_close(&L);
+    try lua.luaL_openlibs(&L);
+
+    const status = try lua.luaL_dostring(&L,
+        \\local f = io.tmpfile()
+        \\assert(f)
+        \\f:write(123456, " ", 3.14159, " ", 1e30, " ", -1e-30, " ", math.maxinteger, " ", math.mininteger)
+        \\f:seek("set", 0)
+        \\local content = f:read("a")
+        \\assert(content ~= nil)
+        \\assert(string.find(content, "123456") ~= nil)
+        \\assert(string.find(content, "3.14159") ~= nil)
+        \\assert(string.find(content, tostring(math.maxinteger)) ~= nil)
+        \\f:close()
+    , "=(bug132)");
+    try std.testing.expectEqual(@as(i32, lua.LUA_OK), status);
+}
