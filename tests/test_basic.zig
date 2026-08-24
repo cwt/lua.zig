@@ -4872,3 +4872,22 @@ test "BUG-125: C-API lua_concat folds multi-operands with metamethod" {
     const res = lua.lua_tostring(&L, 1).?;
     try std.testing.expectEqualStrings("prefix_middle+_suffix", res);
 }
+
+test "BUG-127: integral float keys >= 9.0e18 classified as integer keys in tables" {
+    const gpa = std.testing.allocator;
+    var L: lua.lua_State = undefined;
+    try lua.luaL_newstate(&L, gpa);
+    defer lua.lua_close(&L);
+    try lua.luaL_openlibs(&L);
+
+    const status = try lua.luaL_dostring(&L,
+        \\local t = {}
+        \\local k_flt = 9.1e18
+        \\t[k_flt] = "value"
+        \\for k, v in pairs(t) do
+        \\    assert(math.type(k) == "integer")
+        \\    assert(v == "value")
+        \\end
+    , "=(bug127)");
+    try std.testing.expectEqual(@as(i32, lua.LUA_OK), status);
+}

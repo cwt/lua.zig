@@ -28,12 +28,7 @@ pub const KV = struct { key: TValue, val: TValue };
 /// Classify a numeric TValue as an integer key, if it has an integral value
 /// within the representable integer range.
 inline fn asInt(v: TValue) ?i64 {
-    if (v == .integer) return v.integer;
-    if (v != .number) return null;
-    const n = v.number;
-    if (n != @floor(n)) return null;
-    if (n < -9.0e18 or n > 9.0e18) return null;
-    return @intFromFloat(n);
+    return v.toIntegerExactOpt();
 }
 
 /// Raw key equality. Treats equal string contents as equal (interned strings
