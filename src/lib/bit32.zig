@@ -155,7 +155,7 @@ fn bit_extract(L: *lua.lua_State) !i32 {
     const width = lauxlib.luaL_optinteger(L, 3, 1);
     try lauxlib.luaL_argcheck(L, field >= 0, 2, "field cannot be negative");
     try lauxlib.luaL_argcheck(L, width > 0, 3, "width must be positive");
-    if (field +% width > NBITS) {
+    if (field > NBITS or width > NBITS or field + width > NBITS) {
         return lauxlib.luaL_error(L, "trying to access non-existent bits");
     }
     const f: u6 = @intCast(field);
@@ -173,7 +173,7 @@ fn bit_replace(L: *lua.lua_State) !i32 {
     const width = lauxlib.luaL_optinteger(L, 4, 1);
     try lauxlib.luaL_argcheck(L, field >= 0, 3, "field cannot be negative");
     try lauxlib.luaL_argcheck(L, width > 0, 4, "width must be positive");
-    if (field +% width > NBITS) {
+    if (field > NBITS or width > NBITS or field + width > NBITS) {
         return lauxlib.luaL_error(L, "trying to access non-existent bits");
     }
     const f: u6 = @intCast(field);

@@ -5357,3 +5357,25 @@ test "BUG-145: operations on closed file handles throw 'attempt to use a closed 
     const status = try lua.luaL_dostring(&L, script, "=(test_bug145)");
     try std.testing.expectEqual(lua.LUA_OK, status);
 }
+
+test "BUG-146: bit32.extract and bit32.replace error cleanly on large width without panic" {
+    const gpa = std.testing.allocator;
+    var L: lua.lua_State = undefined;
+    try lua.luaL_newstate(&L, gpa);
+    defer lua.lua_close(&L);
+    try lua.luaL_openlibs(&L);
+
+    const script =
+        \\local maxint = math.maxinteger
+        \\local ok, err = pcall(function() bit32.extract(1, 1, maxint) end)
+        \\assert(not ok and string.find(err, "trying to access non%-existent bits"))
+        \\
+        \\ok, err = pcall(function() bit32.replace(1, 0, 1, maxint) end)
+        \\assert(not ok and string.find(err, "trying to access non%-existent bits"))
+        \\
+        \\ok, err = pcall(function() bit32.extract(1, maxint, 1) end)
+        \\assert(not ok and string.find(err, "trying to access non%-existent bits"))
+    ;
+    const status = try lua.luaL_dostring(&L, script, "=(test_bug146)");
+    try std.testing.expectEqual(lua.LUA_OK, status);
+}

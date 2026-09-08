@@ -172,7 +172,7 @@ timestamp: '2026-09-08T21:20:00Z'
 | [BUG-143](143.md) | `lua.zig`: `growStack(L, 1)` is a no-op bug causing latent out-of-bounds stack panics | `HIGH` | ✅ FIXED |
 | [BUG-144](144.md) | `iolib.zig`: Empty line truncation, `read(0)` unconditional nil, `f:lines()` non-iterator, and FD leaks | `HIGH` | ✅ FIXED |
 | [BUG-145](145.md) | `iolib.zig`: Closed file handles bypass state check and issue syscalls with `fd = -1` | `MED` | ✅ FIXED |
-| [BUG-146](146.md) | `bit32.zig`: `bit32.extract` and `bit32.replace` panic on wrapping integer addition | `HIGH` | ⏳ OPEN |
+| [BUG-146](146.md) | `bit32.zig`: `bit32.extract` and `bit32.replace` panic on wrapping integer addition | `HIGH` | ✅ FIXED |
 | [BUG-147](147.md) | `baselib.zig`: `dofile` and `loadfile` error on omitted filename instead of reading from `stdin` | `MED` | ⏳ OPEN |
 | [BUG-148](148.md) | `mathlib.zig`: `math.random(n)` missing lower bounds check allows negative integers to wrap into pseudo-random bounds | `MED` | ⏳ OPEN |
 | [BUG-149](149.md) | `format.zig`: `string.format` raises divergent error message for 3-digit width/precision specifiers (reference also rejects them; only the message differs) | `LOW` | ⏳ OPEN |
