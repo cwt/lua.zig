@@ -6,6 +6,28 @@ tags: [log, changelog]
 timestamp: 2026-09-08T21:20:00Z
 ---
 
+## 2026-09-08 — Upstream `lua/testes/` Standalone Re-Verification Audit (BUG-155 through BUG-167 Documented)
+
+- **Audit Scope & Verification** (report-only phase; no code changed):
+  - Two parallel line-by-line code audits vs the C reference (`lua/` v5.5.1): (1) VM/tables/strings/GC/state (`lvm`, `ltable`, `lstring`, `lua`), (2) compiler/dumper/standard libraries (`llex`, `lparser`, `lcode`, `ldump`/`lundump`, `src/lib/*`). `zig build` and `zig build test` pass.
+  - Independently re-ran all 34 upstream `lua/testes/*.lua` files **standalone** (cwd `lua/testes/`): **23 PASS / 11 FAIL**, including one hard crash (core dump). Also ran the official `./run_testes.sh`: 19 PASS / 0 FAIL / 15 SKIP — confirming the documented "PASS 19, FAIL 0" claim holds **only under the harness skip rules** (T-module tests, all.lua-harness files, heavy tests, `all.lua`/`main.lua` harness skips).
+- **Real bugs found in harness-skipped files (all verified by running)**:
+  - `BUG-155` (HIGH): `posrelatI` maps `pos==0` to 0 instead of 1 — `string.sub` reads one byte before the string under the default ReleaseFast build (strings.lua:44).
+  - `BUG-156` (MED): `coroutine.wrap` on a dead coroutine raises "attempt to call a nil value" instead of "cannot resume dead coroutine" (coroutine.lua:69).
+  - `BUG-157` (MED): `package.searchpath` with `init=".", sep="."` returns the bare name (attrib.lua:138).
+  - `BUG-158` (MED): `collectgarbage("generational")` does not return the previous GC mode (gc.lua:15) — conformance-visible consequence of the Phase H.10 simplification.
+  - `BUG-159` (MED): `io.stdin:seek("set", 1000)` invalid seek does not return `(nil, msg, code)` (files.lua:88).
+  - `BUG-160` (HIGH): yield-eligibility mis-tracking — "attempt to yield from outside a coroutine" for a legal metamethod yield in a resumed coroutine (big.lua:56).
+  - `BUG-161` (CRITICAL): process crash (core dump) in the `coroutine.close` chain — missing recursion depth guard (cstack.lua).
+  - `BUG-162` (HIGH): `luaV_finishOp` lacks the LT/LE/GTI/GEI/EQ/CONCAT completion cases (code-audit finding; breaks yields inside comparison/concat metamethods).
+  - `BUG-163` (MED): VM arithmetic fast path coerces strings directly, shadowing user `__add`…`__unm` on the string metatable (code-audit finding; reconciles with open BUG-050).
+  - `BUG-164` (LOW): `debug.debug()` is a placeholder; one residual swallowed-write `catch {}`.
+  - `BUG-165` (MED): default `package.cpath` lacks the `lua/5.5` C-dir components — main.lua:193 fails (and all.lua, which runs main.lua). Verified `-E` itself works; only the default value diverges.
+- **Tooling/documentation**:
+  - `BUG-166` (LOW): `run_testes.sh` skips 15 of 34 upstream files; AGENTS.md's bare "PASS 19, FAIL 0" claim overstates conformance. Proposed: document the skip list, provide a Zig `T` module, track standalone results as the true metric.
+  - `BUG-167` (LOW): housekeeping — stale `src/lua.zig.orig` backup (206 KB) in tree, wrong opcode-layout comment at `lvm.zig:420-428` (code is correct, comment describes 5.4), inert parity stubs `GCObject`/`errorJmp`/`gclist` in `lua.zig`.
+- **Fidelity assessment recorded**: the port follows Lua 5.5.1 semantics faithfully in structure (compiler, 83-opcode VM, bytecode format, libs, error propagation, TBC); deviations are mostly deliberate Zig-native design (stop-the-world GC, different hash functions, no table rehash) plus the 13 defects above.
+
 ## 2026-09-08 — Validation of BUG-139 through BUG-154 Against Source (Report Corrections)
 
 - **Validation Scope**: Each of the 16 bug reports was re-verified against the actual source (every cited location re-read) and against the C reference (`lua/`). 14 confirmed as written, 2 required corrections; **no code was changed** (report-only phase).

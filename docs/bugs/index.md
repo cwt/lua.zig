@@ -2,7 +2,7 @@
 type: directory_index
 title: Bug Reports & Defect Catalog
 description: Index of all tracked defects, conformance fixes, and architectural bugs
-  in luazig (BUG-001 through BUG-154).
+  in luazig (BUG-001 through BUG-167).
 tags:
 - bugs
 - defects
@@ -14,7 +14,7 @@ timestamp: '2026-09-08T21:20:00Z'
 # Bug Reports & Defect Catalog — luazig
 
 > Working catalog of defects, bug-avoidance audits, and conformance fixes in the `luazig` codebase.
-> Bugs are numbered `BUG-001` through `BUG-154`.
+> Bugs are numbered `BUG-001` through `BUG-167`.
 > Each document records the location, defect, impact, and fix or resolution.
 
 ## Legend
@@ -181,6 +181,19 @@ timestamp: '2026-09-08T21:20:00Z'
 | [BUG-152](152.md) | `ltm.zig` / `ltable.zig`: Dead code `checknoTM` and `Table.flags` missing invalidation on key mutation (only `lua_setmetatable` clears flags) | `LOW` | ✅ FIXED |
 | [BUG-153](153.md) | `lauxlib.zig`: Swallowed error via dummy `catch {}` in `luaL_tolstring` violating rule §0.1 item 12 | `MED` | ✅ FIXED |
 | [BUG-154](154.md) | `luazig.zig`: `std.process.exit` in `main` bypasses `lua_close` and GPA `deinit` defer handlers | `LOW` | ✅ FIXED |
+| [BUG-155](155.md) | `pattern.zig`: `posrelatI` maps `pos==0` to 0 instead of 1 — `string.sub` reads one byte before the string (strings.lua:44) | `HIGH` | ⏳ OPEN |
+| [BUG-156](156.md) | `corolib.zig`: `coroutine.wrap` on dead coroutine raises "attempt to call a nil value" instead of "cannot resume dead coroutine" | `MED` | ⏳ OPEN |
+| [BUG-157](157.md) | `loadlib.zig`: `package.searchpath` with `init=".", sep="."` returns the bare name instead of the expanded path (attrib.lua:138) | `MED` | ⏳ OPEN |
+| [BUG-158](158.md) | `lua.zig`/`baselib.zig`: `collectgarbage("generational")` does not return the previous GC mode (gc.lua:15) | `MED` | ⏳ OPEN |
+| [BUG-159](159.md) | `iolib.zig`: `io.stdin:seek("set", 1000)` invalid seek does not return `(nil, msg, code)` (files.lua:88) | `MED` | ⏳ OPEN |
+| [BUG-160](160.md) | `lvm.zig`/`lua.zig`: yield from a resumed-coroutine metamethod chain mis-tracked — "attempt to yield from outside a coroutine" (big.lua:56) | `HIGH` | ⏳ OPEN |
+| [BUG-161](161.md) | `corolib.zig`/`lua.zig`: process crash (core dump) in the `coroutine.close` chain — missing depth guard (cstack.lua) | `CRITICAL` | ⏳ OPEN |
+| [BUG-162](162.md) | `lvm.zig`: `luaV_finishOp` lacks LT/LE/GTI/GEI/EQ/CONCAT completion cases for yields inside comparison/concat metamethods | `HIGH` | ⏳ OPEN |
+| [BUG-163](163.md) | `lvm.zig`: VM arithmetic fast path coerces strings directly, shadowing user `__add`…`__unm` on the string metatable | `MED` | ⏳ OPEN |
+| [BUG-164](164.md) | `debug.zig`: `debug.debug()` is a placeholder ("compilation not supported"); residual swallowed-write `catch {}` | `LOW` | ⏳ OPEN |
+| [BUG-165](165.md) | `loadlib.zig`/`luaconf.zig`: default `package.cpath` lacks the `lua/5.5` C-dir components — main.lua:193 fails | `MED` | ⏳ OPEN |
+| [BUG-166](166.md) | `run_testes.sh`: skips 15 of 34 upstream files — the "PASS 19, FAIL 0" claim masks real standalone failures | `LOW` | ⏳ OPEN |
+| [BUG-167](167.md) | Housekeeping: stale `src/lua.zig.orig` backup; wrong opcode-layout comment at `lvm.zig:420`; dead parity stubs `GCObject`/`errorJmp`/`gclist` | `LOW` | ⏳ OPEN |
 
 ## Systematic Bug Audits
 - [BUG-050](050.md) – [BUG-054](054.md): Systematic Bug-Pattern Audit (2026-07-31) cross-cutting codebase analysis.
@@ -188,6 +201,7 @@ timestamp: '2026-09-08T21:20:00Z'
 - [BUG-086](086.md) – [BUG-114](114.md): Concurrency, Coroutines, GC & Platform Conformance Audit (2026-08-08).
 - [BUG-116](116.md) – [BUG-138](138.md): Deep Audit vs Lua 5.5.1 Reference (2026-08-24) — full-source review with differential testing against `lua/lua`; found the rev-152 loader regression (all `.luac` loading broken, 127/132 tests), dump-format wire incompatibility, table chain-corruption hazard, GC gaps (threads never collected, `__gc` resurrection UAF), float-to-string regressions, and assorted conformance divergences.
 - [BUG-139](139.md) – [BUG-154](154.md): Memory Safety, Conformance & Dead Code Deep Audit (2026-09-08) — static analysis hunting for UAF, double-free, uninitialized pointers, stack growth no-ops, I/O boundary defects, and Zig 0.16.0 rule compliance.
+- [BUG-155](155.md) – [BUG-167](167.md): Upstream `lua/testes/` Standalone Re-Verification Audit (2026-09-08) — re-ran all 34 upstream test files standalone (23 PASS / 11 FAIL incl. 1 core dump) and two parallel line-by-line code audits vs the C reference. Discovered that the "PASS 19, FAIL 0" claim holds only under the harness skip list (15 files skipped): real bugs in string.sub (`posrelatI` off-by-one reading OOB), `coroutine.wrap` dead-resume error, `package.searchpath` init/sep, GC mode return value, stdin seek result shape, yield tracking in resumed metamethods (big.lua), a crash in the `coroutine.close` chain (cstack.lua), missing `luaV_finishOp` comparison/concat cases, VM string-coercion shadowing of string metamethods, placeholder `debug.debug()`, default `package.cpath` missing `lua/5.5` components, plus harness blind spots and housekeeping items.
 
 ---
 - [← Documentation Root](../index.md)
