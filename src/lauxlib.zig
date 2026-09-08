@@ -654,8 +654,7 @@ pub fn skipFilePreamble(content: []const u8) []const u8 {
     return content[start_idx..];
 }
 
-/// Load file as Lua chunk (with mode). If `filename` is null, reads from
-/// stdin (not yet implemented — use named files).
+/// Load file as Lua chunk (with mode). If `filename` is null, reads from stdin.
 pub fn luaL_loadfilex(L: *lua.lua_State, filename: ?[]const u8, mode: []const u8) i32 {
     const g = L.l_G orelse return lua.LUA_ERRERR;
 
@@ -678,11 +677,26 @@ pub fn luaL_loadfilex(L: *lua.lua_State, filename: ?[]const u8, mode: []const u8
         const adjusted = skipFilePreamble(content);
         var ls = LoadS{ .s = adjusted, .done = false };
         return lua.lua_load(L, getS, @as(?*anyopaque, @ptrCast(&ls)), chunkname, mode);
+    } else {
+        var list = std.ArrayList(u8).empty;
+        defer list.deinit(L.allocator);
+        var chunk: [4096]u8 = undefined;
+        while (true) {
+            const n = std.Io.File.stdin().readStreaming(g.io, &.{&chunk}) catch |err| {
+                if (err == error.EndOfStream) break;
+                _ = lua.lua_pushstring(L, "error reading stdin");
+                return LUA_ERRFILE;
+            };
+            if (n == 0) break;
+            list.appendSlice(L.allocator, chunk[0..n]) catch {
+                _ = lua.lua_pushstring(L, "out of memory");
+                return lua.LUA_ERRMEM;
+            };
+        }
+        const adjusted = skipFilePreamble(list.items);
+        var ls = LoadS{ .s = adjusted, .done = false };
+        return lua.lua_load(L, getS, @as(?*anyopaque, @ptrCast(&ls)), chunkname, mode);
     }
-
-    // stdin: not yet supported via reader (would need a streaming reader).
-    _ = lua.lua_pushstring(L, "stdin not supported");
-    return LUA_ERRFILE;
 }
 
 /// Load buffer as Lua chunk (with mode).

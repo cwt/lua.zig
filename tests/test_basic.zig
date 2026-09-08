@@ -5379,3 +5379,22 @@ test "BUG-146: bit32.extract and bit32.replace error cleanly on large width with
     const status = try lua.luaL_dostring(&L, script, "=(test_bug146)");
     try std.testing.expectEqual(lua.LUA_OK, status);
 }
+
+test "BUG-147: dofile and loadfile support optional filename and stdin fallback" {
+    const gpa = std.testing.allocator;
+    var L: lua.lua_State = undefined;
+    try lua.luaL_newstate(&L, gpa);
+    defer lua.lua_close(&L);
+    try lua.luaL_openlibs(&L);
+
+    // 1. loadfile returns nil, err on nonexistent file (does not error)
+    const script =
+        \\local f, err = loadfile("nonexistent_test_file.lua")
+        \\assert(f == nil and string.find(err, "cannot open"))
+        \\
+        \\local ok, err2 = pcall(function() dofile("nonexistent_test_file.lua") end)
+        \\assert(not ok and string.find(err2, "cannot open"))
+    ;
+    const status = try lua.luaL_dostring(&L, script, "=(test_bug147)");
+    try std.testing.expectEqual(lua.LUA_OK, status);
+}

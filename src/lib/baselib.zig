@@ -194,25 +194,11 @@ fn collectgarbage(L: *lua.lua_State) anyerror!i32 {
 }
 
 fn dofile(L: *lua.lua_State) anyerror!i32 {
-    const filename = try lauxlib.luaL_checklstring(L, 1, null);
+    const filename = try lauxlib.luaL_optlstring(L, 1, null, null);
     lua.lua_settop(L, 1);
-    
-    const io = L.l_G.?.io;
-    const contents = std.Io.Dir.cwd().readFileAlloc(io, filename, L.allocator, .unlimited) catch |err| {
-        const msg = if (err == error.FileNotFound) "cannot open file: No such file or directory" else "error reading file";
-        _ = lua.lua_pushstring(L, msg);
-        return lua.lua_error(L);
-    };
-    defer L.allocator.free(contents);
-
-    var slice_data = skipFilePreamble(contents);
-    const chunkname = try std.fmt.allocPrint(L.allocator, "@{s}", .{filename});
-    defer L.allocator.free(chunkname);
-    const status = lua.lua_load(L, sliceReader, @as(?*anyopaque, @ptrCast(&slice_data)), chunkname, "bt");
-    if (status != lua.LUA_OK) {
+    if (lauxlib.luaL_loadfilex(L, filename, "bt") != lua.LUA_OK) {
         return lua.lua_error(L);
     }
-    
     try lua.lua_call(L, 0, lua.LUA_MULTRET);
     return @as(i32, @intCast(lua.lua_gettop(L) - 1));
 }
@@ -253,14 +239,6 @@ fn ipairs(L: *lua.lua_State) anyerror!i32 {
     return 4;
 }
 
-// ===================================================================
-// Helper: skip UTF-8 BOM and shebang line from file content
-// ===================================================================
-
-fn skipFilePreamble(content: []const u8) []const u8 {
-    return lauxlib.skipFilePreamble(content);
-}
-
 /// Validate a chunk-load mode (mirrors the reference getMode): the 'B'
 /// fixed-buffer mode is reserved for the C API.
 fn getMode(L: *lua.lua_State, idx: i32) ![]const u8 {
@@ -272,21 +250,11 @@ fn getMode(L: *lua.lua_State, idx: i32) ![]const u8 {
 }
 
 fn loadfile(L: *lua.lua_State) anyerror!i32 {
-    const filename = try lauxlib.luaL_checklstring(L, 1, null);
+    const filename = try lauxlib.luaL_optlstring(L, 1, null, null);
     const mode = try getMode(L, 2);
     const env_idx: i32 = if (lua.lua_isnone(L, 3) != 0) 0 else 3;
 
-    const io = L.l_G.?.io;
-    const contents = std.Io.Dir.cwd().readFileAlloc(io, filename, L.allocator, .unlimited) catch |err| {
-        lua.lua_pushnil(L);
-        const msg = if (err == error.FileNotFound) "cannot open file: No such file or directory" else "error reading file";
-        _ = lua.lua_pushstring(L, msg);
-        return 2;
-    };
-    defer L.allocator.free(contents);
-
-    var slice_data = skipFilePreamble(contents);
-    const status = lua.lua_load(L, sliceReader, @as(?*anyopaque, @ptrCast(&slice_data)), filename, mode);
+    const status = lauxlib.luaL_loadfilex(L, filename, mode);
     if (status == lua.LUA_OK) {
         if (env_idx != 0 and lua.lua_type(L, env_idx) != lua.LUA_TNIL) {
             lua.lua_pushvalue(L, env_idx);
