@@ -5398,3 +5398,24 @@ test "BUG-147: dofile and loadfile support optional filename and stdin fallback"
     const status = try lua.luaL_dostring(&L, script, "=(test_bug147)");
     try std.testing.expectEqual(lua.LUA_OK, status);
 }
+
+test "BUG-148: math.random(n) checks lower bound when n < 1 and rejects negative upper bounds" {
+    const gpa = std.testing.allocator;
+    var L: lua.lua_State = undefined;
+    try lua.luaL_newstate(&L, gpa);
+    defer lua.lua_close(&L);
+    try lua.luaL_openlibs(&L);
+
+    const script =
+        \\assert(math.random(1) == 1)
+        \\assert(type(math.random(0)) == "number")
+        \\
+        \\local ok, err = pcall(function() math.random(-1) end)
+        \\assert(not ok and string.find(err, "interval is empty"))
+        \\
+        \\ok, err = pcall(function() math.random(-5) end)
+        \\assert(not ok and string.find(err, "interval is empty"))
+    ;
+    const status = try lua.luaL_dostring(&L, script, "=(test_bug148)");
+    try std.testing.expectEqual(lua.LUA_OK, status);
+}

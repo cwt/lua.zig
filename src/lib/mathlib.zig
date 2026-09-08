@@ -300,28 +300,27 @@ fn math_random(L: *lua.lua_State) !i32 {
     const state = &g.prng_state;
     const rv = nextrand(state);
     const nargs = lua.lua_gettop(L);
+    var low: i64 = 1;
+    var up: i64 = undefined;
     if (nargs == 0) {
         lua.lua_pushnumber(L, I2d(rv));
         return 1;
     } else if (nargs == 1) {
-        const up = try lauxlib.luaL_checkinteger(L, 1);
+        up = try lauxlib.luaL_checkinteger(L, 1);
         if (up == 0) {
             lua.lua_pushinteger(L, @as(i64, @bitCast(rv)));
             return 1;
         }
-        const p = project(rv, @as(u64, @bitCast(up -% 1)), state);
-        lua.lua_pushinteger(L, @as(i64, @bitCast(p)) + 1);
-        return 1;
     } else if (nargs == 2) {
-        const low = try lauxlib.luaL_checkinteger(L, 1);
-        const up = try lauxlib.luaL_checkinteger(L, 2);
-        try lauxlib.luaL_argcheck(L, low <= up, 1, "interval is empty");
-        const p = project(rv, @as(u64, @bitCast(up -% low)), state);
-        lua.lua_pushinteger(L, @as(i64, @bitCast(p +% @as(u64, @bitCast(low)))));
-        return 1;
+        low = try lauxlib.luaL_checkinteger(L, 1);
+        up = try lauxlib.luaL_checkinteger(L, 2);
     } else {
         return lauxlib.luaL_error(L, "wrong number of arguments");
     }
+    try lauxlib.luaL_argcheck(L, low <= up, 1, "interval is empty");
+    const p = project(rv, @as(u64, @bitCast(up -% low)), state);
+    lua.lua_pushinteger(L, @as(i64, @bitCast(p +% @as(u64, @bitCast(low)))));
+    return 1;
 }
 
 fn math_randomseed(L: *lua.lua_State) !i32 {

@@ -174,7 +174,7 @@ timestamp: '2026-09-08T21:20:00Z'
 | [BUG-145](145.md) | `iolib.zig`: Closed file handles bypass state check and issue syscalls with `fd = -1` | `MED` | ✅ FIXED |
 | [BUG-146](146.md) | `bit32.zig`: `bit32.extract` and `bit32.replace` panic on wrapping integer addition | `HIGH` | ✅ FIXED |
 | [BUG-147](147.md) | `baselib.zig`: `dofile` and `loadfile` error on omitted filename instead of reading from `stdin` | `MED` | ✅ FIXED |
-| [BUG-148](148.md) | `mathlib.zig`: `math.random(n)` missing lower bounds check allows negative integers to wrap into pseudo-random bounds | `MED` | ⏳ OPEN |
+| [BUG-148](148.md) | `mathlib.zig`: `math.random(n)` missing lower bounds check allows negative integers to wrap into pseudo-random bounds | `MED` | ✅ FIXED |
 | [BUG-149](149.md) | `format.zig`: `string.format` raises divergent error message for 3-digit width/precision specifiers (reference also rejects them; only the message differs) | `LOW` | ⏳ OPEN |
 | [BUG-150](150.md) | `oslib.zig`: `os.tmpname` rapid deterministic filename collisions via second-resolution timestamp | `MED` | ⏳ OPEN |
 | [BUG-151](151.md) | `lua.zig` / `ltable.zig`: Table growth bypasses `totalbytes` causing GC tracking underflow and zero count | `HIGH` | ⏳ OPEN |
