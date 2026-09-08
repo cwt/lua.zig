@@ -5120,3 +5120,23 @@ test "BUG-138: luaL_dostring returns exact status and preserves error codes" {
     const run_err = try lua.luaL_dostring(&L, "error('fail')", "=(test_run)");
     try std.testing.expectEqual(lua.LUA_ERRRUN, run_err);
 }
+
+test "BUG-139: finishLoad anchors closure and upvalues safely for GC" {
+    const gpa = std.testing.allocator;
+    var L: lua.lua_State = undefined;
+    try lua.luaL_newstate(&L, gpa);
+    defer lua.lua_close(&L);
+
+    // Load chunk that captures _ENV and multiple upvalues
+    const script =
+        \\local x = 42
+        \\local function f() return x end
+        \\return f()
+    ;
+    const status = try lua.luaL_dostring(&L, script, "=(test_bug139)");
+    try std.testing.expectEqual(lua.LUA_OK, status);
+    try std.testing.expectEqual(@as(i64, 42), lua.lua_tointeger(&L, -1));
+
+    // Force full garbage collection to exercise sweep of upvalues and closures
+    try lua.luaC_collectgarbage(&L);
+}

@@ -4130,18 +4130,37 @@ pub fn finishLoad(L: *lua_State, proto: *lua_Proto) i32 {
         .upvals = upvals,
     };
 
+    const cl = L.allocator.create(lua_Closure) catch {
+        L.allocator.free(upvals);
+        L.allocator.destroy(lc);
+        return LUA_ERRMEM;
+    };
+    cl.* = .{ .lua = lc };
+    registerGC(L, cl) catch {
+        L.allocator.free(upvals);
+        L.allocator.destroy(lc);
+        L.allocator.destroy(cl);
+        return LUA_ERRMEM;
+    };
+
+    // Ensure stack capacity and anchor cl on the stack immediately so it and its upvalues are tracked by GC roots
+    growStack(L, L.top + 1) catch {
+        return LUA_ERRMEM;
+    };
+    L.stack[L.top] = TValue{ .function = cl };
+    L.top += 1;
+
     // Initialize upvalues for top-level closure (matching PUC-Rio ldo.c)
     if (proto.upvalues.len > 0) {
-        const registry = G(L).registry.table orelse return LUA_ERRMEM;
+        const registry = G(L).registry.table orelse {
+            L.top -= 1;
+            return LUA_ERRMEM;
+        };
         const globals = ltable.getInt(registry, 2); // RIDX_GLOBALS is 2
         const is_env = if (proto.upvalues[0].name) |name| std.mem.eql(u8, name.s, "_ENV") else true;
         for (0..proto.upvalues.len) |i| {
             const uv = L.allocator.create(UpVal) catch {
-                for (0..i) |j| {
-                    if (upvals[j]) |u| L.allocator.destroy(u);
-                }
-                L.allocator.free(upvals);
-                L.allocator.destroy(lc);
+                L.top -= 1;
                 return LUA_ERRMEM;
             };
             const val: TValue = if (i == 0 and is_env) globals else .{ .nil = {} };
@@ -4153,32 +4172,13 @@ pub fn finishLoad(L: *lua_State, proto: *lua_Proto) i32 {
             };
             registerGC(L, uv) catch {
                 L.allocator.destroy(uv);
-                for (0..i) |j| {
-                    if (upvals[j]) |u| L.allocator.destroy(u);
-                }
-                L.allocator.free(upvals);
-                L.allocator.destroy(lc);
+                L.top -= 1;
                 return LUA_ERRMEM;
             };
             upvals[i] = uv;
         }
     }
 
-    const cl = L.allocator.create(lua_Closure) catch {
-        if (upvals.len > 0 and upvals[0] != null) L.allocator.destroy(upvals[0].?);
-        L.allocator.free(upvals);
-        L.allocator.destroy(lc);
-        return LUA_ERRMEM;
-    };
-    cl.* = .{ .lua = lc };
-    registerGC(L, cl) catch {
-        if (upvals.len > 0 and upvals[0] != null) L.allocator.destroy(upvals[0].?);
-        L.allocator.free(upvals);
-        L.allocator.destroy(lc);
-        return LUA_ERRMEM;
-    };
-    L.stack[L.top] = TValue{ .function = cl };
-    L.top += 1;
     return LUA_OK;
 }
 
