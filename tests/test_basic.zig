@@ -5283,3 +5283,39 @@ test "BUG-143: growStack grows stack when L.top reaches capacity across C-API pu
     try std.testing.expect(L.top > cap6);
     try std.testing.expect(lua.lua_isthread(&L, -1));
 }
+
+test "BUG-144: iolib empty-line read, read(0) EOF probe, f:lines iterator, and io.lines auto-close" {
+    const gpa = std.testing.allocator;
+    var L: lua.lua_State = undefined;
+    try lua.luaL_newstate(&L, gpa);
+    defer lua.lua_close(&L);
+    try lua.luaL_openlibs(&L);
+
+    const script =
+        \\local f = io.tmpfile()
+        \\f:write("line1\n\nline3\n")
+        \\f:seek("set", 0)
+        \\-- 1. read(0) probe before reading anything: should return ""
+        \\assert(f:read(0) == "")
+        \\-- 2. read lines including empty line
+        \\assert(f:read("l") == "line1")
+        \\assert(f:read("l") == "")
+        \\assert(f:read("l") == "line3")
+        \\assert(f:read(0) == nil)
+        \\assert(f:read("l") == nil)
+        \\
+        \\-- 3. f:lines() iterator test
+        \\f:seek("set", 0)
+        \\local lines = {}
+        \\for l in f:lines() do
+        \\    table.insert(lines, l)
+        \\end
+        \\assert(#lines == 3)
+        \\assert(lines[1] == "line1")
+        \\assert(lines[2] == "")
+        \\assert(lines[3] == "line3")
+        \\f:close()
+    ;
+    const status = try lua.luaL_dostring(&L, script, "=(test_bug144)");
+    try std.testing.expectEqual(lua.LUA_OK, status);
+}

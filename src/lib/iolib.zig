@@ -279,7 +279,12 @@ fn io_popen(L_: *L) !i32 {
         }
     }
 
-    const p = try newfile(L_);
+    const p = newfile(L_) catch {
+        if (pipe_fd >= 0) _ = std.c.close(pipe_fd);
+        child.kill(io.io);
+        _ = child.wait(io.io) catch {};
+        return error.OutOfMemory;
+    };
     p.* = LStream{
         .fd = pipe_fd,
         .closef = io_pclose,
@@ -348,7 +353,22 @@ fn read_byte(p: *LStream) ?u8 {
     return one[0];
 }
 
+fn test_eof(L_: *L, p: *LStream) bool {
+    if (p.unget != null) {
+        _ = lua.lua_pushliteral(L_, "");
+        return true;
+    }
+    const c = read_byte(p) orelse {
+        _ = lua.lua_pushliteral(L_, "");
+        return false;
+    };
+    p.unget = c;
+    _ = lua.lua_pushliteral(L_, "");
+    return true;
+}
+
 fn read_chars(L_: *L, p: *LStream, n: usize) bool {
+    if (n == 0) return test_eof(L_, p);
     var buf = L_.allocator.alloc(u8, n) catch return false;
     defer L_.allocator.free(buf);
     var got: usize = 0;
@@ -362,9 +382,8 @@ fn read_chars(L_: *L, p: *LStream, n: usize) bool {
         if (r == 0) break;
         got += r;
     }
-    if (got == 0) return false;
     _ = lua.lua_pushlstring(L_, buf[0..got], got);
-    return true;
+    return got > 0;
 }
 
 // Read the entire remaining file content. Per Lua 5.5 semantics, `*a` on an
@@ -372,33 +391,31 @@ fn read_chars(L_: *L, p: *LStream, n: usize) bool {
 fn read_all(L_: *L, p: *LStream) bool {
     var buf: std.ArrayList(u8) = .empty;
     defer buf.deinit(L_.allocator);
-    if (p.unget) |b| {
-        buf.append(L_.allocator, b) catch return false;
-        p.unget = null;
-    }
-    var chunk: [4096]u8 = undefined;
     while (true) {
-        const n = std.posix.read(p.fd, &chunk) catch return false;
-        if (n == 0) break;
-        buf.appendSlice(L_.allocator, chunk[0..n]) catch return false;
+        const c = read_byte(p) orelse break;
+        buf.append(L_.allocator, c) catch break;
     }
     _ = lua.lua_pushlstring(L_, buf.items, buf.items.len);
     return true;
 }
 
-fn read_line(L_: *L, p: *LStream) bool {
+fn read_line(L_: *L, p: *LStream, chop: bool) bool {
     var buf: std.ArrayList(u8) = .empty;
     defer buf.deinit(L_.allocator);
+    var had_nl = false;
     while (true) {
         const c = read_byte(p) orelse break;
-        if (c == '\n') break;
+        if (c == '\n') {
+            had_nl = true;
+            if (!chop) {
+                buf.append(L_.allocator, '\n') catch break;
+            }
+            break;
+        }
         buf.append(L_.allocator, c) catch break;
     }
-    if (buf.items.len > 0) {
-        _ = lua.lua_pushlstring(L_, buf.items, buf.items.len);
-        return true;
-    }
-    return false;
+    _ = lua.lua_pushlstring(L_, buf.items, buf.items.len);
+    return had_nl or buf.items.len > 0;
 }
 
 // Auxiliary state for `read_number`: a single-byte look-ahead reader that builds
@@ -487,58 +504,56 @@ fn read_number(L_: *L, p: *LStream) bool {
         p.unget = ch; // push back the first non-numeral char
     }
     rn.buff[rn.n] = 0;
-    return lua.lua_stringtonumber(L_, rn.buff[0..rn.n]) > 0;
+    if (lua.lua_stringtonumber(L_, rn.buff[0..rn.n]) > 0) {
+        return true;
+    } else {
+        lua.lua_pushnil(L_);
+        return false;
+    }
 }
 
 fn g_read(L_: *L, p: *LStream, first: i32) !i32 {
+    const nargs = lua.lua_gettop(L_) - 1;
+    var success = true;
     var n: i32 = first;
-    var nread: i32 = 0;
-    const top = lua.lua_gettop(L_);
-    var nargs = top - (first - 1);
-    if (nargs == 0) {
-        nargs = 1;
-        n = 0;
-    }
-    for (0..@as(usize, @intCast(nargs))) |_| {
-        var success = false;
-        if (n == 0) {
-            success = read_line(L_, p);
-        } else {
-            const fmt_int = lua.lua_tointeger(L_, n);
-            if (fmt_int) |num| {
-                if (num > 0) {
-                    success = read_chars(L_, p, @as(usize, @intCast(num)));
-                }
+    if (nargs <= 0) {
+        success = read_line(L_, p, true);
+        n = first + 1;
+    } else {
+        var count = nargs;
+        while (count > 0 and success) : (count -= 1) {
+            if (lua.lua_type(L_, n) == lua.LUA_TNUMBER) {
+                const l = lua.lua_tointeger(L_, n) orelse 0;
+                if (l < 0) return lauxlib.luaL_argerror(L_, n, "invalid format");
+                success = read_chars(L_, p, @as(usize, @intCast(l)));
             } else {
-                const s = lua.lua_tostring(L_, n) orelse "";
-                // Lua 5.5 accepts the optional '*' format prefix.
+                const s = try lauxlib.luaL_checkstring(L_, n);
                 const fmt = if (s.len > 0 and s[0] == '*') s[1..] else s;
-                if (fmt.len > 0) {
-                    switch (fmt[0]) {
-                        'l', 'L' => success = read_line(L_, p),
-                        'a' => success = read_all(L_, p),
-                        'n' => success = read_number(L_, p),
-                        else => {},
-                    }
+                if (fmt.len == 0) return lauxlib.luaL_argerror(L_, n, "invalid format");
+                switch (fmt[0]) {
+                    'n' => success = read_number(L_, p),
+                    'l' => success = read_line(L_, p, true),
+                    'L' => success = read_line(L_, p, false),
+                    'a' => {
+                        _ = read_all(L_, p);
+                        success = true;
+                    },
+                    else => return lauxlib.luaL_argerror(L_, n, "invalid format"),
                 }
             }
+            n += 1;
         }
-        n += 1;
-        if (!success) {
-            lua.lua_pushnil(L_);
-            if (nread == 0) {
-                lua.lua_pushnil(L_);
-                return 2;
-            }
-        }
-        nread += 1;
     }
-    return nread;
+    if (!success) {
+        lua.lua_pop(L_, 1);
+        lua.lua_pushnil(L_);
+    }
+    return n - first;
 }
 
 fn io_read(L_: *L) !i32 {
     const p = getiofile(L_, IO_INPUT) catch return lauxlib.luaL_error(L_, "default input file is closed");
-    return g_read(L_, p, 2);
+    return g_read(L_, p, 1);
 }
 
 fn f_read(L_: *L) !i32 {
@@ -709,9 +724,65 @@ fn f_flush(L_: *L) !i32 {
     return lauxlib.luaL_fileresult(L_, ok, null, 0);
 }
 
+fn io_readline(L_: *L) anyerror!i32 {
+    const p = try tostream(L_, lua.lua_upvalueindex(1));
+    const n = @as(i32, @intCast(lua.lua_tointeger(L_, lua.lua_upvalueindex(2)) orelse 0));
+    if (p.closef == null and p.fd < 0) {
+        return lauxlib.luaL_error(L_, "file is already closed");
+    }
+    lua.lua_settop(L_, 1);
+    if (lua.lua_checkstack(L_, n) == 0) {
+        return lauxlib.luaL_error(L_, "too many arguments");
+    }
+    var i: i32 = 1;
+    while (i <= n) : (i += 1) {
+        lua.lua_pushvalue(L_, lua.lua_upvalueindex(3 + i));
+    }
+    const nread = try g_read(L_, p, 2);
+    if (lua.lua_toboolean(L_, -nread) != 0) {
+        return nread;
+    } else {
+        if (nread > 1) {
+            return lauxlib.luaL_error(L_, lua.lua_tostring(L_, -nread + 1).?);
+        }
+        if (lua.lua_toboolean(L_, lua.lua_upvalueindex(3)) != 0) {
+            lua.lua_settop(L_, 0);
+            lua.lua_pushvalue(L_, lua.lua_upvalueindex(1));
+            _ = try f_close(L_, p);
+        }
+        return 0;
+    }
+}
+
+fn aux_lines(L_: *L, toclose: i32) !void {
+    const top = lua.lua_gettop(L_);
+    const n = top - 1;
+    try lauxlib.luaL_argcheck(L_, n <= 250, 252, "too many arguments");
+    lua.lua_pushvalue(L_, 1);
+    lua.lua_pushinteger(L_, n);
+    lua.lua_pushboolean(L_, toclose);
+    lua.lua_rotate(L_, 2, 3);
+    lua.lua_pushcclosure(L_, io_readline, 3 + n);
+}
+
+fn f_lines(L_: *L) !i32 {
+    _ = try tostream(L_, 1);
+    try aux_lines(L_, 0);
+    return 1;
+}
+
 fn io_lines(L_: *L) !i32 {
-    if (!lua.lua_isnoneornil(L_, 1)) {
-        const filename = lua.lua_tostring(L_, 1) orelse "";
+    var toclose: i32 = 0;
+    if (lua.lua_isnone(L_, 1) != 0) {
+        lua.lua_pushnil(L_);
+    }
+    if (lua.lua_isnil(L_, 1) != 0) {
+        _ = lua.lua_rawgetp(L_, lua.LUA_REGISTRYINDEX, @ptrCast(IO_INPUT.ptr));
+        lua.lua_replace(L_, 1);
+        _ = try tostream(L_, 1);
+        toclose = 0;
+    } else {
+        const filename = try lauxlib.luaL_checkstring(L_, 1);
         var eno: i32 = 0;
         const f = fopen(filename, "r", &eno) orelse {
             return lauxlib.luaL_fileresult(L_, false, filename, eno);
@@ -719,26 +790,17 @@ fn io_lines(L_: *L) !i32 {
         const p = try newfile(L_);
         p.* = LStream{ .fd = f, .closef = io_fclose, .buf = null, .buf_len = 0, .buf_mode = 0, .unget = null };
         lua.lua_replace(L_, 1);
+        toclose = 1;
     }
-    lua.lua_pushcfunction(L_, f_lines);
-    lua.lua_pushvalue(L_, 1);
-    return 2;
-}
-
-fn f_lines(L_: *L) !i32 {
-    const p = try tostream(L_, 1);
-    var buf: std.ArrayList(u8) = .empty;
-    defer buf.deinit(L_.allocator);
-    while (true) {
-        const c = read_byte(p) orelse break;
-        if (c == '\n') break;
-        buf.append(L_.allocator, c) catch break;
-    }
-    if (buf.items.len > 0) {
-        _ = lua.lua_pushlstring(L_, buf.items, buf.items.len);
+    try aux_lines(L_, toclose);
+    if (toclose != 0) {
+        lua.lua_pushnil(L_);
+        lua.lua_pushnil(L_);
+        lua.lua_pushvalue(L_, 1);
+        return 4;
+    } else {
         return 1;
     }
-    return 0;
 }
 
 fn io_noclose(L_: *L) anyerror!i32 {
