@@ -892,6 +892,9 @@ pub fn precall(L: *lua_State, func_idx: usize, nresults: i32) !?*CallInfo {
                 luaD_hook(L, LUA_HOOKCALL, -1, 1, @intCast(narg));
             }
             const n = cc.f(L) catch |e| {
+                if (e == error.ThreadClosed) {
+                    return error.ThreadClosed;
+                }
                 if (e == error.Yield) {
                     return error.Yield;
                 }
@@ -2404,16 +2407,9 @@ pub fn lua_closethread(L: *lua_State, from: ?*lua_State) i32 {
         L.status = old_status;
         return old_status;
     } else {
-        if (L.top > 1) {
-            L.stack[1] = L.stack[L.top - 1];
-            L.top = 2;
-            L.status = LUA_ERRRUN;
-            return LUA_ERRRUN;
-        } else {
-            L.top = 1;
-            L.status = 0;
-            return LUA_OK;
-        }
+        L.top = 1;
+        L.status = LUA_OK;
+        return LUA_OK;
     }
 }
 
@@ -3613,7 +3609,7 @@ pub fn lua_pcallk(L: *lua_State, nargs: i32, nresults: i32, errfunc: i32, ctx: l
 
     var err_occurred = false;
     const new_ci = precall(L, func_idx, nresults) catch |err| b: {
-        if (err == error.Yield) {
+        if (err == error.Yield or err == error.ThreadClosed) {
             return err;
         }
         err_occurred = true;
@@ -3671,7 +3667,7 @@ pub fn lua_pcallk(L: *lua_State, nargs: i32, nresults: i32, errfunc: i32, ctx: l
                 }
             } else {
                 lvm.run(L, ci) catch |err| {
-                    if (err == error.Yield) {
+                    if (err == error.Yield or err == error.ThreadClosed) {
                         return err;
                     }
                     err_occurred = true;
@@ -4324,7 +4320,7 @@ fn unroll(L: *lua_State) !void {
             // instruction before resuming (mirrors luaV_finishOp in unroll).
             lvm.finishOp(L, ci);
             lvm.run(L, ci) catch |e| {
-                if (e == error.Yield) return e;
+                if (e == error.Yield or e == error.ThreadClosed) return e;
                 const handled = precover(L) catch |pe| {
                     if (pe == error.Yield) return pe;
                     return e;
@@ -4383,7 +4379,7 @@ fn do_resume(L: *lua_State, narg: i32) !void {
                     L.ci = ci;
                     lvm.finishOp(L, ci);
                     lvm.run(L, ci) catch |e| {
-                        if (e == error.Yield) return e;
+                        if (e == error.Yield or e == error.ThreadClosed) return e;
                         const handled = precover(L) catch |pe| {
                             if (pe == error.Yield) return pe;
                             return e;
@@ -4416,7 +4412,7 @@ pub fn lua_resume(L: *lua_State, from: ?*lua_State, narg: i32, nresults: ?*i32) 
     L.nCcalls += 1;
 
     do_resume(L, narg) catch |e| {
-        if (e == error.Yield) {} else {
+        if (e == error.Yield or e == error.ThreadClosed) {} else {
             const status = switch (e) {
                 error.OutOfMemory => b: {
                     if (lstring.luaS_new(L, "not enough memory")) |ts| {

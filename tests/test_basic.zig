@@ -5190,3 +5190,27 @@ test "BUG-141: loadProtos safely loads and anchors nested sub-prototypes" {
 
     try lua.luaC_collectgarbage(&L);
 }
+
+test "BUG-142: coroutine.close on running coroutine unwinds safely without UAF or double-free" {
+    const gpa = std.testing.allocator;
+    var L: lua.lua_State = undefined;
+    try lua.luaL_newstate(&L, gpa);
+    defer lua.lua_close(&L);
+
+    try lua.luaL_openlibs(&L);
+
+    const script =
+        \\local executed_after = false
+        \\local co = coroutine.create(function()
+        \\    coroutine.close()
+        \\    executed_after = true
+        \\end)
+        \\local ok = coroutine.resume(co)
+        \\return ok and not executed_after and coroutine.status(co) == "dead"
+    ;
+    const status = try lua.luaL_dostring(&L, script, "=(test_bug142)");
+    try std.testing.expectEqual(lua.LUA_OK, status);
+    try std.testing.expect(lua.lua_toboolean(&L, -1) != 0);
+
+    try lua.luaC_collectgarbage(&L);
+}

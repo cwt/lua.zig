@@ -147,8 +147,9 @@ fn luaB_close(L: *lua.lua_State) anyerror!i32 {
             if (lua.lua_tothread(L, -1)) |main| {
                 if (main == co) return lauxlib.luaL_error(L, "cannot close main thread");
             }
+            lua.lua_pop(L, 1);
             _ = lua.lua_closethread(co, L);
-            return 0;
+            return error.ThreadClosed;
         },
         else => unreachable,
     }
