@@ -5419,3 +5419,30 @@ test "BUG-148: math.random(n) checks lower bound when n < 1 and rejects negative
     const status = try lua.luaL_dostring(&L, script, "=(test_bug148)");
     try std.testing.expectEqual(lua.LUA_OK, status);
 }
+
+test "BUG-149: string.format error messages match reference for invalid conversions and specifications" {
+    const gpa = std.testing.allocator;
+    var L: lua.lua_State = undefined;
+    try lua.luaL_newstate(&L, gpa);
+    defer lua.lua_close(&L);
+    try lua.luaL_openlibs(&L);
+
+    const script =
+        \\local ok, err = pcall(function() string.format("%100s", "hello") end)
+        \\assert(not ok and string.find(err, "invalid conversion specification: '%%100s'"))
+        \\
+        \\ok, err = pcall(function() string.format("%100.3d", 1) end)
+        \\assert(not ok and string.find(err, "invalid conversion specification: '%%100.3d'"))
+        \\
+        \\ok, err = pcall(function() string.format("%1.100d", 1) end)
+        \\assert(not ok and string.find(err, "invalid conversion specification: '%%1.100d'"))
+        \\
+        \\ok, err = pcall(function() string.format("%0.34s", "x") end)
+        \\assert(not ok and string.find(err, "invalid conversion specification: '%%0.34s'"))
+        \\
+        \\ok, err = pcall(function() string.format("%z", 1) end)
+        \\assert(not ok and string.find(err, "invalid conversion '%%z' to 'format'"))
+    ;
+    const status = try lua.luaL_dostring(&L, script, "=(test_bug149)");
+    try std.testing.expectEqual(lua.LUA_OK, status);
+}

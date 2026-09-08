@@ -21,12 +21,43 @@ fn get2digits(s: []const u8, pos: usize) struct { val: i32, new_pos: usize } {
     return .{ .val = val, .new_pos = p };
 }
 
+const L_FMTFLAGSF = "-+#0 ";
+const L_FMTFLAGSX = "-#0";
+const L_FMTFLAGSI = "-+0 ";
+const L_FMTFLAGSU = "-0";
+const L_FMTFLAGSC = "-";
+
+fn isAlpha(c: u8) bool {
+    return (c >= 'a' and c <= 'z') or (c >= 'A' and c <= 'Z');
+}
+
+fn checkformat(L: *lua.lua_State, form: []const u8, flags: []const u8, precision: bool) !void {
+    var spec_idx: usize = 1; // skip '%'
+    while (spec_idx < form.len and std.mem.indexOfScalar(u8, flags, form[spec_idx]) != null) {
+        spec_idx += 1;
+    }
+    if (spec_idx < form.len and form[spec_idx] != '0') {
+        const res = get2digits(form, spec_idx);
+        spec_idx = res.new_pos;
+        if (spec_idx < form.len and form[spec_idx] == '.' and precision) {
+            spec_idx += 1;
+            const res2 = get2digits(form, spec_idx);
+            spec_idx = res2.new_pos;
+        }
+    }
+    if (spec_idx >= form.len or !isAlpha(form[spec_idx]) or spec_idx != form.len - 1) {
+        var mbuf: [256]u8 = undefined;
+        const msg = std.fmt.bufPrint(&mbuf, "invalid conversion specification: '{s}'", .{form}) catch "invalid conversion specification";
+        return lauxlib.luaL_error(L, msg);
+    }
+}
+
 fn intToString(comptime val: usize) []const u8 {
     if (val == 0) return "0";
     var res: []const u8 = "";
     var temp = val;
     while (temp > 0) {
-        const digit_char = &[_]u8{ '0' + @as(u8, @intCast(temp % 10)) };
+        const digit_char = &[_]u8{'0' + @as(u8, @intCast(temp % 10))};
         res = digit_char ++ res;
         temp /= 10;
     }
@@ -67,7 +98,7 @@ fn formatFloatE(buf: []u8, abs_val: f64, spec: u8, precision: usize) ![]const u8
         }
     }
     if (raw.len == 0) return error.NoSpaceLeft;
-    
+
     var out_buf: [150]u8 = undefined;
     var len: usize = 0;
     var e_idx: ?usize = null;
@@ -77,13 +108,13 @@ fn formatFloatE(buf: []u8, abs_val: f64, spec: u8, precision: usize) ![]const u8
             break;
         }
     }
-    
+
     if (e_idx) |ei| {
         @memcpy(out_buf[0..ei], raw[0..ei]);
         len = ei;
         out_buf[len] = if (spec == 'E' or spec == 'G') 'E' else 'e';
         len += 1;
-        const exp_str = raw[ei+1..];
+        const exp_str = raw[ei + 1 ..];
         var exp_sign: u8 = '+';
         var exp_val_str = exp_str;
         if (exp_str.len > 0 and (exp_str[0] == '-' or exp_str[0] == '+')) {
@@ -94,7 +125,7 @@ fn formatFloatE(buf: []u8, abs_val: f64, spec: u8, precision: usize) ![]const u8
         len += 1;
         if (exp_val_str.len == 1) {
             out_buf[len] = '0';
-            out_buf[len+1] = exp_val_str[0];
+            out_buf[len + 1] = exp_val_str[0];
             len += 2;
         } else {
             @memcpy(out_buf[len..][0..exp_val_str.len], exp_val_str);
@@ -198,7 +229,7 @@ fn formatFloatA(buf: []u8, abs_val: f64, spec: u8, precision: ?usize) ![]const u
         raw = try std.fmt.bufPrint(&temp_buf, "{x}", .{abs_val});
     }
     if (raw.len == 0) return error.NoSpaceLeft;
-    
+
     var out_buf: [150]u8 = undefined;
     var len: usize = 0;
     var p_idx: ?usize = null;
@@ -208,13 +239,13 @@ fn formatFloatA(buf: []u8, abs_val: f64, spec: u8, precision: ?usize) ![]const u
             break;
         }
     }
-    
+
     if (p_idx) |pi| {
         @memcpy(out_buf[0..pi], raw[0..pi]);
         len = pi;
         out_buf[len] = if (spec == 'A') 'P' else 'p';
         len += 1;
-        const exp_str = raw[pi+1..];
+        const exp_str = raw[pi + 1 ..];
         if (exp_str.len > 0 and exp_str[0] != '+' and exp_str[0] != '-') {
             out_buf[len] = '+';
             len += 1;
@@ -225,7 +256,7 @@ fn formatFloatA(buf: []u8, abs_val: f64, spec: u8, precision: ?usize) ![]const u
         @memcpy(out_buf[0..raw.len], raw);
         len = raw.len;
     }
-    
+
     if (spec == 'A') {
         if (len >= 2 and out_buf[0] == '0' and out_buf[1] == 'x') {
             out_buf[1] = 'X';
@@ -235,7 +266,7 @@ fn formatFloatA(buf: []u8, abs_val: f64, spec: u8, precision: ?usize) ![]const u
             c.* = std.ascii.toUpper(c.*);
         }
     }
-    
+
     if (len > buf.len) return error.NoSpaceLeft;
     @memcpy(buf[0..len], out_buf[0..len]);
     return buf[0..len];
@@ -343,7 +374,8 @@ fn getPrefixLen(s: []const u8) usize {
         const p3 = s[0..3];
         if (std.mem.eql(u8, p3, "-0x") or std.mem.eql(u8, p3, "-0X") or
             std.mem.eql(u8, p3, "+0x") or std.mem.eql(u8, p3, "+0X") or
-            std.mem.eql(u8, p3, " 0x") or std.mem.eql(u8, p3, " 0X")) {
+            std.mem.eql(u8, p3, " 0x") or std.mem.eql(u8, p3, " 0X"))
+        {
             return 3;
         }
     }
@@ -426,16 +458,16 @@ fn quotefloat(buf: []u8, n: f64) ![]const u8 {
     }
     var temp_buf: [150]u8 = undefined;
     const hex_float = try formatFloatA(&temp_buf, @abs(n), 'a', null);
-    
+
     var prefix: []const u8 = "";
     if (std.math.signbit(n)) {
         prefix = "-";
     }
-    
+
     if (prefix.len + hex_float.len > buf.len) return error.NoSpaceLeft;
     @memcpy(buf[0..prefix.len], prefix);
     @memcpy(buf[prefix.len..][0..hex_float.len], hex_float);
-    return buf[0..prefix.len + hex_float.len];
+    return buf[0 .. prefix.len + hex_float.len];
 }
 
 fn addliteral(L: *lua.lua_State, b: *lauxlib.luaL_Buffer, arg: i32) !void {
@@ -487,7 +519,7 @@ pub fn str_format(L: *lua.lua_State) anyerror!i32 {
     errdefer b.buf.deinit(L.allocator);
     var argn: i32 = 2;
     const top = lua.lua_gettop(L);
-    
+
     while (pos < len) {
         const start = pos;
         while (pos < len and strfrmt[pos] != '\x00' and strfrmt[pos] != '%') {
@@ -503,6 +535,7 @@ pub fn str_format(L: *lua.lua_State) anyerror!i32 {
             continue;
         }
         pos += 1;
+        const start_spec = pos - 1;
         if (pos >= len) return lauxlib.luaL_error(L, "malformed format string");
 
         if (strfrmt[pos] == '%') {
@@ -513,10 +546,49 @@ pub fn str_format(L: *lua.lua_State) anyerror!i32 {
 
         if (argn > top) return lauxlib.luaL_error(L, "no value for format");
 
-        var flags: u8 = 0;
         while (pos < len) {
             const fc = strfrmt[pos];
-            switch (fc) {
+            if (fc == '-' or fc == '+' or fc == ' ' or fc == '#' or fc == '0' or
+                (fc >= '1' and fc <= '9') or fc == '.')
+            {
+                pos += 1;
+            } else {
+                break;
+            }
+        }
+        if (pos >= len) return lauxlib.luaL_error(L, "malformed format string");
+        pos += 1;
+        const form = strfrmt[start_spec..pos];
+        const spec = form[form.len - 1];
+
+        switch (spec) {
+            'c' => try checkformat(L, form, L_FMTFLAGSC, false),
+            'd', 'i' => try checkformat(L, form, L_FMTFLAGSI, true),
+            'u' => try checkformat(L, form, L_FMTFLAGSU, true),
+            'o', 'x', 'X' => try checkformat(L, form, L_FMTFLAGSX, true),
+            'f', 'e', 'E', 'g', 'G', 'a', 'A' => try checkformat(L, form, L_FMTFLAGSF, true),
+            'p' => try checkformat(L, form, L_FMTFLAGSC, false),
+            'q' => {
+                if (form.len > 2) {
+                    return lauxlib.luaL_error(L, "specifier '%q' cannot have modifiers");
+                }
+            },
+            's' => {
+                if (form.len > 2) {
+                    try checkformat(L, form, L_FMTFLAGSC, true);
+                }
+            },
+            else => {
+                var mbuf: [256]u8 = undefined;
+                const msg = std.fmt.bufPrint(&mbuf, "invalid conversion '{s}' to 'format'", .{form}) catch "invalid conversion to 'format'";
+                return lauxlib.luaL_error(L, msg);
+            },
+        }
+
+        var flags: u8 = 0;
+        var p_idx: usize = 1;
+        while (p_idx < form.len - 1) : (p_idx += 1) {
+            switch (form[p_idx]) {
                 '-' => flags |= 1,
                 '+' => flags |= 2,
                 ' ' => flags |= 4,
@@ -524,32 +596,26 @@ pub fn str_format(L: *lua.lua_State) anyerror!i32 {
                 '0' => flags |= 16,
                 else => break,
             }
-            pos += 1;
         }
 
         var width: i64 = -1;
-        if (pos < len and std.ascii.isDigit(strfrmt[pos])) {
-            const res = get2digits(strfrmt, pos);
+        if (p_idx < form.len - 1 and std.ascii.isDigit(form[p_idx])) {
+            const res = get2digits(form, p_idx);
             width = @intCast(res.val);
-            pos = res.new_pos;
+            p_idx = res.new_pos;
         }
 
         var precision: i64 = -1;
-        if (pos < len and strfrmt[pos] == '.') {
-            pos += 1;
-            if (pos < len and std.ascii.isDigit(strfrmt[pos])) {
-                const res = get2digits(strfrmt, pos);
+        if (p_idx < form.len - 1 and form[p_idx] == '.') {
+            p_idx += 1;
+            if (p_idx < form.len - 1 and std.ascii.isDigit(form[p_idx])) {
+                const res = get2digits(form, p_idx);
                 precision = @intCast(res.val);
-                pos = res.new_pos;
+                p_idx = res.new_pos;
             } else {
                 precision = 0;
             }
         }
-
-        if (pos >= len) return lauxlib.luaL_error(L, "malformed format string");
-
-        const spec = strfrmt[pos];
-        pos += 1;
 
         switch (spec) {
             'c' => {
@@ -604,9 +670,6 @@ pub fn str_format(L: *lua.lua_State) anyerror!i32 {
                 try padAndAlign(L, &b, s_slice, flags, w, false, false);
             },
             'q' => {
-                if (flags != 0 or width >= 0 or precision >= 0) {
-                    return lauxlib.luaL_error(L, "specifier '%q' cannot have modifiers");
-                }
                 try addliteral(L, &b, argn);
                 argn += 1;
             },
@@ -632,9 +695,7 @@ pub fn str_format(L: *lua.lua_State) anyerror!i32 {
                     lua.lua_pop(L, 1);
                 }
             },
-            else => {
-                return lauxlib.luaL_error(L, "invalid conversion to 'format'");
-            },
+            else => unreachable,
         }
     }
     lauxlib.luaL_pushresult(L, &b);
