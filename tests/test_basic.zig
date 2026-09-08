@@ -5140,3 +5140,27 @@ test "BUG-139: finishLoad anchors closure and upvalues safely for GC" {
     // Force full garbage collection to exercise sweep of upvalues and closures
     try lua.luaC_collectgarbage(&L);
 }
+
+test "BUG-140: pushclosure creates and manages nested closures and upvalues safely" {
+    const gpa = std.testing.allocator;
+    var L: lua.lua_State = undefined;
+    try lua.luaL_newstate(&L, gpa);
+    defer lua.lua_close(&L);
+
+    const script =
+        \\local function make_adder(x)
+        \\    return function(y)
+        \\        return function(z)
+        \\            return x + y + z
+        \\        end
+        \\    end
+        \\end
+        \\local add5 = make_adder(5)
+        \\local add5_10 = add5(10)
+        \\return add5_10(20)
+    ;
+    const status = try lua.luaL_dostring(&L, script, "=(test_bug140)");
+    try std.testing.expectEqual(lua.LUA_OK, status);
+    try std.testing.expectEqual(@as(i64, 35), lua.lua_tointeger(&L, -1));
+    try lua.luaC_collectgarbage(&L);
+}

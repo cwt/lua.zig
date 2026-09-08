@@ -1869,12 +1869,21 @@ fn isFalse(val: lua.TValue) bool {
 
 fn pushclosure(L: *lua.lua_State, p: *lua.lua_Proto, encup: []?*lua.UpVal, base: usize, dest_idx: usize) !void {
     const lc = try L.allocator.create(lua.lua_LClosure);
+    errdefer L.allocator.destroy(lc);
     const upvals = try L.allocator.alloc(?*lua.UpVal, p.upvalues.len);
+    errdefer L.allocator.free(upvals);
     @memset(upvals, null);
     lc.* = .{
         .p = p,
         .upvals = upvals,
     };
+    errdefer {
+        for (lc.upvals) |opt_uv| {
+            if (opt_uv) |uv| {
+                if (uv.refcount > 0) uv.refcount -= 1;
+            }
+        }
+    }
     for (p.upvalues, 0..) |uv_desc, k| {
         if (uv_desc.instack != 0) {
             lc.upvals[k] = try lua.findupval(L, base + uv_desc.idx);
@@ -1886,6 +1895,7 @@ fn pushclosure(L: *lua.lua_State, p: *lua.lua_Proto, encup: []?*lua.UpVal, base:
         }
     }
     const cl = try L.allocator.create(lua.lua_Closure);
+    errdefer L.allocator.destroy(cl);
     cl.* = .{ .lua = lc };
     try lua.registerGC(L, cl);
     L.stack[dest_idx] = .{ .function = cl };
