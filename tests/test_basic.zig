@@ -5164,3 +5164,29 @@ test "BUG-140: pushclosure creates and manages nested closures and upvalues safe
     try std.testing.expectEqual(@as(i64, 35), lua.lua_tointeger(&L, -1));
     try lua.luaC_collectgarbage(&L);
 }
+
+test "BUG-141: loadProtos safely loads and anchors nested sub-prototypes" {
+    const gpa = std.testing.allocator;
+    var L: lua.lua_State = undefined;
+    try lua.luaL_newstate(&L, gpa);
+    defer lua.lua_close(&L);
+
+    try lua.luaL_openlibs(&L);
+
+    // Compile a chunk with nested sub-prototypes, dump to bytecode, and reload
+    const script =
+        \\local f = function()
+        \\    local g = function() return 100 end
+        \\    local h = function() return 200 end
+        \\    return g() + h()
+        \\end
+        \\local bc = string.dump(f)
+        \\local loaded = load(bc)
+        \\return loaded()
+    ;
+    const status = try lua.luaL_dostring(&L, script, "=(test_bug141)");
+    try std.testing.expectEqual(lua.LUA_OK, status);
+    try std.testing.expectEqual(@as(i64, 300), lua.lua_tointeger(&L, -1));
+
+    try lua.luaC_collectgarbage(&L);
+}

@@ -197,17 +197,21 @@ const LoadState = struct {
     fn loadProtos(self: *LoadState, f: *lua.lua_Proto) anyerror!void {
         const n = try self.loadInt();
         if (n < 0) return error.BadFormat;
-        const sub_protos = try self.allocator.alloc(*lua.lua_Proto, @intCast(n));
-        f.p = sub_protos; // Assign immediately; GC owns this via allgc
+        const count: usize = @intCast(n);
+        if (count == 0) return;
+        const sub_protos = try self.allocator.alloc(*lua.lua_Proto, count);
+        errdefer self.allocator.free(sub_protos);
 
         var loaded: usize = 0;
-        while (loaded < @as(usize, @intCast(n))) : (loaded += 1) {
+        while (loaded < count) : (loaded += 1) {
             const sub = try lua.createProto(self.allocator);
             sub.is_sub = true;
             try lua.registerGC(self.L, sub);
+            try ltable.set(self.anchor_tab, .{ .proto = sub }, .{ .boolean = true });
             sub_protos[loaded] = sub;
             try self.loadFunction(sub);
         }
+        f.p = sub_protos;
     }
 
     fn loadUpvalues(self: *LoadState, f: *lua.lua_Proto) !void {

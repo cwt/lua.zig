@@ -167,7 +167,7 @@ timestamp: '2026-09-08T21:20:00Z'
 | [BUG-138](138.md) | Misc API divergences: io.popen("r") child stdin ignored, luaL_dostring collapses pcall errors, lua_xmove truncates, io.tmpfile no EEXIST retry | `LOW` | ✅ FIXED |
 | [BUG-139](139.md) | `lua.zig`: `finishLoad` GC object dangling pointers, UAF, and double-free on OOM | `CRITICAL` | ✅ FIXED |
 | [BUG-140](140.md) | `lvm.zig`: `pushclosure` missing `errdefer` causes sequential heap leaks on OOM | `HIGH` | ✅ FIXED |
-| [BUG-141](141.md) | `lundump.zig`: `loadProtos` leaves uninitialized wild pointers in proto `sub_protos` slice | `CRITICAL` | ⏳ OPEN |
+| [BUG-141](141.md) | `lundump.zig`: `loadProtos` leaves uninitialized wild pointers in proto `sub_protos` slice | `CRITICAL` | ✅ FIXED |
 | [BUG-142](142.md) | `corolib.zig` / `lua.zig`: `coroutine.close` on running thread destroys active `CallInfo` causing UAF and double-free | `CRITICAL` | ⏳ OPEN |
 | [BUG-143](143.md) | `lua.zig`: `growStack(L, 1)` is a no-op bug causing latent out-of-bounds stack panics | `HIGH` | ⏳ OPEN |
 | [BUG-144](144.md) | `iolib.zig`: Empty line truncation, `read(0)` unconditional nil, `f:lines()` non-iterator, and FD leaks | `HIGH` | ⏳ OPEN |
