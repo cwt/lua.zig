@@ -325,12 +325,11 @@ pub fn luaL_checkstack(L: *lua.lua_State, n: i32, msg: []const u8) !void {
     }
 }
 
-pub fn luaL_tolstring(L: *lua.lua_State, idx: i32, len: ?*usize) ?[]const u8 {
+pub fn luaL_tolstring(L: *lua.lua_State, idx: i32, len: ?*usize) !?[]const u8 {
     const abs_idx = lua.lua_absindex(L, idx);
-    if ((luaL_callmeta(L, abs_idx, "__tostring") catch 0) != 0) {
+    if ((try luaL_callmeta(L, abs_idx, "__tostring")) != 0) {
         if (lua.lua_isstring(L, -1) == 0) {
-            // BUG-100: propagate the error instead of swallowing it.
-            _ = luaL_error(L, "'__tostring' must return a string") catch {};
+            return luaL_error(L, "'__tostring' must return a string");
         }
         return lua.lua_tolstring(L, -1, len);
     }

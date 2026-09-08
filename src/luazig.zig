@@ -196,7 +196,7 @@ fn printValue(L: *lua.lua_State, io: std.Io, index: i32, depth: usize) !void {
     const t = lua.lua_type(L, abs);
     if (t == lua.LUA_TTABLE) {
         if (depth >= 3) {
-            const s = lauxlib.luaL_tolstring(L, abs, null) orelse "table";
+            const s = (try lauxlib.luaL_tolstring(L, abs, null)) orelse "table";
             try stdoutWrite(io, s);
             lua.lua_pop(L, 1);
             return;
@@ -214,7 +214,7 @@ fn printValue(L: *lua.lua_State, io: std.Io, index: i32, depth: usize) !void {
         }
         try stdoutWrite(io, "}");
     } else {
-        const s = lauxlib.luaL_tolstring(L, abs, null) orelse "nil";
+        const s = (try lauxlib.luaL_tolstring(L, abs, null)) orelse "nil";
         try stdoutWrite(io, s);
         lua.lua_pop(L, 1); // pop the string pushed by luaL_tolstring
     }

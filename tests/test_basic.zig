@@ -4122,7 +4122,7 @@ test "H.6 luaL_tolstring pushes a copy (string contract)" {
 
     _ = lua.lua_pushstring(&L, "hello");
     const top_before = lua.lua_gettop(&L);
-    const s = lauxlib.luaL_tolstring(&L, -1, null);
+    const s = try lauxlib.luaL_tolstring(&L, -1, null);
     try std.testing.expect(s != null);
     try std.testing.expectEqualStrings("hello", s.?);
     const top_after = lua.lua_gettop(&L);
@@ -5540,4 +5540,28 @@ test "BUG-152: metamethod absence caching (checknoTM) and invalidation on metata
     ;
     const status = try lua.luaL_dostring(&L, script, "=(test_bug152)");
     try std.testing.expectEqual(lua.LUA_OK, status);
+}
+
+test "BUG-153: luaL_tolstring propagates error when __tostring returns non-string" {
+    const gpa = std.testing.allocator;
+    var L: lua.lua_State = undefined;
+    try lua.luaL_newstate(&L, gpa);
+    defer lua.lua_close(&L);
+    try lua.luaL_openlibs(&L);
+
+    const script =
+        \\local t = setmetatable({}, { __tostring = function() return true end })
+        \\local ok, err = pcall(tostring, t)
+        \\assert(not ok, "tostring should fail when __tostring returns a non-string")
+        \\assert(string.find(err, "'__tostring' must return a string"), "error message mismatch: " .. tostring(err))
+    ;
+    const status = try lua.luaL_dostring(&L, script, "=(test_bug153)");
+    try std.testing.expectEqual(lua.LUA_OK, status);
+
+    const setup_code =
+        \\return setmetatable({}, { __tostring = function() return true end })
+    ;
+    try std.testing.expectEqual(lua.LUA_OK, try lua.luaL_dostring(&L, setup_code, "=(setup)"));
+    const result = lauxlib.luaL_tolstring(&L, -1, null);
+    try std.testing.expectError(error.RuntimeError, result);
 }

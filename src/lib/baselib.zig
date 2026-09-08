@@ -430,7 +430,7 @@ fn warn(L: *lua.lua_State) anyerror!i32 {
     var i: i32 = 1;
     while (i <= n) : (i += 1) {
         var len: usize = 0;
-        const s = lauxlib.luaL_tolstring(L, i, &len);
+        const s = try lauxlib.luaL_tolstring(L, i, &len);
         if (!@import("builtin").is_test) {
             if (s) |str| {
                 try std.Io.File.stderr().writeStreamingAll(io, str);
@@ -591,7 +591,7 @@ fn tonumber(L: *lua.lua_State) anyerror!i32 {
 
 fn tostring(L: *lua.lua_State) anyerror!i32 {
     try lauxlib.luaL_checkany(L, 1);
-    _ = lauxlib.luaL_tolstring(L, 1, null);
+    _ = try lauxlib.luaL_tolstring(L, 1, null);
     return 1;
 }
 

@@ -474,7 +474,7 @@ fn addliteral(L: *lua.lua_State, b: *lauxlib.luaL_Buffer, arg: i32) !void {
     switch (lua.lua_type(L, arg)) {
         lua.LUA_TNIL, lua.LUA_TBOOLEAN => {
             var len: usize = 0;
-            _ = lauxlib.luaL_tolstring(L, arg, &len);
+            _ = try lauxlib.luaL_tolstring(L, arg, &len);
             try lauxlib.luaL_addvalue(L, b);
         },
         lua.LUA_TNUMBER => {
@@ -675,7 +675,7 @@ pub fn str_format(L: *lua.lua_State) anyerror!i32 {
             },
             's' => {
                 var sl: usize = 0;
-                const s = lauxlib.luaL_tolstring(L, argn, &sl) orelse "";
+                const s = (try lauxlib.luaL_tolstring(L, argn, &sl)) orelse "";
                 argn += 1;
                 if (flags == 0 and width == -1 and precision == -1) {
                     try lauxlib.luaL_addvalue(L, &b);
