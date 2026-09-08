@@ -5465,3 +5465,36 @@ test "BUG-150: os.tmpname does not collide across rapid successive invocations" 
     const status = try lua.luaL_dostring(&L, script, "=(test_bug150)");
     try std.testing.expectEqual(lua.LUA_OK, status);
 }
+
+test "BUG-151: table growth updates totalbytes and avoids underflow to zero on collection" {
+    const gpa = std.testing.allocator;
+    var L: lua.lua_State = undefined;
+    try lua.luaL_newstate(&L, gpa);
+    defer lua.lua_close(&L);
+    try lua.luaL_openlibs(&L);
+
+    const script =
+        \\local initial = collectgarbage("count")
+        \\assert(initial > 0)
+        \\
+        \\do
+        \\    local t = {}
+        \\    -- grow array part
+        \\    for i = 1, 2000 do
+        \\        t[i] = i
+        \\    end
+        \\    -- grow hash part
+        \\    for i = 1, 2000 do
+        \\        t["k" .. i] = i
+        \\    end
+        \\    local during = collectgarbage("count")
+        \\    assert(during > initial, "memory should have increased during table growth")
+        \\end
+        \\
+        \\collectgarbage("collect")
+        \\local final = collectgarbage("count")
+        \\assert(final > 0, "totalbytes must not collapse to zero after freeing grown table")
+    ;
+    const status = try lua.luaL_dostring(&L, script, "=(test_bug151)");
+    try std.testing.expectEqual(lua.LUA_OK, status);
+}

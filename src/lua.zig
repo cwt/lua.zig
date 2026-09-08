@@ -333,6 +333,7 @@ pub const lua_Table = struct {
     metatable: ?*lua_Table = null,
     flags: u8 = 0,
     gc: ?*VMGCObject = null,
+    g: ?*global_State = null,
 };
 
 pub const lua_CClosure = struct {
@@ -1139,7 +1140,10 @@ pub fn registerGC(L: *lua_State, val: anytype) !void {
         .color = if (g.gc_in_progress) .black else .white,
     };
     switch (union_val) {
-        .table => |t| t.gc = gc,
+        .table => |t| {
+            t.gc = gc;
+            t.g = g;
+        },
         .closure => |cl| switch (cl.*) {
             .c => |cc| cc.gc = gc,
             .lua => |lc| lc.gc = gc,

@@ -147,6 +147,7 @@ fn growNode(t: *Table) anyerror!void {
     var newlen = ceilPow2(active_count);
     if (newlen < 4) newlen = 4;
     var old_node = t.node;
+    const old_cap = old_node.capacity;
     const old_lastfree = t.lastfree;
     var newlist = std.ArrayList(Node).empty;
     try newlist.ensureTotalCapacityPrecise(t.allocator, newlen);
@@ -164,6 +165,19 @@ fn growNode(t: *Table) anyerror!void {
         }
     }
     old_node.deinit(t.allocator);
+    if (t.g) |g| {
+        const new_bytes = t.node.capacity * @sizeOf(Node);
+        const old_bytes = old_cap * @sizeOf(Node);
+        if (new_bytes > old_bytes) {
+            g.totalbytes += (new_bytes - old_bytes);
+        } else if (old_bytes > new_bytes) {
+            if (g.totalbytes >= old_bytes - new_bytes) {
+                g.totalbytes -= (old_bytes - new_bytes);
+            } else {
+                g.totalbytes = 0;
+            }
+        }
+    }
 }
 
 /// Remove a key's value from the hash part if present.
@@ -224,9 +238,15 @@ pub fn deinit(t: *Table) void {
 /// Ensure the array part has at least `size` elements, filling any new slots with nil.
 pub fn ensureArraySize(t: *Table, size: usize) !void {
     if (size > t.array.items.len) {
+        const old_cap = t.array.capacity;
         const old_len = t.array.items.len;
         try t.array.ensureTotalCapacity(t.allocator, size);
         t.array.items.len = size;
+        if (t.g) |g| {
+            if (t.array.capacity > old_cap) {
+                g.totalbytes += (t.array.capacity - old_cap) * @sizeOf(TValue);
+            }
+        }
         for (t.array.items[old_len..size], old_len + 1..) |*slot, idx| {
             slot.* = TValue{ .nil = {} };
             clearHashKey(t, TValue{ .integer = @intCast(idx) });
@@ -323,7 +343,13 @@ pub fn setInt(t: *Table, k: i64, val: TValue) !void {
         }
         if (u == t.array.items.len + 1) {
             clearHashKey(t, TValue{ .integer = k });
+            const old_cap = t.array.capacity;
             try t.array.append(t.allocator, val);
+            if (t.g) |g| {
+                if (t.array.capacity > old_cap) {
+                    g.totalbytes += (t.array.capacity - old_cap) * @sizeOf(TValue);
+                }
+            }
             return;
         }
         if (u > t.array.items.len + 1) {
