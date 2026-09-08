@@ -235,6 +235,10 @@ pub fn deinit(t: *Table) void {
     t.allocator.destroy(t);
 }
 
+pub inline fn invalidateTMcache(t: *Table) void {
+    t.flags = 0;
+}
+
 /// Ensure the array part has at least `size` elements, filling any new slots with nil.
 pub fn ensureArraySize(t: *Table, size: usize) !void {
     if (size > t.array.items.len) {
@@ -324,6 +328,7 @@ pub inline fn get(t: *Table, key: TValue) TValue {
 
 /// Set the value for an integer key.
 pub fn setInt(t: *Table, k: i64, val: TValue) !void {
+    invalidateTMcache(t);
     if (val == .nil) {
         if (k >= 1) {
             const u: usize = @intCast(k);
@@ -362,6 +367,7 @@ pub fn setInt(t: *Table, k: i64, val: TValue) !void {
 }
 
 fn setHash(t: *Table, key: TValue, val: TValue) anyerror!void {
+    invalidateTMcache(t);
     const len = t.node.items.len;
     if (len == 0) {
         if (val == .nil) return; // assigning nil to non-existent key in empty hash is no-op
@@ -419,6 +425,7 @@ fn setHash(t: *Table, key: TValue, val: TValue) anyerror!void {
 pub fn set(t: *Table, key: TValue, val: TValue) !void {
     if (key == .nil) return error.TableIndexIsNil;
     if (key == .number and std.math.isNan(key.number)) return error.TableIndexIsNaN;
+    invalidateTMcache(t);
     if (asInt(key)) |k| {
         try setInt(t, k, val);
         return;

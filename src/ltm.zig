@@ -63,9 +63,18 @@ pub fn luaT_objtypename(L: *lua.lua_State, o: lua.TValue) []const u8 {
 
 pub inline fn checknoTM(mt: ?*lua.lua_Table, event: TMS) bool {
     if (mt) |m| {
-        return (m.flags & (@as(u8, 1) << @intCast(@intFromEnum(event)))) != 0;
+        if (@intFromEnum(event) <= @intFromEnum(TMS.EQ)) {
+            return (m.flags & (@as(u8, 1) << @intCast(@intFromEnum(event)))) != 0;
+        }
+        return false;
     }
     return true;
+}
+
+pub inline fn fasttm(L: *lua.lua_State, mt: ?*lua.lua_Table, event: TMS) ?lua.TValue {
+    if (checknoTM(mt, event)) return null;
+    const g = L.l_G orelse return null;
+    return luaT_gettm(mt.?, event, g.tmname[@intFromEnum(event)].?);
 }
 
 pub fn luaT_gettm(events: *lua.lua_Table, event: TMS, ename: *lua.lua_TString) ?lua.TValue {
@@ -87,14 +96,17 @@ pub fn luaT_gettmbyobj(L: *lua.lua_State, o: lua.TValue, event: TMS) lua.TValue 
             const t = o.typ();
             if (t >= 0 and t < 9) {
                 if (L.l_G) |g| {
-                    const result = if (g.mt[@intCast(t)]) |m| luaT_gettm(m, event, g.tmname[@intFromEnum(event)].?) orelse lua.TValue{ .nil = {} } else lua.TValue{ .nil = {} };
-                    return result;
+                    if (g.mt[@intCast(t)]) |m| {
+                        if (checknoTM(m, event)) return lua.TValue{ .nil = {} };
+                        return luaT_gettm(m, event, g.tmname[@intFromEnum(event)].?) orelse lua.TValue{ .nil = {} };
+                    }
                 }
             }
             return lua.TValue{ .nil = {} };
         },
     };
     if (mt) |m| {
+        if (checknoTM(m, event)) return lua.TValue{ .nil = {} };
         if (L.l_G) |g| {
             return luaT_gettm(m, event, g.tmname[@intFromEnum(event)].?) orelse lua.TValue{ .nil = {} };
         }

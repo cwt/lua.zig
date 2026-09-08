@@ -178,7 +178,7 @@ timestamp: '2026-09-08T21:20:00Z'
 | [BUG-149](149.md) | `format.zig`: `string.format` raises divergent error message for 3-digit width/precision specifiers (reference also rejects them; only the message differs) | `LOW` | ✅ FIXED |
 | [BUG-150](150.md) | `oslib.zig`: `os.tmpname` rapid deterministic filename collisions via second-resolution timestamp | `MED` | ✅ FIXED |
 | [BUG-151](151.md) | `lua.zig` / `ltable.zig`: Table growth bypasses `totalbytes` causing GC tracking underflow and zero count | `HIGH` | ✅ FIXED |
-| [BUG-152](152.md) | `ltm.zig` / `ltable.zig`: Dead code `checknoTM` and `Table.flags` missing invalidation on key mutation (only `lua_setmetatable` clears flags) | `LOW` | ⏳ OPEN |
+| [BUG-152](152.md) | `ltm.zig` / `ltable.zig`: Dead code `checknoTM` and `Table.flags` missing invalidation on key mutation (only `lua_setmetatable` clears flags) | `LOW` | ✅ FIXED |
 | [BUG-153](153.md) | `lauxlib.zig`: Swallowed error via dummy `catch {}` in `luaL_tolstring` violating rule §0.1 item 12 | `MED` | ⏳ OPEN |
 | [BUG-154](154.md) | `luazig.zig`: `std.process.exit` in `main` bypasses `lua_close` and GPA `deinit` defer handlers | `LOW` | ⏳ OPEN |
 

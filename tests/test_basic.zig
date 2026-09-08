@@ -5498,3 +5498,46 @@ test "BUG-151: table growth updates totalbytes and avoids underflow to zero on c
     const status = try lua.luaL_dostring(&L, script, "=(test_bug151)");
     try std.testing.expectEqual(lua.LUA_OK, status);
 }
+
+test "BUG-152: metamethod absence caching (checknoTM) and invalidation on metatable mutation" {
+    const gpa = std.testing.allocator;
+    var L: lua.lua_State = undefined;
+    try lua.luaL_newstate(&L, gpa);
+    defer lua.lua_close(&L);
+    try lua.luaL_openlibs(&L);
+
+    const script =
+        \\local mt = {}
+        \\local t = setmetatable({}, mt)
+        \\
+        \\-- Lookup non-existent key: triggers __index absence caching on mt
+        \\assert(t.nonexistent == nil)
+        \\
+        \\-- Mutate mt by assigning __index directly (without re-calling setmetatable)
+        \\mt.__index = function(_, k)
+        \\    return "resolved_" .. k
+        \\end
+        \\
+        \\-- Lookup again: cache invalidation must allow the newly added __index to take effect
+        \\assert(t.foo == "resolved_foo")
+        \\assert(t.bar == "resolved_bar")
+        \\
+        \\-- Now test __newindex absence caching and invalidation
+        \\local captured = {}
+        \\local t2 = setmetatable({}, mt)
+        \\-- __newindex is absent on mt: raw write occurs
+        \\t2.a = 10
+        \\assert(rawget(t2, "a") == 10)
+        \\
+        \\-- Mutate mt to add __newindex
+        \\mt.__newindex = function(tbl, k, v)
+        \\    captured[k] = v
+        \\end
+        \\
+        \\t2.b = 20
+        \\assert(rawget(t2, "b") == nil)
+        \\assert(captured.b == 20)
+    ;
+    const status = try lua.luaL_dostring(&L, script, "=(test_bug152)");
+    try std.testing.expectEqual(lua.LUA_OK, status);
+}
