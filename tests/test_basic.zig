@@ -5319,3 +5319,41 @@ test "BUG-144: iolib empty-line read, read(0) EOF probe, f:lines iterator, and i
     const status = try lua.luaL_dostring(&L, script, "=(test_bug144)");
     try std.testing.expectEqual(lua.LUA_OK, status);
 }
+
+test "BUG-145: operations on closed file handles throw 'attempt to use a closed file' and io.type returns 'closed file'" {
+    const gpa = std.testing.allocator;
+    var L: lua.lua_State = undefined;
+    try lua.luaL_newstate(&L, gpa);
+    defer lua.lua_close(&L);
+    try lua.luaL_openlibs(&L);
+
+    const script =
+        \\local f = io.tmpfile()
+        \\assert(io.type(f) == "file")
+        \\f:close()
+        \\assert(io.type(f) == "closed file")
+        \\
+        \\local ok, err = pcall(function() f:read() end)
+        \\assert(not ok and string.find(err, "attempt to use a closed file"))
+        \\
+        \\ok, err = pcall(function() f:write("hello") end)
+        \\assert(not ok and string.find(err, "attempt to use a closed file"))
+        \\
+        \\ok, err = pcall(function() f:seek("set", 0) end)
+        \\assert(not ok and string.find(err, "attempt to use a closed file"))
+        \\
+        \\ok, err = pcall(function() f:flush() end)
+        \\assert(not ok and string.find(err, "attempt to use a closed file"))
+        \\
+        \\ok, err = pcall(function() f:setvbuf("no") end)
+        \\assert(not ok and string.find(err, "attempt to use a closed file"))
+        \\
+        \\ok, err = pcall(function() f:lines() end)
+        \\assert(not ok and string.find(err, "attempt to use a closed file"))
+        \\
+        \\ok, err = pcall(function() f:close() end)
+        \\assert(not ok and string.find(err, "attempt to use a closed file"))
+    ;
+    const status = try lua.luaL_dostring(&L, script, "=(test_bug145)");
+    try std.testing.expectEqual(lua.LUA_OK, status);
+}

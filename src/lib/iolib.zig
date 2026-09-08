@@ -33,6 +33,18 @@ fn tostream(L_: *L, idx: i32) !*LStream {
     return @as(*LStream, @ptrCast(@alignCast(p)));
 }
 
+fn isclosed(p: *const LStream) bool {
+    return p.closef == null or p.fd < 0;
+}
+
+fn tofile(L_: *L, idx: i32) !*LStream {
+    const p = try tostream(L_, idx);
+    if (isclosed(p)) {
+        return lauxlib.luaL_error(L_, "attempt to use a closed file");
+    }
+    return p;
+}
+
 /// Validate a file-open mode string (mirrors the reference l_checkmode):
 /// 'r'/'w'/'a' followed by an optional immediate '+' and then only 'b'.
 fn checkmode(mode: []const u8) bool {
@@ -112,16 +124,16 @@ fn f_close(L_: *L, p: *LStream) !i32 {
 /// File-method `close`: requires the file as argument 1 (raises "got no value"
 /// otherwise), mirroring the reference's f_close -> tofile -> luaL_checkudata.
 fn f_close_method(L_: *L) anyerror!i32 {
-    const p = try tostream(L_, 1);
+    const p = try tofile(L_, 1);
     return f_close(L_, p);
 }
 
 fn io_close(L_: *L) !i32 {
     const p = if (lua.lua_isnone(L_, 1) == 0)
-        try tostream(L_, 1)
+        try tofile(L_, 1)
     else blk: {
         _ = lua.lua_rawgetp(L_, lua.LUA_REGISTRYINDEX, @ptrCast(IO_OUTPUT.ptr));
-        break :blk try tostream(L_, -1);
+        break :blk try tofile(L_, -1);
     };
     return f_close(L_, p);
 }
@@ -152,7 +164,11 @@ fn getiofile(L_: *L, findex: []const u8) !*LStream {
     if (lua.lua_type(L_, -1) == lua.LUA_TNIL) {
         return lauxlib.luaL_error(L_, "default file is closed");
     }
-    return try tostream(L_, -1);
+    const p = try tostream(L_, -1);
+    if (isclosed(p)) {
+        return lauxlib.luaL_error(L_, "default file is closed");
+    }
+    return p;
 }
 
 fn g_iofile(L_: *L, findex: []const u8, mode: []const u8) !i32 {
@@ -170,7 +186,7 @@ fn g_iofile(L_: *L, findex: []const u8, mode: []const u8) !i32 {
             const p = try newfile(L_);
             p.* = LStream{ .fd = f, .closef = io_fclose, .buf = null, .buf_len = 0, .buf_mode = 0, .unget = null };
         } else {
-            _ = try tostream(L_, 1);
+            _ = try tofile(L_, 1);
             lua.lua_pushvalue(L_, 1);
         }
         try lua.lua_rawsetp(L_, lua.LUA_REGISTRYINDEX, @ptrCast(@constCast(findex.ptr)));
@@ -323,15 +339,16 @@ fn io_tmpfile(L_: *L) !i32 {
 }
 
 fn io_type(L_: *L) !i32 {
-    const p = lua.lua_touserdata(L_, 1);
-    if (p != null and lua.lua_getmetatable(L_, 1) != 0) {
-        _ = try lua.lua_getfield(L_, lua.LUA_REGISTRYINDEX, LUA_FILEHANDLE);
-        if (lua.lua_rawequal(L_, -1, -2) != 0) {
-            lua.lua_pop(L_, 2);
-            _ = lua.lua_pushstring(L_, "file");
-            return 1;
+    try lauxlib.luaL_checkany(L_, 1);
+    const udata = lauxlib.luaL_testudata(L_, 1, LUA_FILEHANDLE);
+    if (udata) |p| {
+        const stream = @as(*const LStream, @ptrCast(@alignCast(p)));
+        if (isclosed(stream)) {
+            _ = lua.lua_pushliteral(L_, "closed file");
+        } else {
+            _ = lua.lua_pushliteral(L_, "file");
         }
-        lua.lua_pop(L_, 2);
+        return 1;
     }
     lua.lua_pushnil(L_);
     return 1;
@@ -557,7 +574,7 @@ fn io_read(L_: *L) !i32 {
 }
 
 fn f_read(L_: *L) !i32 {
-    const p = try tostream(L_, 1);
+    const p = try tofile(L_, 1);
     return g_read(L_, p, 2);
 }
 
@@ -668,12 +685,12 @@ fn io_write(L_: *L) !i32 {
 }
 
 fn f_write(L_: *L) !i32 {
-    const p = try tostream(L_, 1);
+    const p = try tofile(L_, 1);
     return g_write(L_, p, 2);
 }
 
 fn f_seek(L_: *L) !i32 {
-    const p = try tostream(L_, 1);
+    const p = try tofile(L_, 1);
     const whence_s = lua.lua_tostring(L_, 2) orelse "cur";
     const offset = lua.lua_tointeger(L_, 3) orelse 0;
     const whence: c_int = if (std.mem.eql(u8, whence_s, "set")) 0 else if (std.mem.eql(u8, whence_s, "end")) 2 else 1;
@@ -687,7 +704,7 @@ fn f_seek(L_: *L) !i32 {
 }
 
 fn f_setvbuf(L_: *L) !i32 {
-    const p = try tostream(L_, 1);
+    const p = try tofile(L_, 1);
     const mode = lua.lua_tostring(L_, 2) orelse "full";
     const size = lua.lua_tointeger(L_, 3);
     if (p.buf) |b| {
@@ -719,7 +736,7 @@ fn io_flush(L_: *L) !i32 {
 }
 
 fn f_flush(L_: *L) !i32 {
-    const p = try tostream(L_, 1);
+    const p = try tofile(L_, 1);
     const ok = flushBuffer(p);
     return lauxlib.luaL_fileresult(L_, ok, null, 0);
 }
@@ -727,7 +744,7 @@ fn f_flush(L_: *L) !i32 {
 fn io_readline(L_: *L) anyerror!i32 {
     const p = try tostream(L_, lua.lua_upvalueindex(1));
     const n = @as(i32, @intCast(lua.lua_tointeger(L_, lua.lua_upvalueindex(2)) orelse 0));
-    if (p.closef == null and p.fd < 0) {
+    if (isclosed(p)) {
         return lauxlib.luaL_error(L_, "file is already closed");
     }
     lua.lua_settop(L_, 1);
@@ -766,7 +783,7 @@ fn aux_lines(L_: *L, toclose: i32) !void {
 }
 
 fn f_lines(L_: *L) !i32 {
-    _ = try tostream(L_, 1);
+    _ = try tofile(L_, 1);
     try aux_lines(L_, 0);
     return 1;
 }
@@ -779,7 +796,7 @@ fn io_lines(L_: *L) !i32 {
     if (lua.lua_isnil(L_, 1) != 0) {
         _ = lua.lua_rawgetp(L_, lua.LUA_REGISTRYINDEX, @ptrCast(IO_INPUT.ptr));
         lua.lua_replace(L_, 1);
-        _ = try tostream(L_, 1);
+        _ = try tofile(L_, 1);
         toclose = 0;
     } else {
         const filename = try lauxlib.luaL_checkstring(L_, 1);
