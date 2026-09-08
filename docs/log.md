@@ -3,8 +3,45 @@ type: lessons_learned
 title: Modification Log
 description: Running chronological log of bundle modifications and significant changes.
 tags: [log, changelog]
-timestamp: 2026-08-08T12:00:00Z
+timestamp: 2026-09-08T21:20:00Z
 ---
+
+## 2026-09-08 — Validation of BUG-139 through BUG-154 Against Source (Report Corrections)
+
+- **Validation Scope**: Each of the 16 bug reports was re-verified against the actual source (every cited location re-read) and against the C reference (`lua/`). 14 confirmed as written, 2 required corrections; **no code was changed** (report-only phase).
+- **Confirmed Valid (14)**: BUG-139, 140, 141, 142, 143, 144 (all 5 sub-items), 145, 146, 147, 148, 150, 151, 153, 154.
+- **Corrections Applied**:
+  - `BUG-149` **re-scoped and demoted to LOW**: the 2-digit width/precision limit matches the C reference (`lstrlib.c:1220-1226` `get2digits`, `checkformat` at `1235-1248`), which *also rejects* `%100s`. The only divergence is the error message (`"invalid conversion '%0' to 'format'"` vs reference `"invalid conversion specification: '%100s'"`). The originally proposed "general integer parser" fix would have regressed conformance; replaced with an error-message conformance fix.
+  - `BUG-139` corrected: `upvals[1..]` are registered in `g.allgc`, so they are not truly leaked — the core hazards are the unlinked, already-destroyed `upvals[0]` (UAF/double-free in sweep) and the leaked `cl` when `registerGC(L, cl)` fails. Location range updated to `src/lua.zig:4119-4183`.
+  - `BUG-151` stale line references fixed: there is no `growArray` function — array growth goes through `ensureArraySize` (`ltable.zig:225`), hash growth through `growNode` (`ltable.zig:145`). Added a note on the secondary accounting gap (post-registration growth invisible to the tracker).
+  - `BUG-152` corrected: `invalidateTMcache` *does* exist in effect — `lua_setmetatable` clears flags at `src/lua.zig:3494` (mirroring `lapi.c:933`). The genuine gap is invalidation on **key mutation** (C: `ltable.c:1111`, `lvm.c:347`), which `ltable.set`/`setHash`/`setInt` never do. Title/description updated accordingly.
+  - `BUG-154` note added during validation: a second `std.process.exit(1)` occurs at `src/luazig.zig:439` (`handleLuainit` failure) with the same defer-bypass issue.
+
+## 2026-09-08 — Deep Codebase Audit: Memory Safety, Conformance, and Rule-Compliance (BUG-139 through BUG-154 Documented)
+
+- **Audit Scope & Verification**:
+  - Full codebase inspection across core VM (`src/lvm.zig`), runtime state & GC (`src/lua.zig`), table implementation (`src/ltable.zig`), bytecode loader (`src/lundump.zig`), and standard libraries (`src/lib/*`).
+  - Baseline test verification: `zig build test` passed **131/131** tests; `./run_testes.sh` passed **19 PASS / 0 FAIL / 0 CRASH** with exit code 0. Zero memory leaks on existing test paths.
+- **Defects Discovered & Logged (Report-Only Phase)**:
+  - **Memory Safety & Lifecycle (`BUG-139` – `BUG-142`)**:
+    - `BUG-139`: `finishLoad` upvalue error-cleanup loop destroys heap nodes already linked in `g.allgc` without unlinking, causing dangling pointers, UAF, and double-free during GC sweep.
+    - `BUG-140`: Sequential allocations in `pushclosure` lack `errdefer` guards, leaking `lc`, `upvals`, and `cl` if `findupval` or `registerGC` fails.
+    - `BUG-141`: `loadProtos` leaves `f.p` populated with uninitialized wild pointers if sub-proto loading fails or triggers GC traversal.
+    - `BUG-142`: `coroutine.close` on a running thread destroys active `CallInfo` frames via `freeAllCallInfos`, after which `precall` dereferences and double-frees the destroyed frame.
+  - **Runtime Panics & Functional Defects (`BUG-143` – `BUG-150`)**:
+    - `BUG-143`: `growStack(L, 1)` treats delta as total needed capacity; because `1 <= L.stack.len` is always true, stack expansion is a no-op, causing out-of-bounds slice index panics when `L.top == L.stack.len`.
+    - `BUG-144`: Cluster of `iolib` defects: `read_line` truncates empty lines into premature EOF/nil, `read(0)` unconditionally returns `nil`, `f:lines()` returns a string instead of an iterator, and `io.lines` leaks file descriptors on EOF.
+    - `BUG-145`: `tostream` validates userdata type but ignores closed state (`p.closef == null`), causing operations on closed files to execute syscalls with `fd = -1` and return `false`/`nil` instead of raising `"attempt to use a closed file"`.
+    - `BUG-146`: `bit32.extract` and `bit32.replace` wrap signed addition `field +% width` to negative on large widths, bypassing checks and triggering `@intCast` panic into `u6`.
+    - `BUG-147`: `dofile` and `loadfile` error with bad argument #1 when called without arguments instead of falling back to `stdin`.
+    - `BUG-148`: `math.random(n)` omits `up >= 1` bounds check on 1-argument calls, allowing negative arguments to wrap `up -% 1` to a massive `u64`.
+    - `BUG-149`: `get2digits` parses at most 2 digits, causing `string.format` specifiers with width or precision $\ge 100$ to truncate and fail with syntax error.
+    - `BUG-150`: `os.tmpname` constructs paths using 1-second resolution `time(&t)` without a counter or random seed, causing rapid successive calls to collide.
+  - **Dead Code, GC Metrics, and Rule Compliance (`BUG-151` – `BUG-154`)**:
+    - `BUG-151`: `growArray` and `growNode` do not update `g.totalbytes`, but `freeGCObject` subtracts final grown capacity, underflowing `totalbytes` to 0 and breaking GC pacing.
+    - `BUG-152`: `checknoTM` has zero callers across the codebase; `Table.flags` is write-only, and `invalidateTMcache` does not exist.
+    - `BUG-153`: `luaL_tolstring` uses dummy `catch {}` after `luaL_error`, violating rule §0.1 item 12 and evaluating non-string values.
+    - `BUG-154`: `std.process.exit(1)` in CLI `main` bypasses `lua_close` and GPA `deinit` defers, aborting userdata finalizers and suppressing leak reports.
 
 ## 2026-08-08 — Lua Core Philosophy Deep Audit & State Isolation Refactoring (131/131 Tests PASS, 19/19 Upstream PASS)
 

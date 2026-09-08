@@ -2,19 +2,19 @@
 type: directory_index
 title: Bug Reports & Defect Catalog
 description: Index of all tracked defects, conformance fixes, and architectural bugs
-  in luazig (BUG-001 through BUG-138).
+  in luazig (BUG-001 through BUG-154).
 tags:
 - bugs
 - defects
 - index
 - catalog
-timestamp: '2026-08-24T15:10:00Z'
+timestamp: '2026-09-08T21:20:00Z'
 ---
 
 # Bug Reports & Defect Catalog — luazig
 
 > Working catalog of defects, bug-avoidance audits, and conformance fixes in the `luazig` codebase.
-> Bugs are numbered `BUG-001` through `BUG-138`.
+> Bugs are numbered `BUG-001` through `BUG-154`.
 > Each document records the location, defect, impact, and fix or resolution.
 
 ## Legend
@@ -165,12 +165,29 @@ timestamp: '2026-08-24T15:10:00Z'
 | [BUG-136](136.md) | `lua.zig`: `getGCObject` O(N) allgc fallback scans remain for tables/closures/userdata/upvalues (BUG-113 fixed strings only) | `LOW` | ✅ FIXED |
 | [BUG-137](137.md) | Dead code inventory: committed `libm.zig.orig`, unused `lua_numbertocstring`/`hasFinalizer`/`lenhint`, duplicated `registerGC` switch, identical lundump branches, stale strcache comment | `LOW` | ✅ FIXED |
 | [BUG-138](138.md) | Misc API divergences: io.popen("r") child stdin ignored, luaL_dostring collapses pcall errors, lua_xmove truncates, io.tmpfile no EEXIST retry | `LOW` | ✅ FIXED |
+| [BUG-139](139.md) | `lua.zig`: `finishLoad` GC object dangling pointers, UAF, and double-free on OOM | `CRITICAL` | ⏳ OPEN |
+| [BUG-140](140.md) | `lvm.zig`: `pushclosure` missing `errdefer` causes sequential heap leaks on OOM | `HIGH` | ⏳ OPEN |
+| [BUG-141](141.md) | `lundump.zig`: `loadProtos` leaves uninitialized wild pointers in proto `sub_protos` slice | `CRITICAL` | ⏳ OPEN |
+| [BUG-142](142.md) | `corolib.zig` / `lua.zig`: `coroutine.close` on running thread destroys active `CallInfo` causing UAF and double-free | `CRITICAL` | ⏳ OPEN |
+| [BUG-143](143.md) | `lua.zig`: `growStack(L, 1)` is a no-op bug causing latent out-of-bounds stack panics | `HIGH` | ⏳ OPEN |
+| [BUG-144](144.md) | `iolib.zig`: Empty line truncation, `read(0)` unconditional nil, `f:lines()` non-iterator, and FD leaks | `HIGH` | ⏳ OPEN |
+| [BUG-145](145.md) | `iolib.zig`: Closed file handles bypass state check and issue syscalls with `fd = -1` | `MED` | ⏳ OPEN |
+| [BUG-146](146.md) | `bit32.zig`: `bit32.extract` and `bit32.replace` panic on wrapping integer addition | `HIGH` | ⏳ OPEN |
+| [BUG-147](147.md) | `baselib.zig`: `dofile` and `loadfile` error on omitted filename instead of reading from `stdin` | `MED` | ⏳ OPEN |
+| [BUG-148](148.md) | `mathlib.zig`: `math.random(n)` missing lower bounds check allows negative integers to wrap into pseudo-random bounds | `MED` | ⏳ OPEN |
+| [BUG-149](149.md) | `format.zig`: `string.format` raises divergent error message for 3-digit width/precision specifiers (reference also rejects them; only the message differs) | `LOW` | ⏳ OPEN |
+| [BUG-150](150.md) | `oslib.zig`: `os.tmpname` rapid deterministic filename collisions via second-resolution timestamp | `MED` | ⏳ OPEN |
+| [BUG-151](151.md) | `lua.zig` / `ltable.zig`: Table growth bypasses `totalbytes` causing GC tracking underflow and zero count | `HIGH` | ⏳ OPEN |
+| [BUG-152](152.md) | `ltm.zig` / `ltable.zig`: Dead code `checknoTM` and `Table.flags` missing invalidation on key mutation (only `lua_setmetatable` clears flags) | `LOW` | ⏳ OPEN |
+| [BUG-153](153.md) | `lauxlib.zig`: Swallowed error via dummy `catch {}` in `luaL_tolstring` violating rule §0.1 item 12 | `MED` | ⏳ OPEN |
+| [BUG-154](154.md) | `luazig.zig`: `std.process.exit` in `main` bypasses `lua_close` and GPA `deinit` defer handlers | `LOW` | ⏳ OPEN |
 
 ## Systematic Bug Audits
 - [BUG-050](050.md) – [BUG-054](054.md): Systematic Bug-Pattern Audit (2026-07-31) cross-cutting codebase analysis.
 - [BUG-055](055.md) – [BUG-085](085.md): Comprehensive Memory & Static Analysis Audit (2026-08-08).
 - [BUG-086](086.md) – [BUG-114](114.md): Concurrency, Coroutines, GC & Platform Conformance Audit (2026-08-08).
 - [BUG-116](116.md) – [BUG-138](138.md): Deep Audit vs Lua 5.5.1 Reference (2026-08-24) — full-source review with differential testing against `lua/lua`; found the rev-152 loader regression (all `.luac` loading broken, 127/132 tests), dump-format wire incompatibility, table chain-corruption hazard, GC gaps (threads never collected, `__gc` resurrection UAF), float-to-string regressions, and assorted conformance divergences.
+- [BUG-139](139.md) – [BUG-154](154.md): Memory Safety, Conformance & Dead Code Deep Audit (2026-09-08) — static analysis hunting for UAF, double-free, uninitialized pointers, stack growth no-ops, I/O boundary defects, and Zig 0.16.0 rule compliance.
 
 ---
 - [← Documentation Root](../index.md)
