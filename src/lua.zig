@@ -1091,6 +1091,7 @@ pub const global_State = struct {
     warnf: ?lua_WarnFunction = null,
     ud_warn: ?*anyopaque = null,
     prng_state: [4]u64,
+    tmpname_counter: u64 = 0,
     mainthread: ?*lua_State = null,
     thread_list: ?*lua_State = null,
     clibs: std.ArrayList(*std.DynLib),

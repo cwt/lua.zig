@@ -5446,3 +5446,22 @@ test "BUG-149: string.format error messages match reference for invalid conversi
     const status = try lua.luaL_dostring(&L, script, "=(test_bug149)");
     try std.testing.expectEqual(lua.LUA_OK, status);
 }
+
+test "BUG-150: os.tmpname does not collide across rapid successive invocations" {
+    const gpa = std.testing.allocator;
+    var L: lua.lua_State = undefined;
+    try lua.luaL_newstate(&L, gpa);
+    defer lua.lua_close(&L);
+    try lua.luaL_openlibs(&L);
+
+    const script =
+        \\local names = {}
+        \\for i = 1, 50 do
+        \\    local n = os.tmpname()
+        \\    assert(not names[n], "collision detected: " .. n)
+        \\    names[n] = true
+        \\end
+    ;
+    const status = try lua.luaL_dostring(&L, script, "=(test_bug150)");
+    try std.testing.expectEqual(lua.LUA_OK, status);
+}

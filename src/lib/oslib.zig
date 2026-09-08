@@ -120,11 +120,16 @@ fn os_rename(L_: *L) !i32 {
 
 fn os_tmpname(L_: *L) !i32 {
     var buf: [64]u8 = undefined;
-    const seed = if (L_.l_G) |g| g.seed else 0;
+    const g = L_.l_G;
+    const seed = if (g) |gl| gl.seed else 0;
     const ptr_val = @intFromPtr(L_);
-    var t: TimeT = 0;
-    _ = time(&t);
-    const path = std.fmt.bufPrint(&buf, "/tmp/lua_{x}_{x}_{x}", .{ t, seed, ptr_val & 0xFFFF }) catch "/tmp/lua_tmp";
+    const count = if (g) |gl| blk: {
+        const c = gl.tmpname_counter;
+        gl.tmpname_counter +%= 1;
+        break :blk c;
+    } else 0;
+    const ts = if (g) |gl| std.Io.Timestamp.now(gl.io, .real).nanoseconds else 0;
+    const path = std.fmt.bufPrint(&buf, "/tmp/lua_{x:0>8}_{x:0>8}_{x:0>8}", .{ ts, (seed ^ (ptr_val & 0xFFFFFFFF)), count }) catch "/tmp/lua_tmp";
     _ = lua.lua_pushlstring(L_, path, path.len);
     return 1;
 }
