@@ -1302,8 +1302,8 @@ pub fn lua_settop(L: *lua_State, idx: i32) void {
 }
 
 pub fn lua_pushvalue(L: *lua_State, idx: i32) void {
+    growStack(L, L.top + 1) catch return;
     const src = idxPtr(L, idx) orelse return;
-    growStack(L, 1) catch return;
     L.stack[L.top] = src.*;
     L.top += 1;
 }
@@ -2063,6 +2063,10 @@ pub fn lua_pushexternalstring(
     falloc: ?lua_Alloc,
     ud: ?*anyopaque,
 ) ?[]const u8 {
+    growStack(L, L.top + 1) catch {
+        if (falloc) |f| _ = f(ud, @constCast(s.ptr), len + 1, 0);
+        return null;
+    };
     const g = G(L);
     const ts = L.allocator.create(lua_TString) catch {
         // Could not allocate the header; an LSTRMEM buffer we were meant to
@@ -2107,6 +2111,7 @@ pub fn lua_pushcclosure(L: *lua_State, cfunc: lua_CFunction, n: i32) void {
         // allocate either). Root the closure in the registry so it survives.
         if (L.l_G) |g| {
             if (g.cfunc_cache.get(cfunc)) |cached| {
+                growStack(L, L.top + 1) catch return;
                 L.stack[L.top] = TValue{ .function = cached };
                 L.top += 1;
                 return;
@@ -2130,7 +2135,7 @@ pub fn lua_pushcclosure(L: *lua_State, cfunc: lua_CFunction, n: i32) void {
             ltable.set(reg, TValue{ .lightud = @ptrCast(@constCast(cfunc)) }, TValue{ .function = cl }) catch {};
             g.cfunc_cache.put(L.allocator, cfunc, cl) catch {};
         }
-        growStack(L, 1) catch return;
+        growStack(L, L.top + 1) catch return;
         L.stack[L.top] = TValue{ .function = cl };
         L.top += 1;
         return;
@@ -2349,7 +2354,7 @@ pub fn lua_newthread(L: *lua_State) !*lua_State {
     L1.twups = g.thread_list;
     g.thread_list = L1;
     try registerGC(L, L1);
-    try growStack(L, 1);
+    try growStack(L, L.top + 1);
     L.stack[L.top] = TValue{ .thread = L1 };
     L.top += 1;
     return L1;
@@ -3185,6 +3190,7 @@ pub fn lua_gettable(L: *lua_State, idx: i32) !i32 {
 }
 
 pub fn lua_getfield(L: *lua_State, idx: i32, k: []const u8) !i32 {
+    growStack(L, L.top + 1) catch return LUA_TNIL;
     const obj_ptr = idxPtr(L, idx) orelse {
         lua_pushnil(L);
         return LUA_TNIL;
@@ -3195,7 +3201,6 @@ pub fn lua_getfield(L: *lua_State, idx: i32, k: []const u8) !i32 {
     }
     const ts = try lstring.luaS_new(L, k);
     const key = TValue{ .string = ts };
-    growStack(L, 1) catch return LUA_TNIL;
     const res = L.top;
     L.stack[L.top] = .{ .nil = {} };
     L.top += 1;
@@ -3205,6 +3210,7 @@ pub fn lua_getfield(L: *lua_State, idx: i32, k: []const u8) !i32 {
 }
 
 pub fn lua_geti(L: *lua_State, idx: i32, n: lua_Integer) !i32 {
+    growStack(L, L.top + 1) catch return LUA_TNIL;
     const obj_ptr = idxPtr(L, idx) orelse {
         lua_pushnil(L);
         return LUA_TNIL;
@@ -3214,7 +3220,6 @@ pub fn lua_geti(L: *lua_State, idx: i32, n: lua_Integer) !i32 {
         return LUA_TNIL;
     }
     const key = TValue{ .integer = n };
-    growStack(L, 1) catch return LUA_TNIL;
     const res = L.top;
     L.stack[L.top] = .{ .nil = {} };
     L.top += 1;

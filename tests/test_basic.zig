@@ -5214,3 +5214,72 @@ test "BUG-142: coroutine.close on running coroutine unwinds safely without UAF o
 
     try lua.luaC_collectgarbage(&L);
 }
+
+test "BUG-143: growStack grows stack when L.top reaches capacity across C-API push operations" {
+    const gpa = std.testing.allocator;
+    var L: lua.lua_State = undefined;
+    try lua.luaL_newstate(&L, gpa);
+    defer lua.lua_close(&L);
+
+    // Fill stack to capacity directly without triggering checkstack
+    for (0..L.stack.len) |i| {
+        L.stack[i] = .{ .integer = @intCast(i) };
+    }
+    L.top = L.stack.len;
+    const orig_cap = L.stack.len;
+
+    // 1. lua_pushvalue when at capacity
+    lua.lua_pushvalue(&L, 1);
+    try std.testing.expect(L.top > orig_cap);
+    try std.testing.expect(L.stack.len > orig_cap);
+    try std.testing.expectEqual(@as(i64, 0), lua.lua_tointeger(&L, -1).?);
+
+    // 2. lua_pushcclosure (uncached and cached) when at capacity
+    const dummy_cfunc: lua.lua_CFunction = struct {
+        fn call(L2: *lua.lua_State) !i32 {
+            _ = L2;
+            return 0;
+        }
+    }.call;
+    L.top = L.stack.len; // fill to capacity
+    const cap2 = L.stack.len;
+    lua.lua_pushcclosure(&L, dummy_cfunc, 0);
+    try std.testing.expect(L.top > cap2);
+    try std.testing.expect(lua.lua_isfunction(&L, -1));
+
+    // cached hit
+    L.top = L.stack.len; // fill to capacity
+    const cap3 = L.stack.len;
+    lua.lua_pushcclosure(&L, dummy_cfunc, 0);
+    try std.testing.expect(L.top > cap3);
+    try std.testing.expect(lua.lua_isfunction(&L, -1));
+
+    // 3. lua_getfield and lua_geti when at capacity
+    lua.lua_createtable(&L, 2, 2);
+    _ = lua.lua_pushstring(&L, "field_val");
+    try lua.lua_setfield(&L, -2, "k");
+    _ = lua.lua_pushstring(&L, "item_val");
+    try lua.lua_seti(&L, -2, 1);
+    // table is at top
+    const tbl_idx = lua.lua_gettop(&L);
+    L.top = L.stack.len; // set top to capacity
+    const cap4 = L.stack.len;
+    _ = try lua.lua_getfield(&L, tbl_idx, "k");
+    try std.testing.expect(L.top > cap4);
+    try std.testing.expectEqualStrings("field_val", lua.lua_tostring(&L, -1).?);
+    lua.lua_pop(&L, 1);
+
+    L.top = L.stack.len; // set top to capacity
+    const cap5 = L.stack.len;
+    _ = try lua.lua_geti(&L, tbl_idx, 1);
+    try std.testing.expect(L.top > cap5);
+    try std.testing.expectEqualStrings("item_val", lua.lua_tostring(&L, -1).?);
+    lua.lua_pop(&L, 1);
+
+    // 4. lua_newthread when at capacity
+    L.top = L.stack.len;
+    const cap6 = L.stack.len;
+    _ = try lua.lua_newthread(&L);
+    try std.testing.expect(L.top > cap6);
+    try std.testing.expect(lua.lua_isthread(&L, -1));
+}
