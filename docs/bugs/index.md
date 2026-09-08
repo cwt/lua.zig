@@ -180,7 +180,7 @@ timestamp: '2026-09-08T21:20:00Z'
 | [BUG-151](151.md) | `lua.zig` / `ltable.zig`: Table growth bypasses `totalbytes` causing GC tracking underflow and zero count | `HIGH` | ✅ FIXED |
 | [BUG-152](152.md) | `ltm.zig` / `ltable.zig`: Dead code `checknoTM` and `Table.flags` missing invalidation on key mutation (only `lua_setmetatable` clears flags) | `LOW` | ✅ FIXED |
 | [BUG-153](153.md) | `lauxlib.zig`: Swallowed error via dummy `catch {}` in `luaL_tolstring` violating rule §0.1 item 12 | `MED` | ✅ FIXED |
-| [BUG-154](154.md) | `luazig.zig`: `std.process.exit` in `main` bypasses `lua_close` and GPA `deinit` defer handlers | `LOW` | ⏳ OPEN |
+| [BUG-154](154.md) | `luazig.zig`: `std.process.exit` in `main` bypasses `lua_close` and GPA `deinit` defer handlers | `LOW` | ✅ FIXED |
 
 ## Systematic Bug Audits
 - [BUG-050](050.md) – [BUG-054](054.md): Systematic Bug-Pattern Audit (2026-07-31) cross-cutting codebase analysis.

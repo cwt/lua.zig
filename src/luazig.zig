@@ -387,7 +387,7 @@ fn runRepl(L: *lua.lua_State, io: std.Io, gpa: std.mem.Allocator, print_banner: 
     }
 }
 
-pub fn main(init: std.process.Init) !void {
+pub fn main(init: std.process.Init) !u8 {
     var dbg_alloc = std.heap.DebugAllocator(.{ .safety = true }).init;
     var gpa: std.mem.Allocator = if (build_options.asan or build_options.debug_alloc)
         dbg_alloc.allocator()
@@ -410,7 +410,7 @@ pub fn main(init: std.process.Init) !void {
             error.UnrecognizedOption => try stderrWrite(io, "luazig: unrecognized option\n"),
             else => try stderrWrite(io, "luazig: invalid arguments\n"),
         }
-        return err;
+        return 1;
     };
 
     if (parsed.show_version) {
@@ -436,27 +436,29 @@ pub fn main(init: std.process.Init) !void {
 
     if (!parsed.ignore_env) {
         if (try handleLuainit(L, io, progname)) {
-            std.process.exit(1);
+            had_error = true;
         }
     }
 
-    for (parsed.actions) |act| {
-        switch (act) {
-            .eval => |chunk| {
-                if (try runString(L, io, progname, chunk, "=(command line)")) {
-                    had_error = true;
-                    break;
-                }
-            },
-            .lib => |lib| {
-                if (try doLibrary(L, io, progname, lib)) {
-                    had_error = true;
-                    break;
-                }
-            },
-            .warn_on => {
-                lua.lua_warning(L, "@on", 0);
-            },
+    if (!had_error) {
+        for (parsed.actions) |act| {
+            switch (act) {
+                .eval => |chunk| {
+                    if (try runString(L, io, progname, chunk, "=(command line)")) {
+                        had_error = true;
+                        break;
+                    }
+                },
+                .lib => |lib| {
+                    if (try doLibrary(L, io, progname, lib)) {
+                        had_error = true;
+                        break;
+                    }
+                },
+                .warn_on => {
+                    lua.lua_warning(L, "@on", 0);
+                },
+            }
         }
     }
 
@@ -512,6 +514,7 @@ pub fn main(init: std.process.Init) !void {
     }
 
     if (had_error) {
-        std.process.exit(1);
+        return 1;
     }
+    return 0;
 }

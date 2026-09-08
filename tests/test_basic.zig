@@ -5565,3 +5565,28 @@ test "BUG-153: luaL_tolstring propagates error when __tostring returns non-strin
     const result = lauxlib.luaL_tolstring(&L, -1, null);
     try std.testing.expectError(error.RuntimeError, result);
 }
+
+test "BUG-154: CLI error exit unwinds defers and returns exit code 1" {
+    const gpa = std.testing.allocator;
+    var threaded: std.Io.Threaded = .init_single_threaded;
+    threaded.allocator = gpa;
+    defer threaded.deinit();
+    const io = threaded.io();
+
+    const bin = "zig-out/bin/luazig";
+    std.Io.Dir.cwd().access(io, bin, .{}) catch |err| switch (err) {
+        error.FileNotFound => return,
+        else => return err,
+    };
+
+    const result = try std.process.run(gpa, io, .{
+        .argv = &[_][]const u8{ bin, "-e", "error('boom')" },
+    });
+    defer gpa.free(result.stdout);
+    defer gpa.free(result.stderr);
+
+    switch (result.term) {
+        .exited => |code| try std.testing.expectEqual(@as(u8, 1), code),
+        else => return error.TestUnexpectedResult,
+    }
+}
