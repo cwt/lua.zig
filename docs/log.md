@@ -3,16 +3,28 @@ type: lessons_learned
 title: Modification Log
 description: Running chronological log of bundle modifications and significant changes.
 tags: [log, changelog]
-timestamp: 2026-09-09T23:00:00Z
+timestamp: 2026-09-09T23:30:00Z
 ---
+
+## 2026-09-09 — Vendored pi benchmark into `tests/`; doc references point at the local copy
+
+- **Change**: copied `../pi/pi-5.5.lua` (the external pi benchmark script)
+  to `tests/pi-5.5.lua` (byte-identical, verified), so the BUG-174 fix
+  plan and its verification protocol no longer depend on the sibling `pi/`
+  checkout.
+- **Updated references** to `tests/pi-5.5.lua`: `docs/performance.md`
+  (benchmark section + verification protocol + `sources`) and
+  `docs/bugs/174.md` (defect summary + evidence block + `sources`).
+- Earlier log entries keep their historical `../pi/pi-5.5.lua`
+  references (the log is chronological; history is preserved as written).
 
 ## 2026-09-09 — Perf investigation: 2x gap vs C reference root-caused; fix plan recorded (BUG-174)
 
-- **Investigated** `../pi/pi-5.5.lua` (100M-iteration pure-VM benchmark):
-  luazig 15.5s vs C reference 8.2s. `perf stat`: **425B vs 192B
-  instructions** (2.2x) at similar-or-higher IPC — a pure instruction-count
-  gap, not misprediction. Output matches the reference (no conformance
-  defect; pure speed issue).
+- **Investigated** `tests/pi-5.5.lua` (100M-iteration pure-VM benchmark;
+  local copy of the external `../pi/pi-5.5.lua` script): luazig 15.5s vs
+  C reference 8.2s. `perf stat`: **425B vs 192B instructions** (2.2x) at
+  similar-or-higher IPC — a pure instruction-count gap, not misprediction.
+  Output matches the reference (no conformance defect; pure speed issue).
 - **Root causes** (machine-confirmed via symbolized ReleaseFast profile +
   disasm, see `docs/performance.md`):
   - **RC1 (dominant)**: `lvm.run` keeps its loop state in a ~4.7KB stack

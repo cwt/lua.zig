@@ -16,6 +16,7 @@ sources:
   - src/libm.zig
   - src/lauxlib.zig
   - src/lib/mathlib.zig
+  - tests/pi-5.5.lua
   - lua/lvm.c
   - lua/lgc.h
 verified: machine-confirmed
@@ -34,7 +35,7 @@ stale_after: 2026-12-31T00:00:00Z
 
 ## Benchmark
 
-Workload: `../pi/pi-5.5.lua` — 100M-iteration generic `for` loop, per
+Workload: `tests/pi-5.5.lua` — 100M-iteration generic `for` loop, per
 iteration: ~23 VM opcodes (float arith, `GETGLOBAL math`, `GETFIELD
 log/floor`, `FORLOOP`/`JMP`) + 2 C calls (`math.log`, `math.floor`) + 1
 float `MOD`. Output is **identical** to the C reference (no conformance
@@ -215,7 +216,7 @@ its C-call plumbing.
 1. One hg commit per item; §0.1 self-audit in the commit message (new `try`
    sites must propagate — never `catch {}` / `catch unreachable`).
 2. `zig build` + `zig build test` (131 tests, 0 leaks) after each item.
-3. Benchmark: `time ./zig-out/bin/luazig ../pi/pi-5.5.lua` and
+3. Benchmark: `time ./zig-out/bin/luazig tests/pi-5.5.lua` and
    `perf stat -e instructions` — record per step (baseline: 425B / 15.5s;
    C reference: 192B / 8.2s).
 4. After P1 + P2: full upstream `lua/testes` suite (must stay
