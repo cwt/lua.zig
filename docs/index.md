@@ -3,7 +3,7 @@ type: bundle_root
 title: luazig — A Zig 0.16.0 Port of Lua 5.5.1
 description: Development knowledge base for porting the Lua reference implementation (C) to idiomatic Zig 0.16.0, following strict rules against transliteration.
 tags: [lua, zig, port, okf]
-timestamp: 2026-08-07T23:40:00Z
+timestamp: 2026-09-09T23:00:00Z
 ---
 
 ## Documentation Map
@@ -33,6 +33,7 @@ timestamp: 2026-08-07T23:40:00Z
 
 ### Project Management
 - [Roadmap](roadmap.md) — Phase-based development plan, dependencies between layers
+- [Performance](performance.md) — 2× perf gap vs C reference: root-cause findings (RC1–RC5) + minimal-change fix plan P1–P4 (BUG-174)
 - [Bugs & Fixes](bugs/index.md) — Chronological lessons from debugging sessions (conformance fixes, root causes)
 - [Log](log.md) — Running modification log
 

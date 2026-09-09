@@ -93,7 +93,17 @@ pub fn run(L: *lua.lua_State, active_ci: *lua.CallInfo) anyerror!void {
 3. **`@branchHint(.unlikely)` Pipeline Branch Hints**:
    Applied `@branchHint(.unlikely)` to error checks and fallback branches, guiding LLVM code generation to keep hot loop instructions linearly contiguous in CPU $I$-cache.
 
-### Current Status
+### Performance
+
+The interpreter loop head carries per-instruction overhead that the C
+reference does not: a per-instruction GC check (`src/lvm.zig:727`, absent
+from `lua/lvm.c`) plus `ci.savedpc` read+store and `L.hookmask` loads
+through a ~4.7KB stack frame (C keeps a 104B frame with the loop state
+pinned in callee-saved registers). This is the root cause of the ~2x
+instruction-count gap on VM-bound workloads — see [Performance](performance.md)
+(root causes RC1–RC5, fix plan P1–P4) and [BUG-174](bugs/174.md).
+
+## Current Status
 
 Phase D is **complete**. The VM runs Lua 5.5.1 compiled bytecode chunks with 100% upstream test suite pass rate.
 

@@ -2,19 +2,19 @@
 type: directory_index
 title: Bug Reports & Defect Catalog
 description: Index of all tracked defects, conformance fixes, and architectural bugs
-  in luazig (BUG-001 through BUG-172).
+  in luazig (BUG-001 through BUG-174).
 tags:
 - bugs
 - defects
 - index
 - catalog
-timestamp: '2026-09-08T21:20:00Z'
+timestamp: '2026-09-09T23:00:00Z'
 ---
 
 # Bug Reports & Defect Catalog — luazig
 
 > Working catalog of defects, bug-avoidance audits, and conformance fixes in the `luazig` codebase.
-> Bugs are numbered `BUG-001` through `BUG-173`.
+> Bugs are numbered `BUG-001` through `BUG-174`.
 > Each document records the location, defect, impact, and fix or resolution.
 
 ## Legend
@@ -200,6 +200,7 @@ timestamp: '2026-09-08T21:20:00Z'
 | [BUG-171](171.md) | FALSE POSITIVE: assigned-at-declaration self-capture (`local co = f(function() ... co ... end)`) refers to the global per Lua visibility rules — luazig matches the reference | `HIGH` | ❌ FALSE POSITIVE |
 | [BUG-172](172.md) | `lua.zig`/`ltable.zig`: weak-key table element count diverges after collection — gc.lua:249 fails | `HIGH` | ✅ FIXED |
 | [BUG-173](173.md) | `lua.zig`: ephemeron convergence loop missing (convergeephemerons) — gc.lua ephemerons section diverges | `HIGH` | ⏳ OPEN |
+| [BUG-174](174.md) | `lvm.zig`/`libm.zig`/`lauxlib.zig`: interpreter ~2x slower than C reference (425B vs 192B instructions on pi-5.5; per-opcode overhead from 4.7KB `run` frame, per-instruction GC check, 112B-by-value `getLibm()`) — fix plan P1–P4 in `docs/performance.md` | `MED` | ⏳ OPEN |
 
 ## Systematic Bug Audits
 - [BUG-050](050.md) – [BUG-054](054.md): Systematic Bug-Pattern Audit (2026-07-31) cross-cutting codebase analysis.

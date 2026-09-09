@@ -107,3 +107,15 @@ Minor GC collects young objects only. Major GC collects everything.
 7. Implement weak table and ephemeron handling
 8. Port both incremental and generational modes from `lua/lgc.c`
 9. Wire `lua_gc` API to real GC operations
+
+## VM Loop GC Check (perf deviation — BUG-174)
+
+The C reference does **not** check the GC on every instruction: stepping is
+GCdebt-based via `luaC_condGC` (`lua/lgc.h:233`), called only at
+object-registration sites — `lua/lvm.c:1431` (NEWTABLE), `:1637`
+(CONCAT), `:1939` (CLOSURE) — plus C-API/allocator sites. `src/lvm.zig:727`
+instead runs `g.gc_count > g.gc_threshold` **per instruction** (3 pointer
+loads + 2 branches per opcode), a structural deviation identified in the
+perf investigation. Fix plan **P1** in [Performance](performance.md)
+drops the loop-head check and adds `checkGC(L)` calls at the reference's
+object-registration sites (tracking: [BUG-174](bugs/174.md)).

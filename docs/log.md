@@ -3,8 +3,50 @@ type: lessons_learned
 title: Modification Log
 description: Running chronological log of bundle modifications and significant changes.
 tags: [log, changelog]
-timestamp: 2026-09-08T21:20:00Z
+timestamp: 2026-09-09T23:00:00Z
 ---
+
+## 2026-09-09 — Perf investigation: 2x gap vs C reference root-caused; fix plan recorded (BUG-174)
+
+- **Investigated** `../pi/pi-5.5.lua` (100M-iteration pure-VM benchmark):
+  luazig 15.5s vs C reference 8.2s. `perf stat`: **425B vs 192B
+  instructions** (2.2x) at similar-or-higher IPC — a pure instruction-count
+  gap, not misprediction. Output matches the reference (no conformance
+  defect; pure speed issue).
+- **Root causes** (machine-confirmed via symbolized ReleaseFast profile +
+  disasm, see `docs/performance.md`):
+  - **RC1 (dominant)**: `lvm.run` keeps its loop state in a ~4.7KB stack
+    frame (per back-edge reloads of `g`/`L`/`code`, `ci.savedpc` read+store
+    through memory); C's `luaV_execute` uses a 104B frame with `L`/`ci`/
+    `base`/`G`/`proto` pinned in callee-saved registers.
+  - **RC2**: the per-instruction GC check at `src/lvm.zig:727` is a
+    structural deviation — the C reference has *no* GC check in the loop
+    head (`luaC_condGC`, GCdebt-based, runs only at
+    `lua/lvm.c:1431/1637/1939` + C API/allocator sites).
+  - **RC3**: `luaL_checknumber`'s `!lua_Number` error-union call boundary
+    (12.6% of runtime).
+  - **RC4**: `libm.getLibm()` returns the 14-function-pointer struct **by
+    value** on every call (~112B copy + spills); C calls libm via PLT.
+  - **RC5 (minor)**: `anyerror` plumbing in hot opcode bodies.
+- **Fix plan recorded** (`docs/performance.md`, `type: project_priority`):
+  - **P1** drop the per-instruction GC check; add `checkGC(L)` at the
+    reference's object-registration sites (~15 lines, low risk, ~−30B).
+  - **P2** loop-local `savedpc` + hoisted `hookmask` in `run` with a
+    `savepc`-sync audit (~40–60 lines, medium risk, ~−40–60B; `locals.lua`
+    is the tripwire).
+  - **P3** `getLibm() -> *const Libm`, call sites unchanged (~10 lines, no
+    risk, ~−10B).
+  - **P4** defer `luaL_checknumber` until re-measured.
+  - Expected: 425B → ~310–330B ≈ 10.5–11.5s ≈ 1.3–1.4x C. No code changes
+    made yet.
+- **New defect logged** (`BUG-174`, MED, open): the perf gap; tracking in
+  `docs/bugs/174.md`, plan in `docs/performance.md`.
+- **Profiling method note** (for future sessions): the ReleaseFast exe is
+  stripped. In this 0.16.0 toolchain `root_module.strip = false` *still*
+  strips; **omitting the strip assignment (null) keeps `.symtab`** — build
+  a symbolized ReleaseFast via a shadow copy of `build.zig` (see
+  `docs/performance.md` §Methodology). Debug-mode profiles are skewed by
+  `-ferror-tracing` (dwarf self-unwinder / DebugAllocator noise).
 
 ## 2026-09-09 — Fix BUG-172: strings are never removed from weak tables; log BUG-173
 
