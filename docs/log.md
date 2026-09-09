@@ -6,6 +6,26 @@ tags: [log, changelog]
 timestamp: 2026-09-08T21:20:00Z
 ---
 
+## 2026-09-09 — Fix BUG-161: Process Crash in "Chain of coroutine.close" Test (cstack.lua)
+
+- **Bug Fixed**: `BUG-161` (CRITICAL) — `cstack.lua` process crash / core dump during chain of `coroutine.close` recursion.
+- **Root Cause**:
+  1. Recursive `__close` invocation through `lua_closethread` -> `closeupvals` -> `close_one_slot` -> `coroutine.close` -> `luaD_call` did not inherit `L.nCcalls` or enforce `llimits.LUAI_MAXCCALLS` in `luaD_call`.
+  2. In `lua.zig`, `freeGCObject` for `.thread` called `closeupvals(th, 0, null)` during GC sweep / state close, invoking `__close` metamethods after objects were partially swept.
+  3. `lua_resume` omitted pushing `L.err_obj` onto the stack on unrecoverable runtime errors, causing `auxresume` to pop the only copy of the error from the coroutine and leaving `co.top = 1` pointing to the thread function.
+  4. `luaB_auxwrap` in `src/lib/corolib.zig` omitted `lua.lua_xmove(co, L, 1)` following `lua_closethread(co, L)`.
+- **Implementation**:
+  - `src/ltm.zig`: Enforced `LUAI_MAXCCALLS` in `luaD_call`, throwing `"C stack overflow"` via `luaD_errerr`, tracked with `L.nCcalls += 1` / `defer L.nCcalls -= 1`. Preserved `CallInfo` frames on `error.Yield`.
+  - `src/lua.zig`: Added `luaF_closeupval` to close only open upvalues without calling `__close`. Delegated `freeGCObject(.thread)` to `luaF_closeupval`. Inherited `nCcalls` in `lua_closethread`. Fixed error object placement at `L.stack[1]` in `lua_closethread`. Pushed `L.err_obj` on unrecoverable runtime errors in `lua_resume`.
+  - `src/lib/corolib.zig`: Added `lua.lua_xmove(co, L, 1)` in `luaB_auxwrap`.
+  - `src/lvm.zig`: Removed unintended register-clearing `@memset` in `OP_CLOSE`.
+  - `run_testes.sh`: Unskipped `cstack.lua` from `STANDALONE_SKIP`.
+  - `tests/test_basic.zig`: Added `BUG-161` test case.
+- **Verification**:
+  - `zig build test`: 167/167 tests pass.
+  - `./run_testes.sh`: 20 PASS / 0 FAIL / 0 CRASH / 0 TIMEOUT / 14 SKIP.
+  - Standalone `cstack.lua`: passes completely with `OK`.
+
 ## 2026-09-08 — Upstream `lua/testes/` Standalone Re-Verification Audit (BUG-155 through BUG-167 Documented)
 
 - **Audit Scope & Verification** (report-only phase; no code changed):

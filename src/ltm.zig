@@ -3,6 +3,7 @@ const lua = @import("lua.zig");
 const lstring = @import("lstring.zig");
 const ltable = @import("ltable.zig");
 const lvm = @import("lvm.zig");
+const llimits = @import("llimits.zig");
 
 pub const TMS = enum(u5) {
     INDEX = 0,
@@ -127,8 +128,32 @@ pub fn savestate(L: *lua.lua_State) void {
 }
 
 pub fn luaD_call(L: *lua.lua_State, func_idx: usize, nresults: i32) !void {
+    const old_ci = L.ci;
     if (try lua.precall(L, func_idx, nresults)) |new_ci| {
-        try lvm.run(L, new_ci);
+        L.nCcalls += 1;
+        defer L.nCcalls -= 1;
+        if (L.nCcalls == llimits.LUAI_MAXCCALLS) {
+            try lua.luaG_runerror(L, "C stack overflow");
+        } else if (L.nCcalls >= llimits.LUAI_MAXCCALLS * 11 / 10) {
+            return lua.luaD_errerr(L);
+        }
+        lvm.run(L, new_ci) catch |e| {
+            if (e == error.Yield) return e;
+            var curr = L.ci;
+            while (curr) |c| {
+                if (c == old_ci) break;
+                const prev = c.previous;
+                if (c != &L.base_ci) {
+                    L.allocator.destroy(c);
+                }
+                curr = prev;
+            }
+            L.ci = old_ci;
+            if (old_ci) |prev| {
+                prev.next = null;
+            }
+            return e;
+        };
     }
 }
 
@@ -214,12 +239,26 @@ pub fn luaT_callTMres(L: *lua.lua_State, f: lua.TValue, p1: *const lua.TValue, p
     savestate(L);
     if (lua.lua_checkstack(L, 3) == 0) return error.OutOfMemory;
     const old_top = L.top;
+    const old_ci = L.ci;
     L.stack[old_top] = f;
     L.stack[old_top + 1] = p1.*;
     L.stack[old_top + 2] = p2.*;
     L.top = old_top + 3;
     luaD_call(L, old_top, 1) catch |e| {
         if (e == error.Yield) return e;
+        var curr = L.ci;
+        while (curr) |c| {
+            if (c == old_ci) break;
+            const prev = c.previous;
+            if (c != &L.base_ci) {
+                L.allocator.destroy(c);
+            }
+            curr = prev;
+        }
+        L.ci = old_ci;
+        if (old_ci) |prev| {
+            prev.next = null;
+        }
         L.top = saved_top;
         return e;
     };

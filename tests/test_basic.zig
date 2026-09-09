@@ -5590,3 +5590,34 @@ test "BUG-154: CLI error exit unwinds defers and returns exit code 1" {
         else => return error.TestUnexpectedResult,
     }
 }
+
+test "BUG-161: chain of coroutine.close recursion limits and cleanup" {
+    const gpa = std.testing.allocator;
+    var L: lua.lua_State = undefined;
+    try lua.luaL_newstate(&L, gpa);
+    defer lua.lua_close(&L);
+    try lua.luaL_openlibs(&L);
+
+    const script =
+        \\local count = 0
+        \\local coro = false
+        \\for i = 1, 1000 do
+        \\  local previous = coro
+        \\  coro = coroutine.create(function()
+        \\    local cc <close> = setmetatable({}, {__close=function()
+        \\      count = count + 1
+        \\      if previous then
+        \\        assert(coroutine.close(previous))
+        \\      end
+        \\    end})
+        \\    coroutine.yield()
+        \\  end)
+        \\  assert(coroutine.resume(coro))
+        \\end
+        \\local st, msg = coroutine.close(coro)
+        \\assert(not st and string.find(msg, "C stack overflow"))
+        \\assert(count > 10)
+    ;
+    const status = try lua.luaL_dostring(&L, script, "=(test_bug161)");
+    try std.testing.expectEqual(lua.LUA_OK, status);
+}

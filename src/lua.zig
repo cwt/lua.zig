@@ -529,7 +529,7 @@ fn close_one_slot(L: *lua_State, abs: usize, err_val: ?TValue) anyerror!?TValue 
     return null;
 }
 
-pub fn closeupvals(L: *lua_State, limit: usize, err_val: ?TValue) !void {
+pub fn luaF_closeupval(L: *lua_State, limit: usize) void {
     const lim = if (limit < L.stack.len) limit else L.stack.len;
     const limit_addr = @intFromPtr(&L.stack[lim]);
     while (L.openupval) |uv| {
@@ -548,6 +548,10 @@ pub fn closeupvals(L: *lua_State, limit: usize, err_val: ?TValue) !void {
             break;
         }
     }
+}
+
+pub fn closeupvals(L: *lua_State, limit: usize, err_val: ?TValue) !void {
+    luaF_closeupval(L, limit);
 
     var has_err = (err_val != null);
     var close_raised = false;
@@ -946,6 +950,10 @@ pub fn precall(L: *lua_State, func_idx: usize, nresults: i32) !?*CallInfo {
                     L.stack[base_idx + i] = .{ .nil = {} };
                 }
                 L.top = base_idx + num_params;
+            }
+            const clear_start = base_idx + @max(num_args_passed, num_params);
+            if (clear_start < frame_top and clear_start < L.stack.len) {
+                @memset(L.stack[clear_start..@min(frame_top, L.stack.len)], .{ .nil = {} });
             }
             const new_ci = try allocCallInfo(L);
             new_ci.* = .{
@@ -1397,7 +1405,7 @@ fn reserveErrorStack(L: *lua_State) !void {
 /// (mirrors luaD_errerr -> LUA_ERRERR). Used to terminate the error-handler
 /// recursion when the C-call stack is exhausted: calling luaG_runerror here
 /// would re-invoke the handler and recurse forever.
-fn luaD_errerr(L: *lua_State) anyerror {
+pub fn luaD_errerr(L: *lua_State) anyerror {
     const ts = lstring.luaS_new(L, "error in error handling") catch null;
     if (ts) |t| {
         L.err_obj = TValue{ .string = t };
@@ -2366,13 +2374,12 @@ pub fn lua_newthread(L: *lua_State) !*lua_State {
 }
 
 pub fn lua_closethread(L: *lua_State, from: ?*lua_State) i32 {
+    L.nCcalls = if (from) |f| f.nCcalls else 0;
     const old_status = L.status;
-    var err_val: ?TValue = if (old_status != 0 and old_status != LUA_YIELD and L.top > 0)
-        L.stack[L.top - 1]
+    var err_val: ?TValue = if (old_status != 0 and old_status != LUA_YIELD)
+        (if (L.err_obj != .nil) L.err_obj else if (L.top > 0) L.stack[L.top - 1] else null)
     else
         null;
-
-    freeAllCallInfos(L);
 
     // Close all upvalues and TBC variables on the thread stack.
     // Index 1 corresponds to stack[1], since stack[0] is the thread function.
@@ -2388,36 +2395,43 @@ pub fn lua_closethread(L: *lua_State, from: ?*lua_State) i32 {
         }
     };
 
+    freeAllCallInfos(L);
+
     if (close_err) {
-        if (L.top > 1) {
+        if (L.stack.len > 1) {
             L.stack[1] = err_val.?;
             L.top = 2;
         } else {
             L.top = 1;
         }
-        L.status = LUA_ERRRUN;
-        // Copy the error object to the caller's stack (the reference does this
-        // in lua_closethread: setobjs2s(from, from->top, L->top-1)).
-        if (from) |f| {
-            if (f.top < f.stack.len) {
-                f.stack[f.top] = err_val.?;
-                f.top += 1;
-            }
+        if (L.top < L.stack.len) {
+            @memset(L.stack[L.top..], .{ .nil = {} });
         }
+        L.status = LUA_ERRRUN;
         return LUA_ERRRUN;
     }
 
     if (old_status != 0 and old_status != LUA_YIELD) {
-        if (L.top > 1) {
-            L.stack[1] = L.stack[L.top - 1];
-            L.top = 2;
+        if (err_val) |ev| {
+            if (L.stack.len > 1) {
+                L.stack[1] = ev;
+                L.top = 2;
+            } else {
+                L.top = 1;
+            }
         } else {
             L.top = 1;
+        }
+        if (L.top < L.stack.len) {
+            @memset(L.stack[L.top..], .{ .nil = {} });
         }
         L.status = old_status;
         return old_status;
     } else {
         L.top = 1;
+        if (L.top < L.stack.len) {
+            @memset(L.stack[L.top..], .{ .nil = {} });
+        }
         L.status = LUA_OK;
         return LUA_OK;
     }
@@ -3761,6 +3775,8 @@ pub fn lua_pcallk(L: *lua_State, nargs: i32, nresults: i32, errfunc: i32, ctx: l
         // shrink it back so subsequent calls don't inherit the overflow
         // headroom as their working limit (mirrors luaD_shrinkstack).
         shrinkStack(L);
+        L.err_name = null;
+        L.err_namewhat = null;
         if (old_ci) |ci| ci.ypcall = false;
         return LUA_ERRRUN;
     }
@@ -4587,15 +4603,24 @@ fn markThreadStack(L: *lua_State, gray_list: *std.ArrayList(*VMGCObject), th: *l
     const g = G(L);
     var opt_th_ci: ?*CallInfo = th.ci;
     var next_th_ci_func: ?usize = null;
+    var max_live: usize = th.top;
     while (opt_th_ci) |th_ci| {
         var s_idx = th_ci.func;
-        const top_limit = if (next_th_ci_func) |nfunc| nfunc else th.top;
+        const frame_top = if (isLua(th_ci, th)) th_ci.top else th.top;
+        const top_limit = if (next_th_ci_func) |nfunc| nfunc else @max(th.top, frame_top);
         const s_lim = @min(top_limit, th.stack.len);
+        if (s_lim > max_live) max_live = s_lim;
         while (s_idx < s_lim) : (s_idx += 1) {
             try markValue(L, gray_list, th.stack[s_idx]);
         }
         next_th_ci_func = th_ci.func;
         opt_th_ci = th_ci.previous;
+    }
+    for (th.tbclist.items) |abs| {
+        if (abs < th.stack.len) {
+            try markValue(L, gray_list, th.stack[abs]);
+            if (abs + 1 > max_live) max_live = abs + 1;
+        }
     }
     var curr_uv = th.openupval;
     while (curr_uv) |uv| {
@@ -4603,6 +4628,9 @@ fn markThreadStack(L: *lua_State, gray_list: *std.ArrayList(*VMGCObject), th: *l
             try markObject(L, gc, gray_list);
         }
         curr_uv = uv.next;
+    }
+    if (max_live < th.stack.len) {
+        @memset(th.stack[max_live..], .{ .nil = {} });
     }
 }
 
@@ -4777,7 +4805,7 @@ fn freeGCObject(L: *lua_State, gc: *VMGCObject) void {
             L.allocator.destroy(ts);
         },
         .thread => |th| {
-            closeupvals(th, 0, null) catch {};
+            luaF_closeupval(th, 0);
             if (g.thread_list == th) {
                 g.thread_list = th.twups;
             } else {
@@ -4932,15 +4960,24 @@ pub fn luaC_collectgarbage(L: *lua_State) !void {
     // UpVal still linked in L.openupval -> use-after-free in closeupvals.)
     var opt_ci: ?*CallInfo = L.ci;
     var next_ci_func: ?usize = null;
+    var max_live: usize = L.top;
     while (opt_ci) |ci| {
         var s_idx = ci.func;
-        const top_limit = if (next_ci_func) |nfunc| nfunc else L.top;
+        const frame_top = if (isLua(ci, L)) ci.top else L.top;
+        const top_limit = if (next_ci_func) |nfunc| nfunc else @max(L.top, frame_top);
         const s_lim = @min(top_limit, L.stack.len);
+        if (s_lim > max_live) max_live = s_lim;
         while (s_idx < s_lim) : (s_idx += 1) {
             try markValue(L, &gray_list, L.stack[s_idx]);
         }
         next_ci_func = ci.func;
         opt_ci = ci.previous;
+    }
+    for (L.tbclist.items) |abs| {
+        if (abs < L.stack.len) {
+            try markValue(L, &gray_list, L.stack[abs]);
+            if (abs + 1 > max_live) max_live = abs + 1;
+        }
     }
     var curr_uv = L.openupval;
     while (curr_uv) |uv| {
@@ -4948,6 +4985,9 @@ pub fn luaC_collectgarbage(L: *lua_State) !void {
             try markObject(L, gc, &gray_list);
         }
         curr_uv = uv.next;
+    }
+    if (max_live < L.stack.len) {
+        @memset(L.stack[max_live..], .{ .nil = {} });
     }
 
     // Root 4b: The stack and open upvalues of the main thread (which is not

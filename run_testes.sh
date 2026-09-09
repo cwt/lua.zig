@@ -100,7 +100,7 @@ HEAVY_TESTS="verybig.lua big.lua constructs.lua sort.lua cstack.lua"
 T_TESTS="api.lua code.lua coroutine.lua gc.lua strings.lua memerr.lua tracegc.lua"
 
 # Tests that require the all.lua harness environment (coroutine wrapper, dynamic lib compilation, _port/_soft setup)
-STANDALONE_SKIP="attrib.lua big.lua files.lua literals.lua heavy.lua cstack.lua"
+STANDALONE_SKIP="attrib.lua big.lua files.lua literals.lua heavy.lua"
 
 # Store results in a temp file: each line is "test_name<TAB>status<TAB>detail"
 RESULTS_TMP=$(mktemp /tmp/luazig_results_XXXXXX)

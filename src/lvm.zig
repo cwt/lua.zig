@@ -836,8 +836,7 @@ pub fn run(L: *lua.lua_State, active_ci: *lua.CallInfo) anyerror!void {
                     ci.savedpc += 1;
                     narr += extra * (MAXARG_vC + 1);
                 }
-                const shift = @as(u6, @intCast(@min(vB - 1, 63)));
-                const nrec = if (vB > 0) @as(usize, 1) << shift else 0;
+                const nrec = if (vB > 0) @as(usize, 1) << @as(u6, @intCast(@min(vB - 1, 63))) else 0;
                 const tab = try ltable.createTable(L.allocator, narr, nrec);
                 try lua.registerGC(L, tab);
                 L.stack[ra_idx] = .{ .table = tab };

@@ -52,6 +52,7 @@ fn luaB_auxwrap(L: *lua.lua_State) anyerror!i32 {
         var stat = lua.lua_status(co);
         if (stat != lua.LUA_OK and stat != lua.LUA_YIELD) {
             stat = lua.lua_closethread(co, L);
+            lua.lua_xmove(co, L, 1);
         }
         if (stat != lua.LUA_ERRMEM and lua.lua_type(L, -1) == lua.LUA_TSTRING) {
             lauxlib.luaL_where(L, 1);

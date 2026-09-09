@@ -69,7 +69,7 @@ pub fn build(b: *std.Build) void {
         .root_module = root_module,
     });
     exe.lto = if (use_lto) .thin else .none;
-    exe.root_module.strip = true;
+    exe.root_module.strip = (optimize != .Debug);
 
     b.installArtifact(exe);
 
@@ -78,7 +78,7 @@ pub fn build(b: *std.Build) void {
         .root_module = root_module,
     });
     lib.lto = if (use_lto) .thin else .none;
-    lib.root_module.strip = true;
+    lib.root_module.strip = (optimize != .Debug);
 
     b.installArtifact(lib);
 
