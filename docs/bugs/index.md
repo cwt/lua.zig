@@ -197,7 +197,7 @@ timestamp: '2026-09-08T21:20:00Z'
 | [BUG-168](168.md) | `lua.zig`/`corolib.zig`: double-free / abort when a `__close` metamethod calls `coroutine.close` on the thread being closed (coroutine.lua:174-187) | `CRITICAL` | ✅ FIXED |
 | [BUG-169](169.md) | `lua.zig`: `LUA_GCSTEP` runs a full synchronous collection every call, so `gc.lua:71` step-counting (`dosteps(10) < dosteps(2)`) diverges from the reference | `MED` | ✅ FIXED |
 | [BUG-170](170.md) | `luazig.zig`: `LUA_READLINELIB` (5.5.1) readline-library loading + warning not implemented — main.lua:206 fails | `MED` | ✅ FIXED |
-| [BUG-171](171.md) | `lparser.zig`/`lvm.zig`: local-assigned-at-declaration self-capture upvalue reads the pre-assignment value (C reference shares the cell) | `HIGH` | ⏳ OPEN |
+| [BUG-171](171.md) | FALSE POSITIVE: assigned-at-declaration self-capture (`local co = f(function() ... co ... end)`) refers to the global per Lua visibility rules — luazig matches the reference | `HIGH` | ❌ FALSE POSITIVE |
 | [BUG-172](172.md) | `lua.zig`/`ltable.zig`: weak-key table element count diverges after collection — gc.lua:249 fails | `HIGH` | ⏳ OPEN |
 
 ## Systematic Bug Audits

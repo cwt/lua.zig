@@ -6,6 +6,18 @@ tags: [log, changelog]
 timestamp: 2026-09-08T21:20:00Z
 ---
 
+## 2026-09-09 — BUG-171 marked FALSE POSITIVE (upvalue self-capture)
+
+- **Investigated & Closed as FALSE POSITIVE** (`docs/bugs/171.md`): the
+  reported `local co = f(function() ... co ... end)` nil capture is the
+  documented Lua visibility rule (Reference Manual §3.5: a local's scope
+  begins at the first statement after its declaration; PiL §6.2's
+  `local f = function() f() end` gotcha) — the inner name refers to the
+  *global*, exactly like the C reference. Verified with three semantic probes
+  (global reference, `local f; f = ...` upvalue, coroutine self-reference);
+  luazig matches all three. The second original repro was a typo in the repro
+  script (missing call parentheses). No code change.
+
 ## 2026-09-09 — Fix BUG-170: warning state machine + LUA_READLINELIB loading
 
 - **Bug Fixed**: `BUG-170` (MED) — the 5.5.1 `LUA_READLINELIB` feature was
