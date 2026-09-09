@@ -32,7 +32,8 @@ stale_after: 2026-12-31T00:00:00Z
 | Root-cause investigation | ✅ DONE (2026-09-09, machine-confirmed via `perf`) |
 | P1 (GC check sites) | ✅ DONE (2026-09-09) — 425B → 397B, suite 20/0/0 |
 | P2 (loop-local pc + hookmask) | ✅ DONE (2026-09-10) — 14.66s wall; instr count 403B (see P2 note) |
-| P3–P4 | ⏳ PLANNED, not started |
+| P3 (`getLibm` pointer) | ✅ DONE (2026-09-10) — 403B → 394B, 13.8s wall |
+| P4 (`luaL_checknumber`) | ⏳ PLANNED — re-measure after P1–P3 |
 | Tracking | [BUG-174](bugs/174.md) |
 
 ## Benchmark
@@ -219,15 +220,29 @@ its C-call plumbing.
   4.7KB `lvm.run` frame (RC1) remains; making the backend pin the loop
   state is the deeper follow-up (see "Explicitly NOT doing").
 
-### P3 — `getLibm()` returns `*const Libm` instead of a 112-byte value
+### P3 — `getLibm()` returns `*const Libm` instead of a 112-byte value ✅ DONE (2026-09-10)
 
-- **File:** `src/libm.zig` (~10 lines; call sites unchanged — Zig
-  auto-derefs `m.log(x)` on a `*const Libm`).
-- **What:** keep one lazily-resolved static `Libm` (DynLib resolve +
-  fallback, as today); `pub fn getLibm() *const Libm { ensureResolved();
-  return &the_static; }`.
-- **Expected:** −10B (~0.2s) + removes a spill-pressure source from the
-  big frame. **Risk:** NONE (no semantic change).
+- **Implemented** (`src/libm.zig`, ~50-line diff; all call sites
+  unchanged — Zig auto-derefs `m.log(x)` on a `*const Libm`):
+  - `getLibm()` now returns `*const Libm`, pointing at a
+    process-lifetime singleton instead of copying the 14-function-pointer
+    (112-byte) struct by value on every call.
+  - Storage: a mutable global `libm_resolved` (filled once by
+    `resolve()`, gated by a `libm_resolved_ok` flag) and a `const`
+    readonly global `libm_fallback` (wired to the std.math fallbacks).
+    Both live at fixed addresses, so `getLibm` just hands out a
+    pointer to one of them.
+  - `resolve()` fills `libm_resolved` in place and returns `bool`
+    (previously returned `?Libm` by value + a separate `fallback()`);
+    the old `libm_cache: ?Libm` optional-global is gone.
+- **Measured result:** pi 403B → **394B** instructions (−9B, matching the
+  plan's −10B), wall 14.6s → **13.8s** (~1.69× C). A hot caller like
+  `math.log` now loads a single 8-byte pointer and reads only the one
+  function pointer it needs, instead of paying the 112-byte copy + spills
+  in every invocation. `libm.getLibm` no longer appears as a frame in the
+  symbolized profile (was 0.75% of samples pre-P3). Output byte-identical
+  to the C reference; 182/182 unit tests, 0 leaks; upstream suite
+  20 PASS / 0 FAIL / 0 CRASH.
 
 ### P4 — `luaL_checknumber` (defer; re-measure after P1–P3)
 
@@ -250,7 +265,8 @@ its C-call plumbing.
    see the P1 tooling note) after each item.
 3. Benchmark: `time ./zig-out/bin/luazig tests/pi-5.5.lua` and
    `perf stat -e instructions` — record per step (history: 425B/15.5s
-   pre-P1 → **397B/15.2s post-P1**; C reference: 192B / 8.2s).
+   pre-P1 → **397B/15.2s post-P1** → 403B/14.6s post-P2 → **394B/13.8s
+   post-P3**; C reference: 192B / 8.2s).
 4. After P1 + P2: full upstream `lua/testes` suite via `./run_testes.sh`
    (must stay 20 PASS / 0 FAIL / 0 CRASH; `cstack` needs CWD
    `lua/testes` for the pure-Lua `tracegc.lua` fallback — a standalone run
@@ -264,11 +280,18 @@ its C-call plumbing.
 ## Expected Outcome
 
 - P1 landed at 425B → **397B** (15.2s), confirming the −30B estimate for
-  RC2. Remaining gap vs C (192B): RC1 frame/savedpc traffic (~−60B
-  expected from P2), RC4 `getLibm` (−10B from P3), RC3 checknumber
-  (re-measure for P4). Projected post-P3: **~320–340B ≈ 11–12s ≈ 1.3–1.4×
-  C** without any data-layout or opcode-semantics changes. Full parity
-  needs deeper register-pinning work (second pass, not planned here).
+  RC2. P2 (loop-local `pc`/`hookmask`) improved wall time (14.6s) but
+  *raised* the instruction count to **403B** — the per-arm sync/reload
+  sites outweighed the back-edge saving in raw instructions, and the 4.7KB
+  `lvm.run` frame (RC1) is still the dominant term. P3 (`getLibm` pointer)
+  landed at 403B → **394B** (13.8s, ~1.69× C), confirming the −10B RC4
+  estimate.
+- Remaining levers, in order: P4 (`luaL_checknumber`, re-measure now that
+  P1–P3 have cut the frame), and a deeper register-pinning pass on the
+  interpreter frame to attack RC1 (out of the minimal-change scope). The
+  original "425B → ~310–330B / ~1.3–1.4× C" projection was optimistic; the
+  post-P3 state is **394B / 13.8s ≈ 1.69× C** (vs 192B / 8.2s for the C
+  reference). Full parity needs the RC1 frame-pinning follow-up.
 
 ## Related
 

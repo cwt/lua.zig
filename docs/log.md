@@ -3,8 +3,31 @@ type: lessons_learned
 title: Modification Log
 description: Running chronological log of bundle modifications and significant changes.
 tags: [log, changelog]
-timestamp: 2026-09-09T23:55:00Z
+timestamp: 2026-09-10T23:55:00Z
 ---
+
+## 2026-09-10 — P3 (BUG-174): `libm.getLibm()` returns a pointer, not a 112-byte value
+
+- **Change** (`src/libm.zig` only; all call sites unchanged — Zig
+  auto-derefs `m.log(x)` on a `*const Libm`): `getLibm()` now returns
+  `*const Libm`, pointing at a process-lifetime singleton instead of
+  copying the 14-function-pointer (112-byte) struct by value on every
+  call.
+  - Storage: a mutable global `libm_resolved` (filled once by
+    `resolve()`, gated by a `libm_resolved_ok` flag) and a `const`
+    readonly global `libm_fallback` (wired to the std.math fallbacks).
+    Both live at fixed addresses, so `getLibm` just hands out a pointer
+    to one of them. The old `libm_cache: ?Libm` optional-global and the
+    by-value `fallback()` are gone; `resolve()` now fills
+    `libm_resolved` in place and returns `bool`.
+- **Measured:** pi-5.5 403B → **394B** instructions (−9B, matching the
+  plan's −10B), wall 14.6s → **13.8s** (~1.69× C). `libm.getLibm` no
+  longer appears as a frame in the symbolized profile (was 0.75% of
+  samples pre-P3). Output byte-identical to the C reference; 182/182
+  unit tests, 0 leaks; upstream suite 20 PASS / 0 FAIL / 0 CRASH.
+- A hot caller like `math.log` now loads a single 8-byte pointer and
+  reads only the one function pointer it needs, instead of paying the
+  112-byte copy + spills in every invocation.
 
 ## 2026-09-10 — P2 (BUG-174): loop-local `pc` + hoisted `hookmask` in the VM
 
