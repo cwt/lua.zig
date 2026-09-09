@@ -6,6 +6,32 @@ tags: [log, changelog]
 timestamp: 2026-09-09T23:55:00Z
 ---
 
+## 2026-09-10 — P2 (BUG-174): loop-local `pc` + hoisted `hookmask` in the VM
+
+- **Change** (`src/lvm.zig` `run` only): replaced the per-instruction
+  `ci.savedpc` memory read/write with a loop-local `var pc`, and the
+  per-instruction `L.hookmask` load with a hoisted `var hookmask`,
+  mirroring the C reference's local `Instruction *pc` / `trap`
+  (lua/lvm.c). `ci.savedpc` is now synced (a) at the top of each of the
+  57 error-capable opcode arms and (b) at every frame switch
+  (`pc = ci.savedpc` restart) and the defensive loop-end; `hookmask` is
+  reloaded after the user-code sites (traceexec, `precall`/`poscall`,
+  `closeupvals`/`checkclosemth`, `luaV_concat`, metamethod helpers,
+  TAILCALL new-frame entry). `docondjump` reworked to be pc-based
+  (returns the new pc) with 15 call sites updated; JMP/TESTSET/
+  FORPREP/FORLOOP/TFORPREP/TFORLOOP now update `pc` locally.
+- **Measured:** pi-5.5 wall 15.2s → **14.6s** (~1.78× C). Back-edge is
+  now a register compare + register hook check (no per-instruction
+  savedpc/g/hookmask traffic). Output byte-identical to the C reference;
+  182/182 unit tests, 0 leaks; upstream suite 20 PASS / 0 FAIL / 0 CRASH.
+- **Note:** instruction count went **up** (397B → 403B) — the ~5 arm-top
+  syncs + ~7 hookmask reloads executed per pi iteration outweigh the
+  back-edge saving in raw instructions, though wall time still improved
+  (the removed traffic was the memory-heavy part). The plan's −40–60B
+  estimate assumed the 4.7KB frame would shrink and loop state would pin
+  in callee-saved registers; it did not in this toolchain. RC1 remains
+  the dominant term (deeper follow-up, out of the minimal-change scope).
+
 ## 2026-09-09 — P1 (BUG-174): per-instruction GC check moved to the reference's object-registration sites
 
 - **Change**: `lvm.zig` no longer checks `g.gc_count > g.gc_threshold` on

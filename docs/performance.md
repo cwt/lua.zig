@@ -30,8 +30,9 @@ stale_after: 2026-12-31T00:00:00Z
 | Part | State |
 |------|-------|
 | Root-cause investigation | ✅ DONE (2026-09-09, machine-confirmed via `perf`) |
-| P1 (GC check sites) | ✅ DONE (2026-09-09) — 425B → 397B instructions, suite 20/0/0 |
-| P2–P4 | ⏳ PLANNED, not started |
+| P1 (GC check sites) | ✅ DONE (2026-09-09) — 425B → 397B, suite 20/0/0 |
+| P2 (loop-local pc + hookmask) | ✅ DONE (2026-09-10) — 14.66s wall; instr count 403B (see P2 note) |
+| P3–P4 | ⏳ PLANNED, not started |
 | Tracking | [BUG-174](bugs/174.md) |
 
 ## Benchmark
@@ -185,33 +186,38 @@ its C-call plumbing.
   Judge by exit code / `zig build test --summary all`
   ("9/9 steps succeeded; 182/182 tests passed").
 
-### P2 — Loop-local `savedpc` + hoisted `hookmask` in `run`
+### P2 — Loop-local `savedpc` + hoisted `hookmask` in `run` ✅ DONE (2026-09-10)
 
-- **File:** `src/lvm.zig` (`run` only, ~40–60 line diff).
-- **What** (mirror C's register-`pc` + `savepc`/`updatetrap` pattern,
-  `lua/lvm.c:1130–1180`):
-  - `var pc = ci.savedpc;` → `while (pc < code.len)`, `instruction =
-    code[pc]; pc += 1;`.
-  - `var hookmask = L.hookmask;` checked locally; reloaded at the C
-    `updatetrap` sites only (after JMP, after call/return, at Protect
-    sites) — nested `debug.sethook` still works.
-  - **Sync audit** — `ci.savedpc = pc;` immediately before:
-    - every `try <helper>` in an opcode body (GET\*/SET\*/SELF/
-      GETFIELD/CONCAT/CALL/TAILCALL/CLOSE/NEWTABLE/CLOSURE/…);
-    - every `return error.*` / `luaG_runerror` exit from `run`
-      (error-line reporting reads `ci.savedpc` via `luaG_errormsg` /
-      `luaG_getfuncline`);
-    - `precover` / `closeupvals` boundaries; resume/yield points;
-      coroutine close paths.
-  - The hot arithmetic + `JMP` path then has **zero** savedpc memory
-    traffic; back-edge becomes a register-register compare.
-- **Expected:** −40–60B (~0.8–1.2s); likely shrinks the 4.7KB frame and
-  lets the backend pin loop state in callee-saved registers (acceptance
-  signal: re-disasm the back-edge — the `movq -0x440(%rbp)` g-reload and
-  `0x18(%r15)` savedpc traffic must be gone).
-- **Risk:** MED — the sync audit is the correctness-critical part.
-  Tripwires: `locals.lua` (TBC/precover), pcall/coroutine upstream tests,
-  all 131 unit tests, 0 leaks.
+- **Implemented** (`src/lvm.zig` only):
+  - `var pc = ci.savedpc;` + `var hookmask = L.hookmask;` loop locals
+    (mirror of the C reference's local `Instruction *pc` / `trap`); the
+    back-edge is now a register compare + register hook check — no
+    per-instruction `ci.savedpc`/`L.hookmask`/`g` traffic.
+  - `ci.savedpc = pc;` sync at the top of every error-capable arm (57
+    arms) + before the RETURN-yield rewind + at every frame switch
+    (`pc = ci.savedpc` restart) + defensive loop-end sync.
+  - `hookmask = L.hookmask;` reload after user-code sites: traceexec,
+    `precall`/`poscall`, `closeupvals`/`checkclosemth`, `luaV_concat`,
+    metamethod-dispatch helpers, TAILCALL new-frame entry. Pure
+    arithmetic/jump instructions cost nothing (jumps cannot run user
+    code, matching the C `dojump` rationale for this port, which has no
+    signal→trap path).
+  - `docondjump` reworked to be pc-based (returns the new pc); 15 call
+    sites updated; JMP/TESTSET/FORPREP/FORLOOP/TFORPREP/TFORLOOP
+    arms now update `pc` locally.
+- **Measured result:** pi wall 15.2s → **14.66s** (~1.79× C); output
+  byte-identical; 182/182 unit tests + 20/0/0 upstream suite.
+  Back-edge acceptance signal met: disasm shows register-based loop
+  guard (`jae`), register hook check (`testb`), no per-instruction
+  savedpc store / g-reload.
+- **Instruction count went UP, not down** (397B → 403B, +1.6%): the
+  plan's −40–60B estimate assumed the big frame would shrink and loop
+  state would pin in callee-saved registers; it did not — the ~5
+  arm-top syncs + ~7 hookmask reloads executed per pi iteration
+  outweigh the back-edge saving in raw instructions (though wall time
+  improved, since the removed traffic was the memory-heavy part). The
+  4.7KB `lvm.run` frame (RC1) remains; making the backend pin the loop
+  state is the deeper follow-up (see "Explicitly NOT doing").
 
 ### P3 — `getLibm()` returns `*const Libm` instead of a 112-byte value
 

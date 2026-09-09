@@ -717,24 +717,34 @@ pub fn run(L: *lua.lua_State, active_ci: *lua.CallInfo) anyerror!void {
     var cl = L.stack[ci.func].function.?.lua;
     var proto = cl.p;
     var code = proto.code;
-    // The hook mask is re-read each instruction: a nested call (e.g.
-    // debug.sethook) can change it, and a hoisted copy would go stale
-    // across frame boundaries.
+    // P2 (BUG-174): loop-local `pc` and `hookmask`, mirroring the
+    // reference's local `Instruction *pc` / `trap` (lua/lvm.c). `ci.savedpc`
+    // is synced (a) before any helper that can raise a Lua error or run
+    // user code, and (b) at every frame switch, so error-line reporting,
+    // `luaG_traceexec`, `finishOp`, and coroutine re-entry always see a
+    // current value. The hook mask is reloaded after the same user-code
+    // sites (a hoisted copy would otherwise go stale when, e.g., a
+    // `__index` metamethod or a C function calls `debug.sethook`); pure
+    // jump/arithmetic instructions cannot change it, so they cost nothing.
     //
     // There is deliberately no per-instruction GC check here: the C
     // reference (lua/lvm.c) has none. GC stepping is conditional and runs
-    // only at object-registration sites (luaC_checkGC in this NEWTABLE /
-    // CONCAT / CLOSURE below, plus the luaC_condGC sites in the C API,
-    // lexer, and parser — P1 of docs/performance.md, BUG-174).
+    // only at object-registration sites (`luaC_checkGC` at the NEWTABLE /
+    // CONCAT / CLOSURE opcodes below, plus the `luaC_condGC` sites in the
+    // C API, lexer, and parser — P1 of docs/performance.md, BUG-174).
+    var pc = ci.savedpc;
+    var hookmask = L.hookmask;
 
-    while (ci.savedpc < code.len) {
-        const instruction: Instruction = code[ci.savedpc];
+    while (pc < code.len) {
+        const instruction: Instruction = code[pc];
         const op = GET_OPCODE(instruction);
-        ci.savedpc += 1;
-        // The hook check must run after `savedpc` advances: luaG_traceexec
-        // reads the current pc as savedpc-1.
-        if (L.hookmask != 0) {
+        pc += 1;
+        // The hook check runs after `pc` advances: `luaG_traceexec`
+        // reports the current pc as savedpc-1, so sync before calling it.
+        if (hookmask != 0) {
+            ci.savedpc = pc;
             lua.luaG_traceexec(L);
+            hookmask = L.hookmask;
         }
         switch (op) {
             .MOVE => {
@@ -760,8 +770,8 @@ pub fn run(L: *lua.lua_State, active_ci: *lua.CallInfo) anyerror!void {
             },
             .LOADKX => {
                 const a = GETARG_A(instruction);
-                const extra = code[ci.savedpc];
-                ci.savedpc += 1;
+                const extra = code[pc];
+                pc += 1;
                 const ax = GETARG_Ax(extra);
                 L.stack[ci.base + @as(usize, @intCast(a))] = proto.k[@as(usize, @intCast(ax))];
             },
@@ -772,7 +782,7 @@ pub fn run(L: *lua.lua_State, active_ci: *lua.CallInfo) anyerror!void {
             .LFALSESKIP => {
                 const a = GETARG_A(instruction);
                 L.stack[ci.base + @as(usize, @intCast(a))] = .{ .boolean = false };
-                ci.savedpc += 1;
+                pc += 1;
             },
             .LOADTRUE => {
                 const a = GETARG_A(instruction);
@@ -800,35 +810,44 @@ pub fn run(L: *lua.lua_State, active_ci: *lua.CallInfo) anyerror!void {
                 uv.v.* = L.stack[ci.base + a];
             },
             .GETTABUP => {
+                ci.savedpc = pc; // P2: sync for the arm's error/reporting paths
                 const a = ci.base + @as(usize, @intCast(GETARG_A(instruction)));
                 const b = @as(usize, @intCast(GETARG_B(instruction)));
                 const c = @as(usize, @intCast(GETARG_C(instruction)));
                 const uv = cl.upvals[b].?;
                 const key = proto.k[c];
                 try ltm.luaV_gettable(L, uv.v, key, a);
+                hookmask = L.hookmask; // P2: user code may have run debug.sethook
             },
             .GETTABLE => {
+                ci.savedpc = pc; // P2: sync for the arm's error/reporting paths
                 const a = ci.base + @as(usize, @intCast(GETARG_A(instruction)));
                 const b = ci.base + @as(usize, @intCast(GETARG_B(instruction)));
                 const c = ci.base + @as(usize, @intCast(GETARG_C(instruction)));
                 const key = L.stack[c];
                 try ltm.luaV_gettable(L, &L.stack[b], key, a);
+                hookmask = L.hookmask; // P2: user code may have run debug.sethook
             },
             .GETI => {
+                ci.savedpc = pc; // P2: sync for the arm's error/reporting paths
                 const a = ci.base + @as(usize, @intCast(GETARG_A(instruction)));
                 const b = ci.base + @as(usize, @intCast(GETARG_B(instruction)));
                 const c = GETARG_C(instruction);
                 const int_key = lua.TValue{ .integer = c };
                 try ltm.luaV_gettable(L, &L.stack[b], int_key, a);
+                hookmask = L.hookmask; // P2: user code may have run debug.sethook
             },
             .GETFIELD => {
+                ci.savedpc = pc; // P2: sync for the arm's error/reporting paths
                 const a = ci.base + @as(usize, @intCast(GETARG_A(instruction)));
                 const b = ci.base + @as(usize, @intCast(GETARG_B(instruction)));
                 const c = @as(usize, @intCast(GETARG_C(instruction)));
                 const key = proto.k[c];
                 try ltm.luaV_gettable(L, &L.stack[b], key, a);
+                hookmask = L.hookmask; // P2: user code may have run debug.sethook
             },
             .SETTABUP => {
+                ci.savedpc = pc; // P2: sync for the arm's error/reporting paths
                 const a = @as(usize, @intCast(GETARG_A(instruction)));
                 const b = @as(usize, @intCast(GETARG_B(instruction)));
                 const c = @as(usize, @intCast(GETARG_C(instruction)));
@@ -836,39 +855,47 @@ pub fn run(L: *lua.lua_State, active_ci: *lua.CallInfo) anyerror!void {
                 const key = proto.k[b];
                 const val = if (GETARG_k(instruction) != 0) proto.k[c] else L.stack[ci.base + c];
                 try ltm.luaV_settable(L, uv.v, key, val);
+                hookmask = L.hookmask; // P2: user code may have run debug.sethook
             },
             .SETTABLE => {
+                ci.savedpc = pc; // P2: sync for the arm's error/reporting paths
                 const a = ci.base + @as(usize, @intCast(GETARG_A(instruction)));
                 const b = ci.base + @as(usize, @intCast(GETARG_B(instruction)));
                 const c = @as(usize, @intCast(GETARG_C(instruction)));
                 const key = L.stack[b];
                 const val = if (GETARG_k(instruction) != 0) proto.k[c] else L.stack[ci.base + c];
                 try ltm.luaV_settable(L, &L.stack[a], key, val);
+                hookmask = L.hookmask; // P2: user code may have run debug.sethook
             },
             .SETI => {
+                ci.savedpc = pc; // P2: sync for the arm's error/reporting paths
                 const a = ci.base + @as(usize, @intCast(GETARG_A(instruction)));
                 const b = GETARG_B(instruction);
                 const c = @as(usize, @intCast(GETARG_C(instruction)));
                 const val = if (GETARG_k(instruction) != 0) proto.k[c] else L.stack[ci.base + c];
                 const int_key = lua.TValue{ .integer = b };
                 try ltm.luaV_settable(L, &L.stack[a], int_key, val);
+                hookmask = L.hookmask; // P2: user code may have run debug.sethook
             },
             .SETFIELD => {
+                ci.savedpc = pc; // P2: sync for the arm's error/reporting paths
                 const a = ci.base + @as(usize, @intCast(GETARG_A(instruction)));
                 const b = @as(usize, @intCast(GETARG_B(instruction)));
                 const c = @as(usize, @intCast(GETARG_C(instruction)));
                 const key = proto.k[b];
                 const val = if (GETARG_k(instruction) != 0) proto.k[c] else L.stack[ci.base + c];
                 try ltm.luaV_settable(L, &L.stack[a], key, val);
+                hookmask = L.hookmask; // P2: user code may have run debug.sethook
             },
             .NEWTABLE => {
+                ci.savedpc = pc; // P2: sync for the arm's error/reporting paths
                 const ra_idx = ci.base + @as(usize, @intCast(GETARG_A(instruction)));
                 const vB = @as(usize, @intCast(GETARG_vB(instruction)));
                 const vC = @as(usize, @intCast(GETARG_vC(instruction)));
                 var narr = vC;
                 if (GETARG_k(instruction) != 0) {
-                    const extra = @as(usize, @intCast(GETARG_Ax(code[ci.savedpc])));
-                    ci.savedpc += 1;
+                    const extra = @as(usize, @intCast(GETARG_Ax(code[pc])));
+                    pc += 1;
                     narr += extra * (MAXARG_vC + 1);
                 }
                 const nrec = if (vB > 0) @as(usize, 1) << @as(u6, @intCast(@min(vB - 1, 63))) else 0;
@@ -882,11 +909,13 @@ pub fn run(L: *lua.lua_State, active_ci: *lua.CallInfo) anyerror!void {
                 try lua.luaC_checkGC(L, ra_idx + 1);
             },
             .SELF => {
+                ci.savedpc = pc; // P2: sync for the arm's error/reporting paths
                 const ra_idx = ci.base + @as(usize, @intCast(GETARG_A(instruction)));
                 const rb_idx = ci.base + @as(usize, @intCast(GETARG_B(instruction)));
                 const key = proto.k[@as(usize, @intCast(GETARG_C(instruction)))];
                 L.stack[ra_idx + 1] = L.stack[rb_idx];
                 try ltm.luaV_gettable(L, &L.stack[rb_idx], key, ra_idx);
+                hookmask = L.hookmask; // P2: user code may have run debug.sethook
             },
             .ADDI => {
                 const ra = ci.base + @as(usize, @intCast(GETARG_A(instruction)));
@@ -898,7 +927,7 @@ pub fn run(L: *lua.lua_State, active_ci: *lua.CallInfo) anyerror!void {
                     } else {
                         L.stack[ra] = .{ .number = nv.number + @as(f64, @floatFromInt(sc)) };
                     }
-                    ci.savedpc += 1;
+                    pc += 1;
                 }
             },
             .ADDK => {
@@ -911,7 +940,7 @@ pub fn run(L: *lua.lua_State, active_ci: *lua.CallInfo) anyerror!void {
                     } else if (nv.isNumberValue() and rc.isNumberValue()) {
                         L.stack[ra] = .{ .number = nv.toFloat() + rc.toFloat() };
                     }
-                    ci.savedpc += 1;
+                    pc += 1;
                 }
             },
             .SUBK => {
@@ -924,7 +953,7 @@ pub fn run(L: *lua.lua_State, active_ci: *lua.CallInfo) anyerror!void {
                     } else if (nv.isNumberValue() and rc.isNumberValue()) {
                         L.stack[ra] = .{ .number = nv.toFloat() - rc.toFloat() };
                     }
-                    ci.savedpc += 1;
+                    pc += 1;
                 }
             },
             .MULK => {
@@ -937,10 +966,11 @@ pub fn run(L: *lua.lua_State, active_ci: *lua.CallInfo) anyerror!void {
                     } else if (nv.isNumberValue() and rc.isNumberValue()) {
                         L.stack[ra] = .{ .number = nv.toFloat() * rc.toFloat() };
                     }
-                    ci.savedpc += 1;
+                    pc += 1;
                 }
             },
             .MODK => {
+                ci.savedpc = pc; // P2: sync for the arm's error/reporting paths
                 const ra = ci.base + @as(usize, @intCast(GETARG_A(instruction)));
                 const rb = L.stack[ci.base + @as(usize, @intCast(GETARG_B(instruction)))];
                 const rc = proto.k[@as(usize, @intCast(GETARG_C(instruction)))];
@@ -949,10 +979,10 @@ pub fn run(L: *lua.lua_State, active_ci: *lua.CallInfo) anyerror!void {
                         if (rc.integer == 0) return lua.luaG_runerror(L, "attempt to perform 'n%0'");
                         const r: i64 = if (rc.integer == -1) 0 else @rem(nv.integer, rc.integer);
                         L.stack[ra] = .{ .integer = if (r != 0 and (r ^ rc.integer) < 0) r + rc.integer else r };
-                        ci.savedpc += 1;
+                        pc += 1;
                     } else if (nv.isNumberValue() and rc.isNumberValue()) {
                         L.stack[ra] = .{ .number = numMod(nv.toFloat(), rc.toFloat()) };
-                        ci.savedpc += 1;
+                        pc += 1;
                     }
                 }
             },
@@ -963,7 +993,7 @@ pub fn run(L: *lua.lua_State, active_ci: *lua.CallInfo) anyerror!void {
                 if (toNumericNS(rb)) |nv| {
                     if (nv.isNumberValue() and rc.isNumberValue()) {
                         L.stack[ra] = .{ .number = libm.getLibm().pow(nv.toFloat(), rc.toFloat()) };
-                        ci.savedpc += 1;
+                        pc += 1;
                     }
                 }
             },
@@ -974,11 +1004,12 @@ pub fn run(L: *lua.lua_State, active_ci: *lua.CallInfo) anyerror!void {
                 if (toNumericNS(rb)) |nv| {
                     if (nv.isNumberValue() and rc.isNumberValue()) {
                         L.stack[ra] = .{ .number = nv.toFloat() / rc.toFloat() };
-                        ci.savedpc += 1;
+                        pc += 1;
                     }
                 }
             },
             .IDIVK => {
+                ci.savedpc = pc; // P2: sync for the arm's error/reporting paths
                 const ra = ci.base + @as(usize, @intCast(GETARG_A(instruction)));
                 const rb = L.stack[ci.base + @as(usize, @intCast(GETARG_B(instruction)))];
                 const rc = proto.k[@as(usize, @intCast(GETARG_C(instruction)))];
@@ -990,14 +1021,15 @@ pub fn run(L: *lua.lua_State, active_ci: *lua.CallInfo) anyerror!void {
                         const q: i64 = if (ic == -1) 0 -% ib else @divTrunc(ib, ic);
                         const r: i64 = if (ic == -1) 0 else @rem(ib, ic);
                         L.stack[ra] = .{ .integer = if (r == 0 or (ib >= 0) == (ic >= 0)) q else q - 1 };
-                        ci.savedpc += 1;
+                        pc += 1;
                     } else if (nv.isNumberValue() and rc.isNumberValue()) {
                         L.stack[ra] = .{ .number = @floor(nv.toFloat() / rc.toFloat()) };
-                        ci.savedpc += 1;
+                        pc += 1;
                     }
                 }
             },
             .BANDK => {
+                ci.savedpc = pc; // P2: sync for the arm's error/reporting paths
                 const ra = ci.base + @as(usize, @intCast(GETARG_A(instruction)));
                 const rb = L.stack[ci.base + @as(usize, @intCast(GETARG_B(instruction)))];
                 const rc = proto.k[@as(usize, @intCast(GETARG_C(instruction)))];
@@ -1006,11 +1038,12 @@ pub fn run(L: *lua.lua_State, active_ci: *lua.CallInfo) anyerror!void {
                         const ib = nv.toIntegerExactOpt() orelse return lua.luaG_tointerror(L, nv);
                         const ic = rc.toIntegerExactOpt() orelse return lua.luaG_tointerror(L, rc);
                         L.stack[ra] = .{ .integer = ib & ic };
-                        ci.savedpc += 1;
+                        pc += 1;
                     }
                 }
             },
             .BORK => {
+                ci.savedpc = pc; // P2: sync for the arm's error/reporting paths
                 const ra = ci.base + @as(usize, @intCast(GETARG_A(instruction)));
                 const rb = L.stack[ci.base + @as(usize, @intCast(GETARG_B(instruction)))];
                 const rc = proto.k[@as(usize, @intCast(GETARG_C(instruction)))];
@@ -1019,11 +1052,12 @@ pub fn run(L: *lua.lua_State, active_ci: *lua.CallInfo) anyerror!void {
                         const ib = nv.toIntegerExactOpt() orelse return lua.luaG_tointerror(L, nv);
                         const ic = rc.toIntegerExactOpt() orelse return lua.luaG_tointerror(L, rc);
                         L.stack[ra] = .{ .integer = ib | ic };
-                        ci.savedpc += 1;
+                        pc += 1;
                     }
                 }
             },
             .BXORK => {
+                ci.savedpc = pc; // P2: sync for the arm's error/reporting paths
                 const ra = ci.base + @as(usize, @intCast(GETARG_A(instruction)));
                 const rb = L.stack[ci.base + @as(usize, @intCast(GETARG_B(instruction)))];
                 const rc = proto.k[@as(usize, @intCast(GETARG_C(instruction)))];
@@ -1032,11 +1066,12 @@ pub fn run(L: *lua.lua_State, active_ci: *lua.CallInfo) anyerror!void {
                         const ib = nv.toIntegerExactOpt() orelse return lua.luaG_tointerror(L, nv);
                         const ic = rc.toIntegerExactOpt() orelse return lua.luaG_tointerror(L, rc);
                         L.stack[ra] = .{ .integer = ib ^ ic };
-                        ci.savedpc += 1;
+                        pc += 1;
                     }
                 }
             },
             .SHLI => {
+                ci.savedpc = pc; // P2: sync for the arm's error/reporting paths
                 const ra = ci.base + @as(usize, @intCast(GETARG_A(instruction)));
                 const rb = L.stack[ci.base + @as(usize, @intCast(GETARG_B(instruction)))];
                 const sc = GETARG_sC(instruction);
@@ -1044,11 +1079,12 @@ pub fn run(L: *lua.lua_State, active_ci: *lua.CallInfo) anyerror!void {
                     if (nv.isNumberValue()) {
                         const ib = nv.toIntegerExactOpt() orelse return lua.luaG_tointerror(L, nv);
                         L.stack[ra] = .{ .integer = lua.luaV_shift(sc, ib) };
-                        ci.savedpc += 1;
+                        pc += 1;
                     }
                 }
             },
             .SHRI => {
+                ci.savedpc = pc; // P2: sync for the arm's error/reporting paths
                 const ra = ci.base + @as(usize, @intCast(GETARG_A(instruction)));
                 const rb = L.stack[ci.base + @as(usize, @intCast(GETARG_B(instruction)))];
                 const sc = GETARG_sC(instruction);
@@ -1056,7 +1092,7 @@ pub fn run(L: *lua.lua_State, active_ci: *lua.CallInfo) anyerror!void {
                     if (nv.isNumberValue()) {
                         const ib = nv.toIntegerExactOpt() orelse return lua.luaG_tointerror(L, nv);
                         L.stack[ra] = .{ .integer = lua.luaV_shift(ib, -%sc) };
-                        ci.savedpc += 1;
+                        pc += 1;
                     }
                 }
             },
@@ -1066,7 +1102,7 @@ pub fn run(L: *lua.lua_State, active_ci: *lua.CallInfo) anyerror!void {
                 const rc = L.stack[ci.base + @as(usize, @intCast(GETARG_C(instruction)))];
                 if (rb == .integer and rc == .integer) {
                     L.stack[ra] = .{ .integer = rb.integer +% rc.integer };
-                    ci.savedpc += 1;
+                    pc += 1;
                 } else if (toNumericNS(rb)) |n1| {
                     if (toNumericNS(rc)) |n2| {
                         if (n1 == .integer and n2 == .integer) {
@@ -1074,7 +1110,7 @@ pub fn run(L: *lua.lua_State, active_ci: *lua.CallInfo) anyerror!void {
                         } else {
                             L.stack[ra] = .{ .number = asFloat(n1) + asFloat(n2) };
                         }
-                        ci.savedpc += 1;
+                        pc += 1;
                     }
                 }
             },
@@ -1084,7 +1120,7 @@ pub fn run(L: *lua.lua_State, active_ci: *lua.CallInfo) anyerror!void {
                 const rc = L.stack[ci.base + @as(usize, @intCast(GETARG_C(instruction)))];
                 if (rb == .integer and rc == .integer) {
                     L.stack[ra] = .{ .integer = rb.integer -% rc.integer };
-                    ci.savedpc += 1;
+                    pc += 1;
                 } else if (toNumericNS(rb)) |n1| {
                     if (toNumericNS(rc)) |n2| {
                         if (n1 == .integer and n2 == .integer) {
@@ -1092,7 +1128,7 @@ pub fn run(L: *lua.lua_State, active_ci: *lua.CallInfo) anyerror!void {
                         } else {
                             L.stack[ra] = .{ .number = asFloat(n1) - asFloat(n2) };
                         }
-                        ci.savedpc += 1;
+                        pc += 1;
                     }
                 }
             },
@@ -1102,7 +1138,7 @@ pub fn run(L: *lua.lua_State, active_ci: *lua.CallInfo) anyerror!void {
                 const rc = L.stack[ci.base + @as(usize, @intCast(GETARG_C(instruction)))];
                 if (rb == .integer and rc == .integer) {
                     L.stack[ra] = .{ .integer = rb.integer *% rc.integer };
-                    ci.savedpc += 1;
+                    pc += 1;
                 } else if (toNumericNS(rb)) |n1| {
                     if (toNumericNS(rc)) |n2| {
                         if (n1 == .integer and n2 == .integer) {
@@ -1110,11 +1146,12 @@ pub fn run(L: *lua.lua_State, active_ci: *lua.CallInfo) anyerror!void {
                         } else {
                             L.stack[ra] = .{ .number = asFloat(n1) * asFloat(n2) };
                         }
-                        ci.savedpc += 1;
+                        pc += 1;
                     }
                 }
             },
             .MOD => {
+                ci.savedpc = pc; // P2: sync for the arm's error/reporting paths
                 const ra = ci.base + @as(usize, @intCast(GETARG_A(instruction)));
                 const rb = L.stack[ci.base + @as(usize, @intCast(GETARG_B(instruction)))];
                 const rc = L.stack[ci.base + @as(usize, @intCast(GETARG_C(instruction)))];
@@ -1125,17 +1162,17 @@ pub fn run(L: *lua.lua_State, active_ci: *lua.CallInfo) anyerror!void {
                     }
                     const r: i64 = if (rc.integer == -1) 0 else @rem(rb.integer, rc.integer);
                     L.stack[ra] = .{ .integer = if (r != 0 and (r ^ rc.integer) < 0) r + rc.integer else r };
-                    ci.savedpc += 1;
+                    pc += 1;
                 } else if (toNumericNS(rb)) |n1| {
                     if (toNumericNS(rc)) |n2| {
                         if (n1 == .integer and n2 == .integer) {
                             if (n2.integer == 0) return lua.luaG_runerror(L, "attempt to perform 'n%0'");
                             const r: i64 = if (n2.integer == -1) 0 else @rem(n1.integer, n2.integer);
                             L.stack[ra] = .{ .integer = if (r != 0 and (r ^ n2.integer) < 0) r + n2.integer else r };
-                            ci.savedpc += 1;
+                            pc += 1;
                         } else {
                             L.stack[ra] = .{ .number = numMod(asFloat(n1), asFloat(n2)) };
-                            ci.savedpc += 1;
+                            pc += 1;
                         }
                     }
                 }
@@ -1147,7 +1184,7 @@ pub fn run(L: *lua.lua_State, active_ci: *lua.CallInfo) anyerror!void {
                 if (toNumericNS(rb)) |n1| {
                     if (toNumericNS(rc)) |n2| {
                         L.stack[ra] = .{ .number = libm.getLibm().pow(asFloat(n1), asFloat(n2)) };
-                        ci.savedpc += 1;
+                        pc += 1;
                     }
                 }
             },
@@ -1158,11 +1195,12 @@ pub fn run(L: *lua.lua_State, active_ci: *lua.CallInfo) anyerror!void {
                 if (toNumericNS(rb)) |n1| {
                     if (toNumericNS(rc)) |n2| {
                         L.stack[ra] = .{ .number = asFloat(n1) / asFloat(n2) };
-                        ci.savedpc += 1;
+                        pc += 1;
                     }
                 }
             },
             .IDIV => {
+                ci.savedpc = pc; // P2: sync for the arm's error/reporting paths
                 const ra = ci.base + @as(usize, @intCast(GETARG_A(instruction)));
                 const rb = L.stack[ci.base + @as(usize, @intCast(GETARG_B(instruction)))];
                 const rc = L.stack[ci.base + @as(usize, @intCast(GETARG_C(instruction)))];
@@ -1173,10 +1211,10 @@ pub fn run(L: *lua.lua_State, active_ci: *lua.CallInfo) anyerror!void {
                     const q: i64 = if (ic == -1) 0 -% ib else @divTrunc(ib, ic);
                     const r: i64 = if (ic == -1) 0 else @rem(ib, ic);
                     L.stack[ra] = .{ .integer = if (r == 0 or (ib >= 0) == (ic >= 0)) q else q - 1 };
-                    ci.savedpc += 1;
+                    pc += 1;
                 } else if (rb.isNumberValue() and rc.isNumberValue()) {
                     L.stack[ra] = .{ .number = @floor(rb.toFloat() / rc.toFloat()) };
-                    ci.savedpc += 1;
+                    pc += 1;
                 } else if (toNumericNS(rb)) |n1| {
                     if (toNumericNS(rc)) |n2| {
                         if (n1 == .integer and n2 == .integer) {
@@ -1186,15 +1224,16 @@ pub fn run(L: *lua.lua_State, active_ci: *lua.CallInfo) anyerror!void {
                             const q: i64 = if (ic == -1) 0 -% ib else @divTrunc(ib, ic);
                             const r: i64 = if (ic == -1) 0 else @rem(ib, ic);
                             L.stack[ra] = .{ .integer = if (r == 0 or (ib >= 0) == (ic >= 0)) q else q - 1 };
-                            ci.savedpc += 1;
+                            pc += 1;
                         } else {
                             L.stack[ra] = .{ .number = @floor(n1.toFloat() / n2.toFloat()) };
-                            ci.savedpc += 1;
+                            pc += 1;
                         }
                     }
                 }
             },
             .BAND => {
+                ci.savedpc = pc; // P2: sync for the arm's error/reporting paths
                 const ra = ci.base + @as(usize, @intCast(GETARG_A(instruction)));
                 const rb = L.stack[ci.base + @as(usize, @intCast(GETARG_B(instruction)))];
                 const rc = L.stack[ci.base + @as(usize, @intCast(GETARG_C(instruction)))];
@@ -1202,17 +1241,18 @@ pub fn run(L: *lua.lua_State, active_ci: *lua.CallInfo) anyerror!void {
                     const ib = rb.toIntegerExactOpt() orelse return lua.luaG_tointerror(L, rb);
                     const ic = rc.toIntegerExactOpt() orelse return lua.luaG_tointerror(L, rc);
                     L.stack[ra] = .{ .integer = ib & ic };
-                    ci.savedpc += 1;
+                    pc += 1;
                 } else if (toNumericNS(rb)) |n1| {
                     if (toNumericNS(rc)) |n2| {
                         const ib = n1.toIntegerExactOpt() orelse return lua.luaG_tointerror(L, n1);
                         const ic = n2.toIntegerExactOpt() orelse return lua.luaG_tointerror(L, n2);
                         L.stack[ra] = .{ .integer = ib & ic };
-                        ci.savedpc += 1;
+                        pc += 1;
                     }
                 }
             },
             .BOR => {
+                ci.savedpc = pc; // P2: sync for the arm's error/reporting paths
                 const ra = ci.base + @as(usize, @intCast(GETARG_A(instruction)));
                 const rb = L.stack[ci.base + @as(usize, @intCast(GETARG_B(instruction)))];
                 const rc = L.stack[ci.base + @as(usize, @intCast(GETARG_C(instruction)))];
@@ -1220,17 +1260,18 @@ pub fn run(L: *lua.lua_State, active_ci: *lua.CallInfo) anyerror!void {
                     const ib = rb.toIntegerExactOpt() orelse return lua.luaG_tointerror(L, rb);
                     const ic = rc.toIntegerExactOpt() orelse return lua.luaG_tointerror(L, rc);
                     L.stack[ra] = .{ .integer = ib | ic };
-                    ci.savedpc += 1;
+                    pc += 1;
                 } else if (toNumericNS(rb)) |n1| {
                     if (toNumericNS(rc)) |n2| {
                         const ib = n1.toIntegerExactOpt() orelse return lua.luaG_tointerror(L, n1);
                         const ic = n2.toIntegerExactOpt() orelse return lua.luaG_tointerror(L, n2);
                         L.stack[ra] = .{ .integer = ib | ic };
-                        ci.savedpc += 1;
+                        pc += 1;
                     }
                 }
             },
             .BXOR => {
+                ci.savedpc = pc; // P2: sync for the arm's error/reporting paths
                 const ra = ci.base + @as(usize, @intCast(GETARG_A(instruction)));
                 const rb = L.stack[ci.base + @as(usize, @intCast(GETARG_B(instruction)))];
                 const rc = L.stack[ci.base + @as(usize, @intCast(GETARG_C(instruction)))];
@@ -1238,17 +1279,18 @@ pub fn run(L: *lua.lua_State, active_ci: *lua.CallInfo) anyerror!void {
                     const ib = rb.toIntegerExactOpt() orelse return lua.luaG_tointerror(L, rb);
                     const ic = rc.toIntegerExactOpt() orelse return lua.luaG_tointerror(L, rc);
                     L.stack[ra] = .{ .integer = ib ^ ic };
-                    ci.savedpc += 1;
+                    pc += 1;
                 } else if (toNumericNS(rb)) |n1| {
                     if (toNumericNS(rc)) |n2| {
                         const ib = n1.toIntegerExactOpt() orelse return lua.luaG_tointerror(L, n1);
                         const ic = n2.toIntegerExactOpt() orelse return lua.luaG_tointerror(L, n2);
                         L.stack[ra] = .{ .integer = ib ^ ic };
-                        ci.savedpc += 1;
+                        pc += 1;
                     }
                 }
             },
             .SHL => {
+                ci.savedpc = pc; // P2: sync for the arm's error/reporting paths
                 const ra = ci.base + @as(usize, @intCast(GETARG_A(instruction)));
                 const rb = L.stack[ci.base + @as(usize, @intCast(GETARG_B(instruction)))];
                 const rc = L.stack[ci.base + @as(usize, @intCast(GETARG_C(instruction)))];
@@ -1256,17 +1298,18 @@ pub fn run(L: *lua.lua_State, active_ci: *lua.CallInfo) anyerror!void {
                     const ib = rb.toIntegerExactOpt() orelse return lua.luaG_tointerror(L, rb);
                     const ic = rc.toIntegerExactOpt() orelse return lua.luaG_tointerror(L, rc);
                     L.stack[ra] = .{ .integer = lua.luaV_shift(ib, ic) };
-                    ci.savedpc += 1;
+                    pc += 1;
                 } else if (toNumericNS(rb)) |n1| {
                     if (toNumericNS(rc)) |n2| {
                         const ib = n1.toIntegerExactOpt() orelse return lua.luaG_tointerror(L, n1);
                         const ic = n2.toIntegerExactOpt() orelse return lua.luaG_tointerror(L, n2);
                         L.stack[ra] = .{ .integer = lua.luaV_shift(ib, ic) };
-                        ci.savedpc += 1;
+                        pc += 1;
                     }
                 }
             },
             .SHR => {
+                ci.savedpc = pc; // P2: sync for the arm's error/reporting paths
                 const ra = ci.base + @as(usize, @intCast(GETARG_A(instruction)));
                 const rb = L.stack[ci.base + @as(usize, @intCast(GETARG_B(instruction)))];
                 const rc = L.stack[ci.base + @as(usize, @intCast(GETARG_C(instruction)))];
@@ -1274,55 +1317,64 @@ pub fn run(L: *lua.lua_State, active_ci: *lua.CallInfo) anyerror!void {
                     const ib = rb.toIntegerExactOpt() orelse return lua.luaG_tointerror(L, rb);
                     const ic = rc.toIntegerExactOpt() orelse return lua.luaG_tointerror(L, rc);
                     L.stack[ra] = .{ .integer = lua.luaV_shift(ib, -%ic) };
-                    ci.savedpc += 1;
+                    pc += 1;
                 } else if (toNumericNS(rb)) |n1| {
                     if (toNumericNS(rc)) |n2| {
                         const ib = n1.toIntegerExactOpt() orelse return lua.luaG_tointerror(L, n1);
                         const ic = n2.toIntegerExactOpt() orelse return lua.luaG_tointerror(L, n2);
                         L.stack[ra] = .{ .integer = lua.luaV_shift(ib, -%ic) };
-                        ci.savedpc += 1;
+                        pc += 1;
                     }
                 }
             },
             .MMBIN => {
-                if (ci.savedpc < 2) return error.BadBytecode;
+                ci.savedpc = pc; // P2: sync for the arm's error/reporting paths
+                if (pc < 2) return error.BadBytecode;
                 const ra_idx = ci.base + @as(usize, @intCast(GETARG_A(instruction)));
                 const rb_idx = ci.base + @as(usize, @intCast(GETARG_B(instruction)));
                 const tm = @as(ltm.TMS, @enumFromInt(GETARG_C(instruction)));
-                const prev_inst = code[ci.savedpc - 2];
+                const prev_inst = code[pc - 2];
                 const dest_idx = ci.base + @as(usize, @intCast(GETARG_A(prev_inst)));
                 try ltm.luaT_trybinTM(L, &L.stack[ra_idx], &L.stack[rb_idx], dest_idx, tm);
+                hookmask = L.hookmask; // P2: user code may have run debug.sethook
             },
             .MMBINI => {
-                if (ci.savedpc < 2) return error.BadBytecode;
+                ci.savedpc = pc; // P2: sync for the arm's error/reporting paths
+                if (pc < 2) return error.BadBytecode;
                 const ra_idx = ci.base + @as(usize, @intCast(GETARG_A(instruction)));
                 const imm = GETARG_sB(instruction);
                 const tm = @as(ltm.TMS, @enumFromInt(GETARG_C(instruction)));
                 const flip = GETARG_k(instruction) != 0;
-                const prev_inst = code[ci.savedpc - 2];
+                const prev_inst = code[pc - 2];
                 const dest_idx = ci.base + @as(usize, @intCast(GETARG_A(prev_inst)));
                 const aux_val = lua.TValue{ .integer = imm };
                 if (flip) {
                     try ltm.luaT_trybinTM(L, &aux_val, &L.stack[ra_idx], dest_idx, tm);
+                    hookmask = L.hookmask; // P2: user code may have run debug.sethook
                 } else {
                     try ltm.luaT_trybinTM(L, &L.stack[ra_idx], &aux_val, dest_idx, tm);
+                    hookmask = L.hookmask; // P2: user code may have run debug.sethook
                 }
             },
             .MMBINK => {
-                if (ci.savedpc < 2) return error.BadBytecode;
+                ci.savedpc = pc; // P2: sync for the arm's error/reporting paths
+                if (pc < 2) return error.BadBytecode;
                 const ra_idx = ci.base + @as(usize, @intCast(GETARG_A(instruction)));
                 const imm = proto.k[@as(usize, @intCast(GETARG_B(instruction)))];
                 const tm = @as(ltm.TMS, @enumFromInt(GETARG_C(instruction)));
                 const flip = GETARG_k(instruction) != 0;
-                const prev_inst = code[ci.savedpc - 2];
+                const prev_inst = code[pc - 2];
                 const dest_idx = ci.base + @as(usize, @intCast(GETARG_A(prev_inst)));
                 if (flip) {
                     try ltm.luaT_trybinTM(L, &imm, &L.stack[ra_idx], dest_idx, tm);
+                    hookmask = L.hookmask; // P2: user code may have run debug.sethook
                 } else {
                     try ltm.luaT_trybinTM(L, &L.stack[ra_idx], &imm, dest_idx, tm);
+                    hookmask = L.hookmask; // P2: user code may have run debug.sethook
                 }
             },
             .UNM => {
+                ci.savedpc = pc; // P2: sync for the arm's error/reporting paths
                 const ra = ci.base + @as(usize, @intCast(GETARG_A(instruction)));
                 const rb_idx = ci.base + @as(usize, @intCast(GETARG_B(instruction)));
                 const rb = L.stack[rb_idx];
@@ -1338,9 +1390,11 @@ pub fn run(L: *lua.lua_State, active_ci: *lua.CallInfo) anyerror!void {
                     }
                 } else {
                     try ltm.luaT_trybinTM(L, &L.stack[rb_idx], &L.stack[rb_idx], ra, .UNM);
+                    hookmask = L.hookmask; // P2: user code may have run debug.sethook
                 }
             },
             .BNOT => {
+                ci.savedpc = pc; // P2: sync for the arm's error/reporting paths
                 const ra = ci.base + @as(usize, @intCast(GETARG_A(instruction)));
                 const rb_idx = ci.base + @as(usize, @intCast(GETARG_B(instruction)));
                 const rb = L.stack[rb_idx];
@@ -1352,6 +1406,7 @@ pub fn run(L: *lua.lua_State, active_ci: *lua.CallInfo) anyerror!void {
                     L.stack[ra] = .{ .integer = ~ib };
                 } else {
                     try ltm.luaT_trybinTM(L, &L.stack[rb_idx], &L.stack[rb_idx], ra, .BNOT);
+                    hookmask = L.hookmask; // P2: user code may have run debug.sethook
                 }
             },
             .NOT => {
@@ -1360,6 +1415,7 @@ pub fn run(L: *lua.lua_State, active_ci: *lua.CallInfo) anyerror!void {
                 L.stack[ra] = .{ .boolean = isFalse(rb) };
             },
             .LEN => {
+                ci.savedpc = pc; // P2: sync for the arm's error/reporting paths
                 const ra = ci.base + @as(usize, @intCast(GETARG_A(instruction)));
                 const rb_idx = ci.base + @as(usize, @intCast(GETARG_B(instruction)));
                 const rb = L.stack[rb_idx];
@@ -1368,6 +1424,7 @@ pub fn run(L: *lua.lua_State, active_ci: *lua.CallInfo) anyerror!void {
                         const tm = if (t.?.metatable) |mt| ltm.luaT_gettm(mt, .LEN, L.l_G.?.tmname[@intFromEnum(ltm.TMS.LEN)].?) else null;
                         if (tm) |tm_val| {
                             _ = try ltm.luaT_callTMres(L, tm_val, &L.stack[rb_idx], &L.stack[rb_idx], ra);
+                            hookmask = L.hookmask; // P2: user code may have run debug.sethook
                         } else {
                             L.stack[ra] = .{ .integer = @as(i64, @intCast(ltable.getn(t.?))) };
                         }
@@ -1377,26 +1434,33 @@ pub fn run(L: *lua.lua_State, active_ci: *lua.CallInfo) anyerror!void {
                     },
                     else => {
                         try ltm.luaT_trybinTM(L, &L.stack[rb_idx], &L.stack[rb_idx], ra, .LEN);
+                        hookmask = L.hookmask; // P2: user code may have run debug.sethook
                     },
                 }
             },
             .CONCAT => {
+                ci.savedpc = pc; // P2: sync for the arm's error/reporting paths
                 const ra_idx = ci.base + @as(usize, @intCast(GETARG_A(instruction)));
                 const n = @as(usize, @intCast(GETARG_B(instruction)));
                 if (n >= 2) {
                     try lua.luaV_concat(L, n, ra_idx);
+                    hookmask = L.hookmask; // P2: user code may have run debug.sethook
                     // Reference checkGC(L, L->top.p) at the CONCAT site
                     // (lua/lvm.c:1637): luaV_concat leaves the top correct.
                     try lua.luaC_checkGC(L, L.top);
                 }
             },
             .CLOSE => {
+                ci.savedpc = pc; // P2: sync for the arm's error/reporting paths
                 const ra_idx = ci.base + @as(usize, @intCast(GETARG_A(instruction)));
                 try lua.closeupvals(L, ra_idx, null);
+                hookmask = L.hookmask; // P2: user code may have run debug.sethook
             },
             .TBC => {
+                ci.savedpc = pc; // P2: sync for the arm's error/reporting paths
                 const ra_idx = ci.base + @as(usize, @intCast(GETARG_A(instruction)));
                 try lua.checkclosemth(L, ra_idx);
+                hookmask = L.hookmask; // P2: user code may have run debug.sethook
                 const v = L.stack[ra_idx];
                 if (v != .nil and (v != .boolean or v.boolean != false)) {
                     try L.tbclist.append(L.allocator, ra_idx);
@@ -1404,109 +1468,119 @@ pub fn run(L: *lua.lua_State, active_ci: *lua.CallInfo) anyerror!void {
             },
             .JMP => {
                 const sJ = GETARG_sJ(instruction);
-                ci.savedpc = @intCast(@as(i64, @intCast(ci.savedpc)) + sJ);
+                pc = @intCast(@as(i64, @intCast(pc)) + sJ);
             },
             .EQ => {
+                ci.savedpc = pc; // P2: sync for the arm's error/reporting paths
                 const ra = L.stack[ci.base + @as(usize, @intCast(GETARG_A(instruction)))];
                 const rb = L.stack[ci.base + @as(usize, @intCast(GETARG_B(instruction)))];
                 const cond = try ltm.luaT_equalobj(L, ra, rb);
-                docondjump(L, ci, cond, code);
+                pc = docondjump(code, cond, pc);
             },
             .LT => {
+                ci.savedpc = pc; // P2: sync for the arm's error/reporting paths
                 const ra = L.stack[ci.base + @as(usize, @intCast(GETARG_A(instruction)))];
                 const rb = L.stack[ci.base + @as(usize, @intCast(GETARG_B(instruction)))];
                 const cond = try ltm.luaT_lt(L, ra, rb);
-                docondjump(L, ci, cond, code);
+                pc = docondjump(code, cond, pc);
             },
             .LE => {
+                ci.savedpc = pc; // P2: sync for the arm's error/reporting paths
                 const ra = L.stack[ci.base + @as(usize, @intCast(GETARG_A(instruction)))];
                 const rb = L.stack[ci.base + @as(usize, @intCast(GETARG_B(instruction)))];
                 const cond = try ltm.luaT_le(L, ra, rb);
-                docondjump(L, ci, cond, code);
+                pc = docondjump(code, cond, pc);
             },
             .EQK => {
+                ci.savedpc = pc; // P2: sync for the arm's error/reporting paths
                 const ra = L.stack[ci.base + @as(usize, @intCast(GETARG_A(instruction)))];
                 const rb = proto.k[@as(usize, @intCast(GETARG_B(instruction)))];
                 const cond = try ltm.luaT_equalobj(L, ra, rb);
-                docondjump(L, ci, cond, code);
+                pc = docondjump(code, cond, pc);
             },
             .EQI => {
+                ci.savedpc = pc; // P2: sync for the arm's error/reporting paths
                 const ra = L.stack[ci.base + @as(usize, @intCast(GETARG_A(instruction)))];
                 const sb = GETARG_sB(instruction);
                 if (ra == .integer) {
-                    docondjump(L, ci, ra.integer == sb, code);
+                    pc = docondjump(code, ra.integer == sb, pc);
                 } else {
                     const aux_val = lua.TValue{ .integer = sb };
                     const cond = try ltm.luaT_equalobj(L, ra, aux_val);
-                    docondjump(L, ci, cond, code);
+                    pc = docondjump(code, cond, pc);
                 }
             },
             .LTI => {
+                ci.savedpc = pc; // P2: sync for the arm's error/reporting paths
                 const ra = L.stack[ci.base + @as(usize, @intCast(GETARG_A(instruction)))];
                 const sb = GETARG_sB(instruction);
                 if (ra == .integer and GETARG_C(instruction) == 0) {
-                    docondjump(L, ci, ra.integer < sb, code);
+                    pc = docondjump(code, ra.integer < sb, pc);
                 } else {
                     const is_float = GETARG_C(instruction) != 0;
                     const aux_val = if (is_float) lua.TValue{ .number = @floatFromInt(sb) } else lua.TValue{ .integer = sb };
                     const cond = try ltm.luaT_lt(L, ra, aux_val);
-                    docondjump(L, ci, cond, code);
+                    pc = docondjump(code, cond, pc);
                 }
             },
             .LEI => {
+                ci.savedpc = pc; // P2: sync for the arm's error/reporting paths
                 const ra = L.stack[ci.base + @as(usize, @intCast(GETARG_A(instruction)))];
                 const sb = GETARG_sB(instruction);
                 if (ra == .integer and GETARG_C(instruction) == 0) {
-                    docondjump(L, ci, ra.integer <= sb, code);
+                    pc = docondjump(code, ra.integer <= sb, pc);
                 } else {
                     const is_float = GETARG_C(instruction) != 0;
                     const aux_val = if (is_float) lua.TValue{ .number = @floatFromInt(sb) } else lua.TValue{ .integer = sb };
                     const cond = try ltm.luaT_le(L, ra, aux_val);
-                    docondjump(L, ci, cond, code);
+                    pc = docondjump(code, cond, pc);
                 }
             },
             .GTI => {
+                ci.savedpc = pc; // P2: sync for the arm's error/reporting paths
                 const ra = L.stack[ci.base + @as(usize, @intCast(GETARG_A(instruction)))];
                 const sb = GETARG_sB(instruction);
                 if (ra == .integer and GETARG_C(instruction) == 0) {
-                    docondjump(L, ci, ra.integer > sb, code);
+                    pc = docondjump(code, ra.integer > sb, pc);
                 } else {
                     const is_float = GETARG_C(instruction) != 0;
                     const aux_val = if (is_float) lua.TValue{ .number = @floatFromInt(sb) } else lua.TValue{ .integer = sb };
                     const cond = try ltm.luaT_lt(L, aux_val, ra);
-                    docondjump(L, ci, cond, code);
+                    pc = docondjump(code, cond, pc);
                 }
             },
             .GEI => {
+                ci.savedpc = pc; // P2: sync for the arm's error/reporting paths
                 const ra = L.stack[ci.base + @as(usize, @intCast(GETARG_A(instruction)))];
                 const sb = GETARG_sB(instruction);
                 if (ra == .integer and GETARG_C(instruction) == 0) {
-                    docondjump(L, ci, ra.integer >= sb, code);
+                    pc = docondjump(code, ra.integer >= sb, pc);
                 } else {
                     const is_float = GETARG_C(instruction) != 0;
                     const aux_val = if (is_float) lua.TValue{ .number = @floatFromInt(sb) } else lua.TValue{ .integer = sb };
                     const cond = try ltm.luaT_le(L, aux_val, ra);
-                    docondjump(L, ci, cond, code);
+                    pc = docondjump(code, cond, pc);
                 }
             },
             .TEST => {
                 const ra = L.stack[ci.base + @as(usize, @intCast(GETARG_A(instruction)))];
-                docondjump(L, ci, !isFalse(ra), code);
+                pc = docondjump(code, !isFalse(ra), pc);
             },
             .TESTSET => {
                 const ra_idx = ci.base + @as(usize, @intCast(GETARG_A(instruction)));
                 const rb = L.stack[ci.base + @as(usize, @intCast(GETARG_B(instruction)))];
                 const k = GETARG_k(instruction) != 0;
                 if (isFalse(rb) == k) {
-                    ci.savedpc += 1;
+                    pc += 1;
                 } else {
                     L.stack[ra_idx] = rb;
-                    const jmp_inst = code[ci.savedpc];
+                    const jmp_inst = code[pc];
                     const sJ = GETARG_sJ(jmp_inst);
-                    ci.savedpc = @intCast(@as(i64, @intCast(ci.savedpc)) + sJ + 1);
+                    pc = @intCast(@as(i64, @intCast(pc)) + sJ + 1);
                 }
             },
             .CALL => {
+                ci.savedpc = pc; // P2: sync for the arm's error/reporting paths
                 const ra_idx = ci.base + @as(usize, @intCast(GETARG_A(instruction)));
                 if (GETARG_C(instruction) == 0) {}
                 const b = GETARG_B(instruction);
@@ -1519,9 +1593,14 @@ pub fn run(L: *lua.lua_State, active_ci: *lua.CallInfo) anyerror!void {
                     cl = L.stack[ci.func].function.?.lua;
                     proto = cl.p;
                     code = proto.code;
+                    pc = ci.savedpc; // P2: restart loop locals in the new frame
+                    hookmask = L.hookmask;
+                } else {
+                    hookmask = L.hookmask; // P2: the C function may have run sethook
                 }
             },
             .TAILCALL => {
+                ci.savedpc = pc; // P2: sync for the arm's error/reporting paths
                 const ra_idx = ci.base + @as(usize, @intCast(GETARG_A(instruction)));
                 var b = GETARG_B(instruction);
                 if (b != 0) {
@@ -1531,6 +1610,7 @@ pub fn run(L: *lua.lua_State, active_ci: *lua.CallInfo) anyerror!void {
                 }
                 if (GETARG_k(instruction) != 0) {
                     try lua.closeupvals(L, ci.base, null);
+                    hookmask = L.hookmask; // P2: user code may have run debug.sethook
                 }
                 var val = L.stack[ra_idx];
                 var ccmt: usize = 0;
@@ -1579,6 +1659,7 @@ pub fn run(L: *lua.lua_State, active_ci: *lua.CallInfo) anyerror!void {
                         // error unwinding. Its results are placed at `ra_idx`
                         // (with L.top = ra_idx + nresults).
                         _ = try lua.precall(L, ra_idx, -1);
+                        hookmask = L.hookmask; // P2: user code may have run debug.sethook
                         const num_returned = L.top - ra_idx;
                         // Undo the PF_VAHID frame relocation before the final
                         // poscall, so the results land at the original caller's
@@ -1588,6 +1669,7 @@ pub fn run(L: *lua.lua_State, active_ci: *lua.CallInfo) anyerror!void {
                             ci.base = ci.func + 1;
                         }
                         try lua.poscall(L, ci, ra_idx, num_returned);
+                        hookmask = L.hookmask; // P2: user code may have run debug.sethook
                         const old_ci = ci;
                         if (old_ci == active_ci) {
                             L.ci = old_ci.previous;
@@ -1601,6 +1683,8 @@ pub fn run(L: *lua.lua_State, active_ci: *lua.CallInfo) anyerror!void {
                             cl = L.stack[ci.func].function.?.lua;
                             proto = cl.p;
                             code = proto.code;
+                            pc = ci.savedpc; // P2: restart loop locals in the resumed frame
+                            hookmask = L.hookmask;
                         } else {
                             L.ci = null;
                             lua.freeCallInfo(L, old_ci);
@@ -1640,16 +1724,22 @@ pub fn run(L: *lua.lua_State, active_ci: *lua.CallInfo) anyerror!void {
                         cl = lc;
                         proto = lc.p;
                         code = proto.code;
+                        // New frame entry (the reference's `startfunc`):
+                        // restart the loop locals from the new frame.
+                        pc = 0;
+                        hookmask = L.hookmask;
                         // Fire the call hook for the tail-called Lua function
                         // (mirrors the reference's `startfunc` -> `luaD_hookcall`,
                         // which reports a tail call when CIST_TAIL is set).
-                        if (L.hookmask & llimits.LUA_MASKCALL != 0) {
+                        if (hookmask & llimits.LUA_MASKCALL != 0) {
                             lua.luaD_hook(L, lua.LUA_HOOKTAILCALL, -1, 1, proto.numParams);
+                            hookmask = L.hookmask;
                         }
                     },
                 }
             },
             .RETURN => {
+                ci.savedpc = pc; // P2: sync for the arm's error/reporting paths
                 const ra_idx = ci.base + @as(usize, @intCast(GETARG_A(instruction)));
                 var n: i32 = undefined;
                 if (ci.clsret) {
@@ -1683,7 +1773,8 @@ pub fn run(L: *lua.lua_State, active_ci: *lua.CallInfo) anyerror!void {
                         // resume the VM continues the metamethod; when it
                         // returns, this RETURN must run again to complete the
                         // poscall, so rewind savedpc to point at it.
-                        ci.savedpc = @intCast(ci.savedpc - 1);
+                        pc -= 1;
+                        ci.savedpc = pc;
                         return error.Yield;
                     }
                     return e;
@@ -1701,6 +1792,8 @@ pub fn run(L: *lua.lua_State, active_ci: *lua.CallInfo) anyerror!void {
                     cl = L.stack[ci.func].function.?.lua;
                     proto = cl.p;
                     code = proto.code;
+                    pc = ci.savedpc; // P2: restart loop locals in the resumed frame
+                    hookmask = L.hookmask;
                 } else {
                     L.ci = null;
                     lua.freeCallInfo(L, old_ci);
@@ -1708,6 +1801,7 @@ pub fn run(L: *lua.lua_State, active_ci: *lua.CallInfo) anyerror!void {
                 }
             },
             .RETURN0 => {
+                ci.savedpc = pc; // P2: sync for the arm's error/reporting paths
                 const ra_idx = ci.base;
                 if (isVarargFunc(L, ci)) {
                     const nparams1: i32 = @intCast(numParamsOf(L, ci) + 1);
@@ -1716,6 +1810,7 @@ pub fn run(L: *lua.lua_State, active_ci: *lua.CallInfo) anyerror!void {
                 }
                 const old_ci = ci;
                 try lua.poscall(L, old_ci, ra_idx, 0);
+                hookmask = L.hookmask; // P2: user code may have run debug.sethook
                 if (old_ci == active_ci) {
                     L.ci = old_ci.previous;
                     lua.freeCallInfo(L, old_ci);
@@ -1728,6 +1823,8 @@ pub fn run(L: *lua.lua_State, active_ci: *lua.CallInfo) anyerror!void {
                     cl = L.stack[ci.func].function.?.lua;
                     proto = cl.p;
                     code = proto.code;
+                    pc = ci.savedpc; // P2: restart loop locals in the resumed frame
+                    hookmask = L.hookmask;
                 } else {
                     L.ci = null;
                     lua.freeCallInfo(L, old_ci);
@@ -1735,6 +1832,7 @@ pub fn run(L: *lua.lua_State, active_ci: *lua.CallInfo) anyerror!void {
                 }
             },
             .RETURN1 => {
+                ci.savedpc = pc; // P2: sync for the arm's error/reporting paths
                 const ra_idx = ci.base + @as(usize, @intCast(GETARG_A(instruction)));
                 if (isVarargFunc(L, ci)) {
                     const nparams1: i32 = @intCast(numParamsOf(L, ci) + 1);
@@ -1743,6 +1841,7 @@ pub fn run(L: *lua.lua_State, active_ci: *lua.CallInfo) anyerror!void {
                 }
                 const old_ci = ci;
                 try lua.poscall(L, old_ci, ra_idx, 1);
+                hookmask = L.hookmask; // P2: user code may have run debug.sethook
                 if (old_ci == active_ci) {
                     L.ci = old_ci.previous;
                     lua.freeCallInfo(L, old_ci);
@@ -1755,6 +1854,8 @@ pub fn run(L: *lua.lua_State, active_ci: *lua.CallInfo) anyerror!void {
                     cl = L.stack[ci.func].function.?.lua;
                     proto = cl.p;
                     code = proto.code;
+                    pc = ci.savedpc; // P2: restart loop locals in the resumed frame
+                    hookmask = L.hookmask;
                 } else {
                     L.ci = null;
                     lua.freeCallInfo(L, old_ci);
@@ -1762,9 +1863,10 @@ pub fn run(L: *lua.lua_State, active_ci: *lua.CallInfo) anyerror!void {
                 }
             },
             .FORPREP => {
+                ci.savedpc = pc; // P2: sync for the arm's error/reporting paths
                 const ra_idx = ci.base + @as(usize, @intCast(GETARG_A(instruction)));
                 if (try forprep(L, ra_idx)) {
-                    ci.savedpc += @as(usize, @intCast(GETARG_Bx(instruction) + 1));
+                    pc += @as(usize, @intCast(GETARG_Bx(instruction) + 1));
                 }
             },
             .FORLOOP => {
@@ -1776,15 +1878,16 @@ pub fn run(L: *lua.lua_State, active_ci: *lua.CallInfo) anyerror!void {
                         const idx = L.stack[ra_idx + 2].integer;
                         L.stack[ra_idx] = .{ .integer = @bitCast(count - 1) };
                         L.stack[ra_idx + 2] = .{ .integer = idx +% step };
-                        ci.savedpc -= @as(usize, @intCast(GETARG_Bx(instruction)));
+                        pc -= @as(usize, @intCast(GETARG_Bx(instruction)));
                     }
                 } else {
                     if (floatforloop(ra_idx, L)) {
-                        ci.savedpc -= @as(usize, @intCast(GETARG_Bx(instruction)));
+                        pc -= @as(usize, @intCast(GETARG_Bx(instruction)));
                     }
                 }
             },
             .TFORPREP => {
+                ci.savedpc = pc; // P2: sync for the arm's error/reporting paths
                 const ra_idx = ci.base + @as(usize, @intCast(GETARG_A(instruction)));
                 const temp = L.stack[ra_idx + 2];
                 L.stack[ra_idx + 2] = L.stack[ra_idx + 3];
@@ -1792,11 +1895,13 @@ pub fn run(L: *lua.lua_State, active_ci: *lua.CallInfo) anyerror!void {
                 const v = L.stack[ra_idx + 2];
                 if (v != .nil and (v != .boolean or v.boolean != false)) {
                     try lua.checkclosemth(L, ra_idx + 2);
+                    hookmask = L.hookmask; // P2: user code may have run debug.sethook
                     try L.tbclist.append(L.allocator, ra_idx + 2);
                 }
-                ci.savedpc = @intCast(@as(i64, @intCast(ci.savedpc)) + GETARG_Bx(instruction));
+                pc = @intCast(@as(i64, @intCast(pc)) + GETARG_Bx(instruction));
             },
             .TFORCALL => {
+                ci.savedpc = pc; // P2: sync for the arm's error/reporting paths
                 const ra_idx = ci.base + @as(usize, @intCast(GETARG_A(instruction)));
                 L.stack[ra_idx + 5] = L.stack[ra_idx + 3];
                 L.stack[ra_idx + 4] = L.stack[ra_idx + 1];
@@ -1808,17 +1913,24 @@ pub fn run(L: *lua.lua_State, active_ci: *lua.CallInfo) anyerror!void {
                     cl = L.stack[ci.func].function.?.lua;
                     proto = cl.p;
                     code = proto.code;
+                    pc = ci.savedpc; // P2: restart loop locals in the new frame
+                    hookmask = L.hookmask;
+                } else {
+                    hookmask = L.hookmask; // P2: C iterator may have run sethook
                 }
             },
             .TFORLOOP => {
+                ci.savedpc = pc; // P2: sync for the arm's error/reporting paths
                 const ra_idx = ci.base + @as(usize, @intCast(GETARG_A(instruction)));
                 if (L.stack[ra_idx + 3] != .nil) {
-                    ci.savedpc = @intCast(@as(i64, @intCast(ci.savedpc)) - GETARG_Bx(instruction));
+                    pc = @intCast(@as(i64, @intCast(pc)) - GETARG_Bx(instruction));
                 } else {
                     try lua.closeupvals(L, ra_idx + 2, null);
+                    hookmask = L.hookmask; // P2: user code may have run debug.sethook
                 }
             },
             .SETLIST => {
+                ci.savedpc = pc; // P2: sync for the arm's error/reporting paths
                 const ra_idx = ci.base + @as(usize, @intCast(GETARG_A(instruction)));
                 const h = L.stack[ra_idx].table.?;
                 var n = @as(usize, @intCast(GETARG_vB(instruction)));
@@ -1828,8 +1940,8 @@ pub fn run(L: *lua.lua_State, active_ci: *lua.CallInfo) anyerror!void {
                 }
                 last += n;
                 if (GETARG_k(instruction) != 0) {
-                    const extra = code[ci.savedpc];
-                    ci.savedpc += 1;
+                    const extra = code[pc];
+                    pc += 1;
                     last += @as(usize, @intCast(GETARG_Ax(extra))) * 1024;
                 }
                 if (last > h.array.items.len) {
@@ -1842,6 +1954,7 @@ pub fn run(L: *lua.lua_State, active_ci: *lua.CallInfo) anyerror!void {
                 }
             },
             .CLOSURE => {
+                ci.savedpc = pc; // P2: sync for the arm's error/reporting paths
                 const ra_idx = ci.base + @as(usize, @intCast(GETARG_A(instruction)));
                 const bx = @as(usize, @intCast(GETARG_Bx(instruction)));
                 const sub_proto = proto.p[bx];
@@ -1851,6 +1964,7 @@ pub fn run(L: *lua.lua_State, active_ci: *lua.CallInfo) anyerror!void {
                 try lua.luaC_checkGC(L, ra_idx + 1);
             },
             .VARARG => {
+                ci.savedpc = pc; // P2: sync for the arm's error/reporting paths
                 const ra_idx = ci.base + @as(usize, @intCast(GETARG_A(instruction)));
                 const c = GETARG_C(instruction);
                 const k = GETARG_k(instruction);
@@ -1859,18 +1973,22 @@ pub fn run(L: *lua.lua_State, active_ci: *lua.CallInfo) anyerror!void {
                 try ltm.luaT_getvarargs(L, ci, ra_idx, wanted, vatab);
             },
             .GETVARG => {
+                ci.savedpc = pc; // P2: sync for the arm's error/reporting paths
                 const ra_idx = ci.base + @as(usize, @intCast(GETARG_A(instruction)));
                 const rc_idx = ci.base + @as(usize, @intCast(GETARG_C(instruction)));
                 try ltm.luaT_getvararg(L, ci, ra_idx, rc_idx);
             },
             .ERRNNIL => {
+                ci.savedpc = pc; // P2: sync for the arm's error/reporting paths
                 const ra_idx = ci.base + @as(usize, @intCast(GETARG_A(instruction)));
                 if (getStack(L, ra_idx) != .nil) {
                     try lua.luaG_errnnil(L, proto, GETARG_Bx(instruction));
                 }
             },
             .VARARGPREP => {
+                ci.savedpc = pc; // P2: sync for the arm's error/reporting paths
                 try ltm.luaT_adjustvarargs(L, ci, cl);
+                hookmask = L.hookmask; // P2: user code may have run debug.sethook
                 // buildhiddenargs may relocate ci.func; refresh the cached
                 // closure/proto/code so the loop reads the correct frame.
                 cl = L.stack[ci.func].function.?.lua;
@@ -1880,18 +1998,23 @@ pub fn run(L: *lua.lua_State, active_ci: *lua.CallInfo) anyerror!void {
             .EXTRAARG => {},
         }
     }
+    // Defensive: keep the CI's savedpc current if the loop guard ever exits
+    // instead of a RETURN opcode (P2 sync).
+    ci.savedpc = pc;
 }
 
-fn docondjump(L: *lua.lua_State, ci: *lua.CallInfo, cond: bool, code: []Instruction) void {
-    _ = L;
-    const i = code[ci.savedpc - 1];
+/// Port of the reference `docondjump` / `donextjump` / `dojump` chain,
+/// operating on the loop-local `pc` (P2). `pc_in` is post-current-op.
+/// Returns the new `pc`.
+fn docondjump(code: []Instruction, cond: bool, pc_in: usize) usize {
+    const i = code[pc_in - 1];
     const k = GETARG_k(i) != 0;
     if (cond != k) {
-        ci.savedpc += 1;
+        return pc_in + 1;
     } else {
-        const jmp_inst = code[ci.savedpc];
+        const jmp_inst = code[pc_in];
         const sJ = GETARG_sJ(jmp_inst);
-        ci.savedpc = @intCast(@as(i64, @intCast(ci.savedpc)) + sJ + 1);
+        return @intCast(@as(i64, @intCast(pc_in)) + sJ + 1);
     }
 }
 
