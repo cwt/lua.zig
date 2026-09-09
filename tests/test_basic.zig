@@ -5872,3 +5872,24 @@ test "BUG-163: string arithmetic dispatches the string metatable __add..__unm, n
     const status = try lua.luaL_dostring(&L, script, "=(test_bug163)");
     try std.testing.expectEqual(lua.LUA_OK, status);
 }
+
+test "BUG-165: default package.path and package.cpath carry versioned lua/<vdir> components" {
+    const gpa = std.testing.allocator;
+    var L: lua.lua_State = undefined;
+    try lua.luaL_newstate(&L, gpa);
+    defer lua.lua_close(&L);
+    try lua.luaL_openlibs(&L);
+
+    const script =
+        \\-- corpus from lua/testes/main.lua:193-196 ("paths did not change" sanity)
+        \\assert(string.find(package.path, "lua"), "package.path must contain 'lua'")
+        \\assert(string.find(package.cpath, "lua"), "package.cpath must contain 'lua'")
+        \\-- versioned C-dir component of the reference default cpath
+        \\assert(string.find(package.cpath, "lua/5.5/", 1, true), "cpath versioned C dir")
+        \\assert(string.find(package.cpath, "loadall.so", 1, true), "cpath loadall")
+        \\-- versioned L-dir component of the reference default path
+        \\assert(string.find(package.path, "lua/5.5/", 1, true), "path versioned dir")
+    ;
+    const status = try lua.luaL_dostring(&L, script, "=(test_bug165)");
+    try std.testing.expectEqual(lua.LUA_OK, status);
+}

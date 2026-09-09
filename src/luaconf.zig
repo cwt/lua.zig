@@ -38,9 +38,15 @@ pub const LUA_EXEC_DIR: []const u8 = "!";
 
 pub const LUA_VDIR: []const u8 = "5.5";
 
-pub const LUA_LDIR: []const u8 = "!/lua/";
-pub const LUA_CDIR: []const u8 = "//!";
-pub const LUA_SHRDIR: []const u8 = "//!share/lua/";
+// Installation root (mirrors lua/luaconf.h LUA_ROOT for POSIX).
+// The default package.path / package.cpath are built from versioned
+// subdirectories of this root so they contain the literal "lua" and "5.5"
+// components that `main.lua:193` sanity-checks for. (BUG-165)
+pub const LUA_ROOT: []const u8 = "/usr/local/";
+
+pub const LUA_LDIR: []const u8 = LUA_ROOT ++ "share/lua/" ++ LUA_VDIR ++ "/";
+pub const LUA_CDIR: []const u8 = LUA_ROOT ++ "lib/lua/" ++ LUA_VDIR ++ "/";
+pub const LUA_SHRDIR: []const u8 = LUA_ROOT ++ "share/lua/";
 
 pub const LUA_PATH_DEFAULT: []const u8 =
     LUA_LDIR ++ "?.lua;" ++ LUA_LDIR ++ "?/init.lua;" ++

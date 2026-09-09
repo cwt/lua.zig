@@ -6,6 +6,30 @@ tags: [log, changelog]
 timestamp: 2026-09-08T21:20:00Z
 ---
 
+## 2026-09-09 — Fix BUG-165: default package.path/cpath use versioned lua/<vdir> dirs; log BUG-170
+
+- **Bug Fixed**: `BUG-165` (MED) — the default `package.cpath` was
+  `//!?.so;//!loadall.so;./?.so` (executable-relative `!`), which contains no
+  `lua` substring, so `main.lua:193`'s `string.find(defaultCpath, "lua")`
+  sanity check failed.
+- **Change** (`src/luaconf.zig`): mirrored the reference POSIX
+  `lua/luaconf.h` defaults — added `LUA_ROOT = "/usr/local/"` and rebuilt
+  `LUA_LDIR = "/usr/local/share/lua/5.5/"`, `LUA_CDIR =
+  "/usr/local/lib/lua/5.5/"`, so `LUA_PATH_DEFAULT`/`LUA_CPATH_DEFAULT`
+  expand to the reference strings (containing `lua` and the `5.5` version,
+  plus `loadall.so`). The `!` (LUA_EXEC_DIR) substitution is retained for
+  user-configured paths but no longer bases the defaults.
+- **New defect logged** (`BUG-170`, MED, open): the next `main.lua` blocker
+  is the 5.5.1 `LUA_READLINELIB` feature (readline-library load + warning)
+  at `main.lua:206`, which luazig does not implement.
+- **Verification**:
+  - `package.cpath` now prints
+    `/usr/local/lib/lua/5.5/?.so;/usr/local/lib/lua/5.5/loadall.so;./?.so`.
+  - `luazig lua/testes/main.lua` now proceeds past line 193 (fails later at
+    line 206, the unrelated BUG-170 readline feature).
+  - New unit test `BUG-165` in `tests/test_basic.zig`.
+  - `zig build test` → 176/176 passing, 0 leaks. `./run_testes.sh` → 20 PASS / 0 FAIL / 0 CRASH.
+
 ## 2026-09-09 — Fix BUG-163: string arithmetic dispatches the string metatable, not a VM fast path
 
 - **Bug Fixed**: `BUG-163` (MED) — the VM arithmetic fast path coerced
