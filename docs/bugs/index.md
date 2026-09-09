@@ -183,7 +183,7 @@ timestamp: '2026-09-08T21:20:00Z'
 | [BUG-154](154.md) | `luazig.zig`: `std.process.exit` in `main` bypasses `lua_close` and GPA `deinit` defer handlers | `LOW` | ✅ FIXED |
 | [BUG-155](155.md) | `pattern.zig`: `posrelatI` maps `pos==0` to 0 instead of 1 — `string.sub` reads one byte before the string (strings.lua:44) | `HIGH` | ✅ FIXED |
 | [BUG-156](156.md) | `corolib.zig`: `coroutine.wrap` on dead coroutine raises "attempt to call a nil value" instead of "cannot resume dead coroutine" | `MED` | ✅ FIXED |
-| [BUG-157](157.md) | `loadlib.zig`: `package.searchpath` with `init=".", sep="."` returns the bare name instead of the expanded path (attrib.lua:138) | `MED` | ⏳ OPEN |
+| [BUG-157](157.md) | `loadlib.zig`: `package.searchpath` with `init=".", sep="."` returns the bare name instead of the expanded path (attrib.lua:138) | `MED` | ✅ FIXED |
 | [BUG-158](158.md) | `lua.zig`/`baselib.zig`: `collectgarbage("generational")` does not return the previous GC mode (gc.lua:15) | `MED` | ⏳ OPEN |
 | [BUG-159](159.md) | `iolib.zig`: `io.stdin:seek("set", 1000)` invalid seek does not return `(nil, msg, code)` (files.lua:88) | `MED` | ⏳ OPEN |
 | [BUG-160](160.md) | `lvm.zig`/`lua.zig`: yield from a resumed-coroutine metamethod chain mis-tracked — "attempt to yield from outside a coroutine" (big.lua:56) | `HIGH` | ❌ FALSE POSITIVE |

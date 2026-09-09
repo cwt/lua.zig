@@ -6,6 +6,28 @@ tags: [log, changelog]
 timestamp: 2026-09-08T21:20:00Z
 ---
 
+## 2026-09-09 — Fix BUG-157: package.searchpath name-conversion dropped the template
+
+- **Bug Fixed**: `BUG-157` (MED) — `package.searchpath` with an explicit
+  `init`/`sep` (e.g. `".", "."`) returned the bare converted name instead of
+  the template-expanded path (`lua/testes/attrib.lua:138`).
+- **Root Cause** (`src/lib/loadlib.zig` `searchpath`):
+  - `luaL_gsub` leaves its result on the stack. The found/not-found
+    normalization did `lua_copy(L, -1, @intCast(initial_top + 1))`, but
+    positive Lua indices are frame-relative (`ci.base + idx - 1`), not raw
+    stack-depth. The copy landed on the wrong slot (often a no-op) and the
+    gsub leftover became the visible top value, dropping the template prefix
+    whenever the conversion branch ran.
+  - Fixed by removing the leftover with the top-relative index
+    `lua_remove(L, -2)` on both the found and not-found paths, so the result
+    is a single value.
+- **Verification**:
+  - New unit test `BUG-157: package.searchpath name conversion (sep->dirsep)
+    and single-value result` in `tests/test_basic.zig`.
+  - `lua/testes/attrib.lua:137-140` searchpath assertions reproduced with the
+    named files present and passing.
+  - `zig build test` → 172/172, 0 leaks. `./run_testes.sh` → 20 PASS / 0 FAIL / 0 CRASH.
+
 ## 2026-09-09 — Fix BUG-156: "cannot resume dead coroutine" error message and stack shape
 
 - **Bug Fixed**: `BUG-156` (MED) — `coroutine.wrap`/`coroutine.resume` on a dead

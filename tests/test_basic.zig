@@ -5756,3 +5756,45 @@ test "BUG-156: resuming a dead coroutine reports 'cannot resume dead coroutine'"
     const status = try lua.luaL_dostring(&L, script, "=(test_bug156)");
     try std.testing.expectEqual(lua.LUA_OK, status);
 }
+
+test "BUG-157: package.searchpath name conversion (sep->dirsep) and single-value result" {
+    const gpa = std.testing.allocator;
+    var L: lua.lua_State = undefined;
+    try lua.luaL_newstate(&L, gpa);
+    defer lua.lua_close(&L);
+    try lua.luaL_openlibs(&L);
+
+    const script =
+        \\-- corpus from lua/testes/attrib.lua:137-141, adapted to on-disk files
+        \\local function mk(name, body)
+        \\  local f = io.open(name, "w"); f:write(body); f:close()
+        \\end
+        \\mk("bug157_C.lua", "return 1")
+        \\mk("bug157_conv_result", "return 2")
+        \\local results = {
+        \\  -- a1: empty sep -> no conversion; template expands to the bare name
+        \\  { package.searchpath("bug157_C.lua", "?", "", "") },
+        \\  -- a2: init/sep == '.' is a no-op conversion; still a single value
+        \\  { package.searchpath("bug157_C.lua", "?", ".", ".") },
+        \\  -- a3: sep '.' replaced by '_': "bug157_conv.result" -> "bug157_conv_result"
+        \\  { package.searchpath("bug157_conv.result", "?", ".", "_") },
+        \\}
+        \\assert(results[1][1] == "bug157_C.lua" and #results[1] == 1, "a1: " .. tostring(results[1][1]))
+        \\assert(results[2][1] == "bug157_C.lua" and #results[2] == 1, "a2: " .. tostring(results[2][1]))
+        \\assert(results[3][1] == "bug157_conv_result" and #results[3] == 1, "a3: " .. tostring(results[3][1]))
+        \\-- a4: a directory prefix must be preserved in the expanded result
+        \\os.execute("mkdir -p bug157d")
+        \\mk("bug157d/sub", "x")
+        \\local r4 = { package.searchpath("sub", "bug157d/?", "", "") }
+        \\assert(r4[1] == "bug157d/sub" and #r4 == 1, "a4: " .. tostring(r4[1]))
+        \\-- a5: not-found returns (nil, message) as two values
+        \\local r5 = { package.searchpath("does_not_exist", "?", ".", ".") }
+        \\assert(r5[1] == nil and type(r5[2]) == "string", "a5: " .. tostring(r5[2]))
+        \\assert(select('#', package.searchpath("does_not_exist", "?", ".", ".")) == 2, "a5b")
+        \\-- cleanup
+        \\os.remove("bug157_C.lua"); os.remove("bug157_conv_result")
+        \\os.remove("bug157d/sub"); os.execute("rmdir bug157d")
+    ;
+    const status = try lua.luaL_dostring(&L, script, "=(test_bug157)");
+    try std.testing.expectEqual(lua.LUA_OK, status);
+}

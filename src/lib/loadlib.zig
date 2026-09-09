@@ -181,17 +181,18 @@ fn searchpath(L: *lua.lua_State, name: []const u8, path_str: []const u8, sep: []
         if (readable(L, filename)) {
             _ = lua.lua_pushstring(L, filename);
             const res = lua.lua_tostring(L, -1).?;
+            // Drop the gsub leftover (if the conversion branch ran) so the
+            // result is the single top value. Top-relative index: the
+            // leftover sits at -2, the result at -1.
             if (L.top > initial_top + 1) {
-                lua.lua_copy(L, -1, @intCast(initial_top + 1));
-                L.top = initial_top + 1;
+                lua.lua_remove(L, -2);
             }
             return res;
         }
     }
     pusherrornotfound(L, path);
     if (L.top > initial_top + 1) {
-        lua.lua_copy(L, -1, @intCast(initial_top + 1));
-        L.top = initial_top + 1;
+        lua.lua_remove(L, -2);
     }
     return null;
 }
