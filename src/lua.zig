@@ -4232,7 +4232,17 @@ pub fn lua_yield(L: *lua_State, nresults: i32) anyerror!i32 {
     return lua_yieldk(L, nresults, 0, null);
 }
 
-fn resume_error(_: *lua_State, _: []const u8, _: i32) i32 {
+/// Port of the C reference `resume_error` (lua/ldo.c): remove the resume
+/// arguments from the target thread's stack and push the error message
+/// there, so callers (`auxresume`/`auxwrap`) can move it to their own stack.
+fn resume_error(L: *lua_State, msg: []const u8, narg: i32) i32 {
+    L.top -= @as(usize, @intCast(narg));
+    if (lstring.luaS_new(L, msg)) |ts| {
+        L.stack[L.top] = TValue{ .string = ts };
+    } else |_| {
+        L.stack[L.top] = TValue{ .nil = {} };
+    }
+    L.top += 1;
     return LUA_ERRRUN;
 }
 
@@ -4448,7 +4458,11 @@ pub fn lua_resume(L: *lua_State, from: ?*lua_State, narg: i32, nresults: ?*i32) 
     } else if (L.status != LUA_YIELD) {
         return resume_error(L, "cannot resume dead coroutine", narg);
     }
-    if (L.top == 0) return resume_error(L, "cannot resume dead coroutine", narg);
+    // Port of the reference dead-coordinator check (lua/ldo.c): after the
+    // caller has moved narg arguments onto this thread, a dead thread holds
+    // exactly those arguments on its stack, while a fresh thread additionally
+    // keeps its function in the slot above base_ci.func.
+    if (L.top - @as(usize, @intCast(narg)) == 1) return resume_error(L, "cannot resume dead coroutine", narg);
 
     L.nCcalls = if (from) |f| f.nCcalls else 0;
     L.nCcalls += 1;

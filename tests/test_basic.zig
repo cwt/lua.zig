@@ -5729,3 +5729,30 @@ test "BUG-162: luaV_finishOp completion for comparison and CONCAT yields" {
     const status = try lua.luaL_dostring(&L, script, "=(test_bug162)");
     try std.testing.expectEqual(lua.LUA_OK, status);
 }
+
+test "BUG-156: resuming a dead coroutine reports 'cannot resume dead coroutine'" {
+    const gpa = std.testing.allocator;
+    var L: lua.lua_State = undefined;
+    try lua.luaL_newstate(&L, gpa);
+    defer lua.lua_close(&L);
+    try lua.luaL_openlibs(&L);
+
+    const script =
+        \\-- corpus from lua/testes/coroutine.lua:66-69
+        \\local f = coroutine.create(function () return "a" end)
+        \\assert(coroutine.resume(f) == true)
+        \\assert(coroutine.status(f) == "dead")
+        \\local s, a = coroutine.resume(f, "xuxu")
+        \\assert(not s and string.find(a, "dead") and coroutine.status(f) == "dead")
+        \\-- wrapped coroutine reports the same error through pcall
+        \\local g = coroutine.wrap(function () return "b" end)
+        \\assert(g() == "b")
+        \\local s2, a2 = pcall(g)
+        \\assert(not s2 and string.find(a2, "dead"))
+        \\-- a fresh coroutine still resumes normally with arguments
+        \\local h = coroutine.create(function (x, y) return x + y end)
+        \\assert(select(2, coroutine.resume(h, 40, 2)) == 42)
+    ;
+    const status = try lua.luaL_dostring(&L, script, "=(test_bug156)");
+    try std.testing.expectEqual(lua.LUA_OK, status);
+}

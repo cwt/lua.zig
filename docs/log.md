@@ -6,6 +6,27 @@ tags: [log, changelog]
 timestamp: 2026-09-08T21:20:00Z
 ---
 
+## 2026-09-09 — Fix BUG-156: "cannot resume dead coroutine" error message and stack shape
+
+- **Bug Fixed**: `BUG-156` (MED) — `coroutine.wrap`/`coroutine.resume` on a dead
+  coroutine raised `attempt to call a nil value` instead of
+  `cannot resume dead coroutine` (`lua/testes/coroutine.lua:69`).
+- **Root Cause** (`src/lua.zig`):
+  1. `resume_error` was a stub that returned `LUA_ERRRUN` without touching the
+     stack, so the error message never reached the resuming thread.
+     It now ports `lua/ldo.c` `resume_error`: pop the `narg` resume arguments
+     and push the interned error message onto the target thread's stack
+     (nil fallback under OOM).
+  2. The dead-thread test in `lua_resume` was `L.top == 0`; a dead thread with
+     arguments moved onto it has `top == 1 + narg`, so the check never fired
+     and `do_resume` re-invoked slot 0 (nil → "attempt to call a nil value").
+     The check now mirrors the reference formula `top - (base_ci.func + 1) == narg`.
+- **Verification**:
+  - New unit test `BUG-156: resuming a dead coroutine reports 'cannot resume
+    dead coroutine'` in `tests/test_basic.zig` (dead resume with args,
+    pcall-of-wrap message match, and fresh coroutine still resumes normally).
+  - `zig build test` → 132/132, 0 leaks. `./run_testes.sh` → 20 PASS / 0 FAIL / 0 CRASH.
+
 ## 2026-09-09 — Resolution of High Defects: BUG-155, BUG-160, and BUG-162
 
 - **BUG-155 Fixed** (`src/lib/string/pattern.zig`):
