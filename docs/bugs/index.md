@@ -181,14 +181,14 @@ timestamp: '2026-09-08T21:20:00Z'
 | [BUG-152](152.md) | `ltm.zig` / `ltable.zig`: Dead code `checknoTM` and `Table.flags` missing invalidation on key mutation (only `lua_setmetatable` clears flags) | `LOW` | ✅ FIXED |
 | [BUG-153](153.md) | `lauxlib.zig`: Swallowed error via dummy `catch {}` in `luaL_tolstring` violating rule §0.1 item 12 | `MED` | ✅ FIXED |
 | [BUG-154](154.md) | `luazig.zig`: `std.process.exit` in `main` bypasses `lua_close` and GPA `deinit` defer handlers | `LOW` | ✅ FIXED |
-| [BUG-155](155.md) | `pattern.zig`: `posrelatI` maps `pos==0` to 0 instead of 1 — `string.sub` reads one byte before the string (strings.lua:44) | `HIGH` | ⏳ OPEN |
+| [BUG-155](155.md) | `pattern.zig`: `posrelatI` maps `pos==0` to 0 instead of 1 — `string.sub` reads one byte before the string (strings.lua:44) | `HIGH` | ✅ FIXED |
 | [BUG-156](156.md) | `corolib.zig`: `coroutine.wrap` on dead coroutine raises "attempt to call a nil value" instead of "cannot resume dead coroutine" | `MED` | ⏳ OPEN |
 | [BUG-157](157.md) | `loadlib.zig`: `package.searchpath` with `init=".", sep="."` returns the bare name instead of the expanded path (attrib.lua:138) | `MED` | ⏳ OPEN |
 | [BUG-158](158.md) | `lua.zig`/`baselib.zig`: `collectgarbage("generational")` does not return the previous GC mode (gc.lua:15) | `MED` | ⏳ OPEN |
 | [BUG-159](159.md) | `iolib.zig`: `io.stdin:seek("set", 1000)` invalid seek does not return `(nil, msg, code)` (files.lua:88) | `MED` | ⏳ OPEN |
-| [BUG-160](160.md) | `lvm.zig`/`lua.zig`: yield from a resumed-coroutine metamethod chain mis-tracked — "attempt to yield from outside a coroutine" (big.lua:56) | `HIGH` | ⏳ OPEN |
-| [BUG-161](161.md) | `corolib.zig`/`lua.zig`: process crash (core dump) in the `coroutine.close` chain — missing depth guard (cstack.lua) | `CRITICAL` | ⏳ OPEN |
-| [BUG-162](162.md) | `lvm.zig`: `luaV_finishOp` lacks LT/LE/GTI/GEI/EQ/CONCAT completion cases for yields inside comparison/concat metamethods | `HIGH` | ⏳ OPEN |
+| [BUG-160](160.md) | `lvm.zig`/`lua.zig`: yield from a resumed-coroutine metamethod chain mis-tracked — "attempt to yield from outside a coroutine" (big.lua:56) | `HIGH` | ❌ FALSE POSITIVE |
+| [BUG-161](161.md) | `corolib.zig`/`lua.zig`: process crash (core dump) in the `coroutine.close` chain — missing depth guard (cstack.lua) | `CRITICAL` | ✅ FIXED |
+| [BUG-162](162.md) | `lvm.zig`: `luaV_finishOp` lacks LT/LE/GTI/GEI/EQ/CONCAT completion cases for yields inside comparison/concat metamethods | `HIGH` | ✅ FIXED |
 | [BUG-163](163.md) | `lvm.zig`: VM arithmetic fast path coerces strings directly, shadowing user `__add`…`__unm` on the string metatable | `MED` | ⏳ OPEN |
 | [BUG-164](164.md) | `debug.zig`: `debug.debug()` is a placeholder ("compilation not supported"); residual swallowed-write `catch {}` | `LOW` | ⏳ OPEN |
 | [BUG-165](165.md) | `loadlib.zig`/`luaconf.zig`: default `package.cpath` lacks the `lua/5.5` C-dir components — main.lua:193 fails | `MED` | ⏳ OPEN |

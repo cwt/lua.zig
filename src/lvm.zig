@@ -532,7 +532,7 @@ pub fn SETARG_sJ(i: *Instruction, v: i32) void {
 /// resuming the frame (port of the reference `luaV_finishOp`). The metamethod
 /// call's result is on the stack top; move it to the instruction's destination
 /// register (or apply the instruction's specific completion logic).
-pub fn finishOp(L: *lua.lua_State, ci: *lua.CallInfo) void {
+pub fn finishOp(L: *lua.lua_State, ci: *lua.CallInfo) anyerror!void {
     if (ci.savedpc < 1) return;
     const code = L.stack[ci.func].function.?.lua.p.code;
     const inst = code[@as(usize, @intCast(ci.savedpc - 1))];
@@ -551,6 +551,29 @@ pub fn finishOp(L: *lua.lua_State, ci: *lua.CallInfo) void {
             if (L.top > 0) {
                 L.stack[dest] = L.stack[L.top - 1];
                 L.top -= 1;
+            }
+        },
+        .LT, .LE, .LTI, .LEI, .GTI, .GEI, .EQ => {
+            const res = if (L.top > 0) !isFalse(L.stack[L.top - 1]) else false;
+            if (L.top > 0) L.top -= 1;
+            const k = GETARG_k(inst) != 0;
+            if (res != k and ci.savedpc < code.len) {
+                ci.savedpc += 1;
+            }
+        },
+        .CONCAT => {
+            const ra_idx = ci.base + @as(usize, @intCast(GETARG_A(inst)));
+            const b = @as(usize, @intCast(GETARG_B(inst)));
+            if (L.top > 0) {
+                const res_val = L.stack[L.top - 1];
+                L.top -= 1;
+                const k = if (ci.concat_k > 0) ci.concat_k else b;
+                ci.concat_k = 0;
+                const lhs_idx = ra_idx + k - 2;
+                L.stack[lhs_idx] = res_val;
+                if (k - 1 >= 2) {
+                    try lua.luaV_concat(L, k - 1, ra_idx);
+                }
             }
         },
         .CLOSE => {

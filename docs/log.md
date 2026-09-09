@@ -6,6 +6,35 @@ tags: [log, changelog]
 timestamp: 2026-09-08T21:20:00Z
 ---
 
+## 2026-09-09 — Resolution of High Defects: BUG-155, BUG-160, and BUG-162
+
+- **BUG-155 Fixed** (`src/lib/string/pattern.zig`):
+  - `posrelatI` mapped `pos == 0` to 0 instead of 1, and failed to clip negative out-of-range positions (`pos < -slen`) to 1.
+  - Slicing `s[start - 1 .. end]` with `start == 0` under ReleaseFast underflowed the slice index and silently read one byte before the string buffer.
+  - Aligned `posrelatI` with C reference `lua/lstrlib.c`: `pos == 0 => 1`, `pos < -slen => 1`, and `pos > 0 => @intCast(pos)`.
+  - Fixes standalone `strings.lua:44` assertion failure.
+
+- **BUG-160 Investigated & Resolved as False Positive** (`docs/bugs/160.md`):
+  - Investigated reported failure at `big.lua:56` (`coroutine.yield'b'`).
+  - Found that `big.lua` intentionally contains a top-level `coroutine.yield'b'` designed to run wrapped in a coroutine harness (`all.lua:180`: `local f = coroutine.wrap(assert(loadfile('big.lua')))`).
+  - Standalone execution of `big.lua` fails identically on upstream C Lua 5.5.1 reference binary.
+  - When invoked inside a coroutine wrapper, `big.lua` passes to completion in `luazig`.
+  - Added unit test in `tests/test_basic.zig` verifying that yielding from `__index` and `__newindex` metamethod chains inside coroutines resumes cleanly.
+
+- **BUG-162 Fixed** (`src/lvm.zig`, `src/lua.zig`):
+  - `finishOp` in `src/lvm.zig` lacked completion cases for comparison opcodes (`.LT, .LE, .LTI, .LEI, .GTI, .GEI, .EQ`) and `.CONCAT` when a metamethod yields inside a coroutine.
+  - Comparison cases: pops result from stack, checks `res != k`, and conditionally advances `ci.savedpc += 1` to skip the following `OP_JMP` if the condition was false.
+  - `.CONCAT`: added `concat_k` to `CallInfo`, recorded pending `k` in `luaV_concat` before yielding, placed result at `ra_idx + k - 2`, and recursively continued `luaV_concat(L, k - 1, ra_idx)`.
+  - Updated `finishOp` signature to `anyerror!void` and added error propagation handling in `unroll` and `do_resume`.
+
+- **Verification**:
+  - Added unit tests in `tests/test_basic.zig`:
+    - `BUG-155: posrelatI clips pos==0 and pos<-len to 1`
+    - `BUG-160: metamethod yielding inside coroutine (__index and __newindex)`
+    - `BUG-162: luaV_finishOp completion for comparison and CONCAT yields`
+  - `zig build test` passes all tests with zero memory leaks.
+  - `./run_testes.sh` passes 20 PASS / 0 FAIL / 0 CRASH.
+
 ## 2026-09-09 — Fix BUG-161: Process Crash in "Chain of coroutine.close" Test (cstack.lua)
 
 - **Bug Fixed**: `BUG-161` (CRITICAL) — `cstack.lua` process crash / core dump during chain of `coroutine.close` recursion.

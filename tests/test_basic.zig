@@ -5621,3 +5621,111 @@ test "BUG-161: chain of coroutine.close recursion limits and cleanup" {
     const status = try lua.luaL_dostring(&L, script, "=(test_bug161)");
     try std.testing.expectEqual(lua.LUA_OK, status);
 }
+
+test "BUG-155: posrelatI clips pos==0 and pos<-len to 1" {
+    const gpa = std.testing.allocator;
+    var L: lua.lua_State = undefined;
+    try lua.luaL_newstate(&L, gpa);
+    defer lua.lua_close(&L);
+    try lua.luaL_openlibs(&L);
+
+    const script =
+        \\assert(string.sub("123456789", 0, 0) == "")
+        \\assert(string.sub("123456789", 0, 1) == "1")
+        \\assert(string.sub("123456789", -10, 10) == "123456789")
+        \\assert(string.sub("123456789", -20, -10) == "")
+        \\assert(string.sub("123456789", -20, 1) == "1")
+        \\assert(string.byte("123456789", 0, 1) == string.byte("1"))
+        \\assert(select('#', string.byte("123456789", 0)) == 0)
+    ;
+    const status = try lua.luaL_dostring(&L, script, "=(test_bug155)");
+    try std.testing.expectEqual(lua.LUA_OK, status);
+}
+
+test "BUG-160: metamethod yielding inside coroutine (__index and __newindex)" {
+    const gpa = std.testing.allocator;
+    var L: lua.lua_State = undefined;
+    try lua.luaL_newstate(&L, gpa);
+    defer lua.lua_close(&L);
+    try lua.luaL_openlibs(&L);
+
+    const script =
+        \\local t = setmetatable({}, {
+        \\  __index = function(tbl, k)
+        \\    coroutine.yield("yielded_index_" .. k)
+        \\    return 42
+        \\  end,
+        \\  __newindex = function(tbl, k, v)
+        \\    coroutine.yield("yielded_newindex_" .. k)
+        \\  end
+        \\})
+        \\local co = coroutine.create(function()
+        \\  local val = t.foo
+        \\  t.bar = 99
+        \\  return val
+        \\end)
+        \\local ok, r1 = coroutine.resume(co)
+        \\assert(ok and r1 == "yielded_index_foo")
+        \\local ok, r2 = coroutine.resume(co)
+        \\assert(ok and r2 == "yielded_newindex_bar")
+        \\local ok, r3 = coroutine.resume(co)
+        \\assert(ok and r3 == 42)
+    ;
+    const status = try lua.luaL_dostring(&L, script, "=(test_bug160)");
+    try std.testing.expectEqual(lua.LUA_OK, status);
+}
+
+test "BUG-162: luaV_finishOp completion for comparison and CONCAT yields" {
+    const gpa = std.testing.allocator;
+    var L: lua.lua_State = undefined;
+    try lua.luaL_newstate(&L, gpa);
+    defer lua.lua_close(&L);
+    try lua.luaL_openlibs(&L);
+
+    const script =
+        \\-- LT yield
+        \\local t1 = setmetatable({x = 1}, {
+        \\  __lt = function(a, b)
+        \\    coroutine.yield("lt_yield")
+        \\    return a.x < b.x
+        \\  end
+        \\})
+        \\local t2 = setmetatable({x = 2}, {})
+        \\local co_lt = coroutine.create(function()
+        \\  if t1 < t2 then return "less" else return "not less" end
+        \\end)
+        \\assert(select(2, coroutine.resume(co_lt)) == "lt_yield")
+        \\assert(select(2, coroutine.resume(co_lt)) == "less")
+        \\
+        \\-- EQ yield
+        \\local e1 = setmetatable({x = 10}, {
+        \\  __eq = function(a, b)
+        \\    coroutine.yield("eq_yield")
+        \\    return a.x == b.x
+        \\  end
+        \\})
+        \\local e2 = setmetatable({x = 10}, {})
+        \\local co_eq = coroutine.create(function()
+        \\  if e1 == e2 then return "equal" else return "not equal" end
+        \\end)
+        \\assert(select(2, coroutine.resume(co_eq)) == "eq_yield")
+        \\assert(select(2, coroutine.resume(co_eq)) == "equal")
+        \\
+        \\-- CONCAT yield
+        \\local c1 = setmetatable({s = "world"}, {
+        \\  __concat = function(a, b)
+        \\    coroutine.yield("concat_yield")
+        \\    local s1 = type(a) == "table" and a.s or a
+        \\    local s2 = type(b) == "table" and b.s or b
+        \\    return s1 .. s2
+        \\  end
+        \\})
+        \\local co_c = coroutine.create(function()
+        \\  return "hello " .. c1
+        \\end)
+        \\assert(select(2, coroutine.resume(co_c)) == "concat_yield")
+        \\assert(select(2, coroutine.resume(co_c)) == "hello world")
+    ;
+    const status = try lua.luaL_dostring(&L, script, "=(test_bug162)");
+    try std.testing.expectEqual(lua.LUA_OK, status);
+}

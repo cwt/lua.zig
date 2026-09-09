@@ -25,11 +25,13 @@ pub const MatchState = struct {
 };
 
 pub fn posrelatI(pos: i64, len: usize) usize {
-    if (pos >= 0) {
+    if (pos > 0) {
         return @as(usize, @intCast(pos));
+    } else if (pos == 0) {
+        return 1;
     } else {
         const slen = @as(i64, @intCast(len));
-        if (-pos > slen) return 0;
+        if (pos < -slen) return 1;
         return @as(usize, @intCast(slen + pos + 1));
     }
 }

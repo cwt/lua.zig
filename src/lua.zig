@@ -1023,6 +1023,7 @@ pub const CallInfo = struct {
     // Mirrors C reference ci->u2.nres / CIST_CLSRET.
     nres_saved: i32 = 0,
     clsret: bool = false,
+    concat_k: usize = 0,
     /// Set while running a __gc finalizer, mirroring the reference's CIST_FIN.
     /// Also marks a protected call (CIST_YPCALL): when a coroutine resumes and
     /// the resumed frame errors, precover unwinds to the nearest frame with
@@ -4344,7 +4345,15 @@ fn unroll(L: *lua_State) !void {
         if (val == .function and val.function.?.* == .lua) {
             // The frame was interrupted by a yield: complete the interrupted
             // instruction before resuming (mirrors luaV_finishOp in unroll).
-            lvm.finishOp(L, ci);
+            lvm.finishOp(L, ci) catch |e| {
+                if (e == error.Yield or e == error.ThreadClosed) return e;
+                const handled = precover(L) catch |pe| {
+                    if (pe == error.Yield) return pe;
+                    return e;
+                };
+                if (!handled) return e;
+                continue;
+            };
             lvm.run(L, ci) catch |e| {
                 if (e == error.Yield or e == error.ThreadClosed) return e;
                 const handled = precover(L) catch |pe| {
@@ -4403,7 +4412,14 @@ fn do_resume(L: *lua_State, narg: i32) !void {
                 const val = L.stack[ci.func];
                 if (val == .function and val.function.?.* == .lua) {
                     L.ci = ci;
-                    lvm.finishOp(L, ci);
+                    lvm.finishOp(L, ci) catch |e| {
+                        if (e == error.Yield or e == error.ThreadClosed) return e;
+                        const handled = precover(L) catch |pe| {
+                            if (pe == error.Yield) return pe;
+                            return e;
+                        };
+                        if (!handled) return e;
+                    };
                     lvm.run(L, ci) catch |e| {
                         if (e == error.Yield or e == error.ThreadClosed) return e;
                         const handled = precover(L) catch |pe| {
@@ -5459,6 +5475,9 @@ pub fn luaV_concat(L: *lua_State, total: usize, ra_idx: usize) !void {
             L.stack[ra_idx + start] = .{ .string = ts };
             k = start + 1;
         } else {
+            if (L.ci) |ci| {
+                ci.concat_k = k;
+            }
             try ltm.luaT_trybinTM(L, &lhs, &rhs, lhs_idx, .CONCAT);
             k -= 1;
         }
