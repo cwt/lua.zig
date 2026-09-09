@@ -1180,6 +1180,13 @@ pub const global_State = struct {
     /// old mode name (BUG-158). The engine stays mark-and-sweep; only the
     /// mode label is tracked so the return-value contract is conformant.
     gc_mode: i32 = LUA_GCINC,
+    /// Accumulated work for `LUA_GCSTEP` (BUG-169): each `collectgarbage(
+    /// "step", n)` advances this by `n` units; when it reaches the step
+    /// budget (`gcparams[LUA_GCPSTEPMUL]`) a full mark-and-sweep collection
+    /// runs and the accumulator resets, returning 1 (cycle complete). This
+    /// mirrors the reference's bounded incremental stepping so that
+    /// `dosteps(10) < dosteps(2)` in gc.lua holds.
+    gc_step_accum: usize = 0,
 };
 
 inline fn G(L: *lua_State) *global_State {
@@ -5427,6 +5434,7 @@ pub fn lua_gc(L: *lua_State, what: i32, arg: i32, value: i32) i32 {
         },
         LUA_GCCOLLECT => {
             luaC_collectgarbage(L) catch return -1;
+            g.gc_step_accum = 0;
             return 0;
         },
         LUA_GCCOUNT => {
@@ -5436,9 +5444,27 @@ pub fn lua_gc(L: *lua_State, what: i32, arg: i32, value: i32) i32 {
             return @as(i32, @intCast(g.totalbytes % 1024));
         },
         LUA_GCSTEP => {
-            // Run a full synchronous collection for each step request.
-            // (A real incremental GC would only do a portion.)
+            // Bounded stepping for explicit sizes (BUG-169): `arg > 0`
+            // accumulates `arg` work units and runs a full mark-and-sweep
+            // collection only when the accumulator reaches the step budget
+            // (the `stepmul` GC parameter), returning 1 for a completed cycle
+            // and 0 otherwise. This keeps `collectgarbage("step", n)`
+            // proportional to `n`, so gc.lua's `dosteps(10) < dosteps(2)`
+            // holds. A bare `collectgarbage("step")` (arg == 0) performs a
+            // complete cycle in one call (what the generational-mode tests,
+            // e.g. gengc.lua, rely on).
+            if (arg > 0) {
+                const budget = @as(usize, @intCast(g.gcparams[LUA_GCPSTEPMUL]));
+                g.gc_step_accum += @as(usize, @intCast(arg));
+                if (budget > 0 and g.gc_step_accum >= budget) {
+                    luaC_collectgarbage(L) catch return -1;
+                    g.gc_step_accum = 0;
+                    return 1;
+                }
+                return 0;
+            }
             luaC_collectgarbage(L) catch return -1;
+            g.gc_step_accum = 0;
             return 1;
         },
         LUA_GCISRUNNING => {

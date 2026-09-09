@@ -5942,3 +5942,35 @@ test "BUG-168: coroutine self-close and re-close are safe (no double-free/UAF)" 
     // A self-close leaves no live CallInfo chain; a following GC must be clean.
     try lua.luaC_collectgarbage(&L);
 }
+
+test "BUG-169: collectgarbage step is bounded so dosteps(10) < dosteps(2)" {
+    const gpa = std.testing.allocator;
+    var L: lua.lua_State = undefined;
+    try lua.luaL_newstate(&L, gpa);
+    defer lua.lua_close(&L);
+    try lua.luaL_openlibs(&L);
+
+    const script =
+        \\-- corpus from lua/testes/gc.lua:53-71 (the "steps" section)
+        \\local gcinfo = function () return collectgarbage("count") end
+        \\local function dosteps (siz)
+        \\  collectgarbage()
+        \\  local a = {}
+        \\  for i=1,100 do a[i] = {{}}; local b = {} end
+        \\  local x = gcinfo()
+        \\  local i = 0
+        \\  repeat
+        \\    i = i + 1
+        \\  until collectgarbage("step", siz)
+        \\  assert(gcinfo() < x)
+        \\  return i
+        \\end
+        \\collectgarbage("stop")
+        \\local d10 = dosteps(10)
+        \\local d2 = dosteps(2)
+        \\collectgarbage("restart")
+        \\assert(d10 < d2)
+    ;
+    const status = try lua.luaL_dostring(&L, script, "=(test_bug169)");
+    try std.testing.expectEqual(lua.LUA_OK, status);
+}

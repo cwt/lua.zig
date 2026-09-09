@@ -6,6 +6,25 @@ tags: [log, changelog]
 timestamp: 2026-09-08T21:20:00Z
 ---
 
+## 2026-09-09 — Fix BUG-169: collectgarbage("step") is now bounded; log BUG-172
+
+- **Bug Fixed**: `BUG-169` (MED) — `LUA_GCSTEP` ran a full synchronous
+  collection on every call, so `gc.lua:71`'s `dosteps(10) < dosteps(2)` failed
+  (both returned 1 step).
+- **Change** (`src/lua.zig`): added `global_State.gc_step_accum`; `lua_gc`
+  `LUA_GCSTEP` now accumulates `arg` work units and runs a full mark-and-sweep
+  only when the accumulator reaches the step budget (`gcparams[LUA_GCPSTEPMUL]`
+  = 200), returning 1 for a completed cycle and 0 otherwise; `LUA_GCCOLLECT`
+  resets the accumulator. The engine stays mark-and-sweep; only the *step
+  contract* becomes conformant.
+- **Verification**: new unit test `BUG-169`; `dosteps(10)=20 < dosteps(2)=100`;
+  gc.lua passes the steps section.
+- **New defect logged** (`BUG-172`, HIGH, open): gc.lua's next blocker is the
+  weak-table section (line 249) — a mark-and-sweep weak-reference sweep
+  divergence, separate from stepping.
+- **Gate**: `zig build test` → 178/178 passing, 0 leaks. `./run_testes.sh` → 20
+  PASS / 0 FAIL / 0 CRASH.
+
 ## 2026-09-09 — Fix BUG-168: coroutine self-close / re-close no longer double-frees
 
 - **Bug Fixed**: `BUG-168` (CRITICAL) — `free(): double free detected in
