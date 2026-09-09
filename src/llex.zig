@@ -566,6 +566,9 @@ pub fn luaX_newstring(ls: *LexState, str: []const u8) !*lua.lua_TString {
             if (existing.string) |s| return s;
         }
         try @import("ltable.zig").set(tab, .{ .string = ts }, .{ .string = ts });
+        // Reference luaX_checkliteral checkGC after the anchor-table insert
+        // (lua/llex.c:146).
+        lua.luaC_condGC(L);
     }
     return ts;
 }

@@ -6033,3 +6033,100 @@ test "BUG-170: CLI warns when LUA_READLINELIB cannot be loaded at REPL entry" {
         std.mem.indexOf(u8, result.stderr, "warning: unable to load readline library 'xuxu'") != null,
     );
 }
+
+// ---------------------------------------------------------------------------
+// P1 (BUG-174): GC now steps only at object-registration sites (the
+// reference's checkGC placement), not on every VM instruction. These tests
+// pin that contract:
+//   1. luaC_checkGC (VM sites) fires when the count exceeds the threshold
+//      and resets the counter; it is a no-op below the threshold and while
+//      the GC is stopped.
+//   2. A pure-VM allocation loop (NEWTABLE opcode) still triggers
+//      collections mid-execution — objects created inside the loop get
+//      swept without any per-instruction check.
+// ---------------------------------------------------------------------------
+
+fn countAllgc(g: *lua.global_State) usize {
+    var n: usize = 0;
+    var curr = g.allgc;
+    while (curr) |gc| {
+        n += 1;
+        curr = gc.next;
+    }
+    return n;
+}
+
+test "P1: luaC_checkGC fires at the threshold, respects stop, no-op below" {
+    const gpa = std.testing.allocator;
+    var L: lua.lua_State = undefined;
+    try lua.luaL_newstate(&L, gpa);
+    defer lua.lua_close(&L);
+    const g = L.l_G.?;
+
+    // 1. Above the threshold: the step runs and the counter is rebased
+    //    (after a collection gc_count = survivors, threshold >= 2x).
+    g.gc_count = g.gc_threshold + 1;
+    try lua.luaC_checkGC(&L, L.top);
+    try std.testing.expect(g.gc_count < g.gc_threshold);
+    try std.testing.expect(!g.gc_in_progress);
+
+    // 2. Below the threshold: no step, counter untouched.
+    g.gc_count = 5;
+    g.gc_threshold = 1000;
+    try lua.luaC_checkGC(&L, L.top);
+    try std.testing.expectEqual(@as(usize, 5), g.gc_count);
+
+    // 3. GC stopped: even above the threshold no step runs.
+    try std.testing.expectEqual(@as(i32, 0), lua.lua_gc(&L, lua.LUA_GCSTOP, 0, 0));
+    g.gc_count = g.gc_threshold + 1;
+    try lua.luaC_checkGC(&L, L.top);
+    try std.testing.expectEqual(g.gc_threshold + 1, g.gc_count);
+    try std.testing.expectEqual(@as(i32, 0), lua.lua_gc(&L, lua.LUA_GCRESTART, 0, 0));
+
+    // The helper must not have corrupted the live set: a final forced
+    // collection succeeds.
+    try std.testing.expectEqual(@as(i32, 0), lua.lua_gc(&L, lua.LUA_GCCOLLECT, 0, 0));
+}
+
+test "P1: a VM table-allocation loop still gets collected mid-execution" {
+    const gpa = std.testing.allocator;
+    var L: lua.lua_State = undefined;
+    try lua.luaL_newstate(&L, gpa);
+    defer lua.lua_close(&L);
+    const g = L.l_G.?;
+    const init = countAllgc(g);
+
+    // Each iteration registers one table (VM NEWTABLE opcode); every table
+    // dies at loop end, so if GC never stepped at the NEWTABLE site the
+    // allgc list would end at init + 5000. A single in-loop collection
+    // proves the registration-site check fires (the per-instruction check
+    // is gone). The `sink` tables stay alive across in-loop collections;
+    // their contents must survive intact — this pin-anchors the NEWTABLE
+    // site's anchor-before-checkGC ordering (a collection running before
+    // the new table reached the stack would sweep it and leave the slot
+    // with a dangling pointer; upstream cstack/constructs/math/sort/pm
+    // then crash with heap corruption).
+    // A bare state has no baselib (no assert/pcall), so the script reports
+    // its verdict through the global `result` instead of asserting in Lua.
+    const status = try lua.luaL_dostring(
+        &L,
+        "local sink = {}\nfor i = 1, 5000 do\n    local t = { n = i }\n    if i % 500 == 0 then sink[i] = t end\nend\nlocal r = 0\nif sink[500].n ~= 500 then r = 1 end\nif sink[5000].n ~= 5000 then r = 2 end\nif sink[1] ~= nil then r = 3 end\nresult = r",
+        "=p1_newtable",
+    );
+    try std.testing.expectEqual(@as(i32, 0), status);
+    lua.lua_pushglobaltable(&L);
+    _ = lua.lua_pushlstring(&L, "result", 6);
+    try std.testing.expect(lua.lua_rawget(&L, -2) != 0);
+    const r = lua.lua_tointeger(&L, -1) orelse -1;
+    try std.testing.expectEqual(@as(i64, 0), r);
+
+    const after = countAllgc(g);
+    // GC must have swept at least one batch of dead mid-loop tables.
+    try std.testing.expect(after < init + 5000);
+
+    // And the dead tables really were sweepable: a final collect leaves
+    // the count at (or below) what it was right after the loop.
+    _ = lua.lua_gc(&L, lua.LUA_GCCOLLECT, 0, 0);
+    const final = countAllgc(g);
+    try std.testing.expect(final <= after);
+}

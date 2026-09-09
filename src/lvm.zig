@@ -717,19 +717,17 @@ pub fn run(L: *lua.lua_State, active_ci: *lua.CallInfo) anyerror!void {
     var cl = L.stack[ci.func].function.?.lua;
     var proto = cl.p;
     var code = proto.code;
-    // Hoist the global state out of the per-instruction path (the reference's
-    // luaV_execute keeps GC state in locals). The hook mask is re-read each
-    // instruction: a nested call (e.g. debug.sethook) can change it, and a
-    // hoisted copy would go stale across frame boundaries.
-    const g = L.l_G orelse return error.NoGlobalState;
+    // The hook mask is re-read each instruction: a nested call (e.g.
+    // debug.sethook) can change it, and a hoisted copy would go stale
+    // across frame boundaries.
+    //
+    // There is deliberately no per-instruction GC check here: the C
+    // reference (lua/lvm.c) has none. GC stepping is conditional and runs
+    // only at object-registration sites (luaC_checkGC in this NEWTABLE /
+    // CONCAT / CLOSURE below, plus the luaC_condGC sites in the C API,
+    // lexer, and parser — P1 of docs/performance.md, BUG-174).
 
     while (ci.savedpc < code.len) {
-        if (g.gc_running and g.gc_count > g.gc_threshold) {
-            const old_top = L.top;
-            L.top = ci.top;
-            try lua.luaC_collectgarbage(L);
-            L.top = old_top;
-        }
         const instruction: Instruction = code[ci.savedpc];
         const op = GET_OPCODE(instruction);
         ci.savedpc += 1;
@@ -876,7 +874,12 @@ pub fn run(L: *lua.lua_State, active_ci: *lua.CallInfo) anyerror!void {
                 const nrec = if (vB > 0) @as(usize, 1) << @as(u6, @intCast(@min(vB - 1, 63))) else 0;
                 const tab = try ltable.createTable(L.allocator, narr, nrec);
                 try lua.registerGC(L, tab);
+                // The table must be anchored on the stack BEFORE the GC check
+                // (reference order: sethvalue2s then checkGC, lua/lvm.c:1425-
+                // 1431): an unanchored table is unreachable and would be
+                // swept by the very collection we are about to trigger.
                 L.stack[ra_idx] = .{ .table = tab };
+                try lua.luaC_checkGC(L, ra_idx + 1);
             },
             .SELF => {
                 const ra_idx = ci.base + @as(usize, @intCast(GETARG_A(instruction)));
@@ -1382,6 +1385,9 @@ pub fn run(L: *lua.lua_State, active_ci: *lua.CallInfo) anyerror!void {
                 const n = @as(usize, @intCast(GETARG_B(instruction)));
                 if (n >= 2) {
                     try lua.luaV_concat(L, n, ra_idx);
+                    // Reference checkGC(L, L->top.p) at the CONCAT site
+                    // (lua/lvm.c:1637): luaV_concat leaves the top correct.
+                    try lua.luaC_checkGC(L, L.top);
                 }
             },
             .CLOSE => {
@@ -1840,6 +1846,9 @@ pub fn run(L: *lua.lua_State, active_ci: *lua.CallInfo) anyerror!void {
                 const bx = @as(usize, @intCast(GETARG_Bx(instruction)));
                 const sub_proto = proto.p[bx];
                 try pushclosure(L, sub_proto, cl.upvals, ci.base, ra_idx);
+                // Reference checkGC(L, ra + 1) at the CLOSURE site
+                // (lua/lvm.c:1939).
+                try lua.luaC_checkGC(L, ra_idx + 1);
             },
             .VARARG => {
                 const ra_idx = ci.base + @as(usize, @intCast(GETARG_A(instruction)));

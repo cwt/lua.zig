@@ -9,7 +9,7 @@ tags:
   - profiling
   - libm
   - roadmap
-timestamp: 2026-09-09T23:00:00Z
+timestamp: 2026-09-09T23:55:00Z
 status: draft
 sources:
   - src/lvm.zig
@@ -30,7 +30,8 @@ stale_after: 2026-12-31T00:00:00Z
 | Part | State |
 |------|-------|
 | Root-cause investigation | ✅ DONE (2026-09-09, machine-confirmed via `perf`) |
-| Fix plan P1–P4 | ⏳ PLANNED, not started |
+| P1 (GC check sites) | ✅ DONE (2026-09-09) — 425B → 397B instructions, suite 20/0/0 |
+| P2–P4 | ⏳ PLANNED, not started |
 | Tracking | [BUG-174](bugs/174.md) |
 
 ## Benchmark
@@ -137,29 +138,52 @@ its C-call plumbing.
 
 ## Fix Plan (ordered, minimal-diff)
 
-### P1 — Drop the per-instruction GC check; mirror the reference `checkGC` sites
+### P1 — Drop the per-instruction GC check; mirror the reference `checkGC` sites ✅ DONE (2026-09-09)
 
-- **Files:** `src/lvm.zig` (delete loop-head block at 727–732; add 3 calls),
-  `src/lua.zig` (helper + C-call/C-API sites), `src/lstring.zig`
-  (interning site), `src/ltable.zig` (allocation site if needed).
-- **What:**
-  - Add `checkGC(L)` helper mirroring `luaC_condGC` (`lua/lgc.h:233`):
-    `if (g.gc_running and g.gc_count >= g.gc_threshold) { g.gc_count = 0;
-    collect }` (keep the existing collection call; §0.1: propagate errors,
-    never swallow).
-  - Call it at the reference's object-registration sites:
-    - VM opcodes: `.NEWTABLE`, `.CONCAT`, `.CLOSURE` bodies in `lvm.zig`
-      (mirror `lua/lvm.c:1431/1637/1939`);
-    - `luaS_new` in `lstring.zig` — only when a string is **newly**
-      interned;
-    - table creation in `lua.zig` (`lua_createtable`/`luaH_new`);
-    - C-call return path (`precall`/`poscall`/`luaK_finish` in `lua.zig`) —
-      audit `lua/lapi.c` `luaC_checkGC` sites and map each to its Zig
-      equivalent before finalizing.
-- **Expected:** −30B instructions (~0.5s).
-- **Risk:** LOW–MED. GC timing shifts (checks run at allocation sites, as
-  in the reference; in the pi loop they run *never*). Must re-run the full
-  upstream suite (GC-sensitive tests) + 131 unit tests + 0-leak check.
+- **Result:** 425B → **397B instructions** (−28B, plan estimated −30B);
+  pi wall-clock 15.5s → 15.2s (the gap is still dominated by RC1/RC3/RC4 —
+  see P2–P4). Output byte-identical to the reference; `zig build test`
+  182/182 (incl. 2 new P1 tests), 0 leaks; upstream suite 20 PASS / 0 FAIL
+  / 0 CRASH (baseline preserved).
+- **Implemented:**
+  - `src/lvm.zig`: loop-head `g.gc_count > g.gc_threshold` block deleted
+    (and the now-unused `const g`); `try lua.luaC_checkGC(L, top)` added at
+    `.NEWTABLE` (top `ra_idx + 1`), `.CONCAT` (top `L.top`), `.CLOSURE`
+    (top `ra_idx + 1`) — mirroring `lua/lvm.c:1431/1637/1939`.
+  - `src/lua.zig`: new `luaC_checkGC(L, top)` — propagating variant for the
+    VM sites (sets `L.top` around the step for emergency GC, restores
+    after); `luaC_condGC` (fire-and-forget, C-API sites) now **logs** a
+    failed step instead of the §0.1-forbidden empty `catch {}` (its
+    BUG-100 comment promised logging the code never had).
+  - C-API/lexer/parser sites (fire-and-forget `luaC_condGC`, matching the
+    reference's void `luaC_checkGC`): `lua_pushlstring`,
+    `lua_pushexternalstring`, `lua_pushvfstring`, `lua_pushfstring`,
+    `lua_pushcclosure` (all 3 paths), `lua_createtable`, `lua_newthread`,
+    `lua_load` (entry), `lua_closeslot`, `lua_warning`,
+    `lua_tolstring` (number-coercion branch); `llex.zig` `luaX_newstring`
+    (new-entry branch, `llex.c:146`); `lparser.zig` `close_func`
+    (`lparser.c:850`). The vararg-table site (`ltm.zig`, C `ltm.c:245`)
+    already existed.
+  - The plan's `lstring.zig`/`ltable.zig` sites were **not needed**: the
+    C reference does not check inside interning/table-alloc — debt
+    adjusts there and the *callers'* sites (above) cover them. The
+    `lua/lapi.c` audit (lines 426/549/564/581/592/603/630/800/1125/1215/
+    1305/1366) mapped 1:1 to the list; `lapi.c:1215` (GCSTEP) is already
+    covered by the BUG-169 step accumulator in `lua_gc`.
+- **Lesson (found by the suite):** the VM sites must **anchor the new
+  object on the stack BEFORE the check** — C does `sethvalue2s(ra, t)`
+  then `checkGC(L, ra + 1)`. The first NEWTABLE patch checked before
+  writing the slot, so a triggered collection swept the just-registered
+  table (unreachable) and the slot then held a dangling pointer → 5
+  upstream tests crashed with glibc "unaligned tcache chunk" heap
+  corruption. Fixed by reordering; the strengthened P1 test now keeps
+  alive some loop tables and verifies their contents survive in-loop
+  collections (regression pin for this ordering).
+- **Tooling note:** `zig build test` in this 0.16 toolchain prints
+  `failed command: ... test_basic ... --listen=-` even when the step
+  **succeeds** (display artifact of the listen-protocol exit handshake).
+  Judge by exit code / `zig build test --summary all`
+  ("9/9 steps succeeded; 182/182 tests passed").
 
 ### P2 — Loop-local `savedpc` + hoisted `hookmask` in `run`
 
@@ -215,12 +239,17 @@ its C-call plumbing.
 
 1. One hg commit per item; §0.1 self-audit in the commit message (new `try`
    sites must propagate — never `catch {}` / `catch unreachable`).
-2. `zig build` + `zig build test` (131 tests, 0 leaks) after each item.
+2. `zig build` + `zig build test` (182 tests, 0 leaks — judge by
+   `--summary all` / exit code, not the misleading "failed command" line;
+   see the P1 tooling note) after each item.
 3. Benchmark: `time ./zig-out/bin/luazig tests/pi-5.5.lua` and
-   `perf stat -e instructions` — record per step (baseline: 425B / 15.5s;
-   C reference: 192B / 8.2s).
-4. After P1 + P2: full upstream `lua/testes` suite (must stay
-   20 PASS / 0 FAIL / 0 CRASH per current `./run_testes.sh` baseline).
+   `perf stat -e instructions` — record per step (history: 425B/15.5s
+   pre-P1 → **397B/15.2s post-P1**; C reference: 192B / 8.2s).
+4. After P1 + P2: full upstream `lua/testes` suite via `./run_testes.sh`
+   (must stay 20 PASS / 0 FAIL / 0 CRASH; `cstack` needs CWD
+   `lua/testes` for the pure-Lua `tracegc.lua` fallback — a standalone run
+   from the repo root fails identically on the C reference, i.e.
+   environmental).
 5. Re-profile via the shadow-build method above; confirm the RC1 back-edge
    loads are gone from the disassembly.
 6. Update this document (flip statuses), `log.md`, and close
@@ -228,11 +257,12 @@ its C-call plumbing.
 
 ## Expected Outcome
 
-425B → ~310–330B instructions ≈ **10.5–11.5s ≈ 1.3–1.4× the C reference**,
-from ~10 lines in `libm.zig`, ~15 in `lua.zig`/`lstring.zig`, ~50 in
-`lvm.zig` — no data-layout or opcode-semantics changes. Reaching full
-parity requires deeper register-pinning work (second pass, not planned
-here).
+- P1 landed at 425B → **397B** (15.2s), confirming the −30B estimate for
+  RC2. Remaining gap vs C (192B): RC1 frame/savedpc traffic (~−60B
+  expected from P2), RC4 `getLibm` (−10B from P3), RC3 checknumber
+  (re-measure for P4). Projected post-P3: **~320–340B ≈ 11–12s ≈ 1.3–1.4×
+  C** without any data-layout or opcode-semantics changes. Full parity
+  needs deeper register-pinning work (second pass, not planned here).
 
 ## Related
 

@@ -896,6 +896,9 @@ fn close_func(ls: *llex.LexState) !void {
     f.upvalues = try fs.upvalues.toOwnedSlice(alloc);
     f.locvars = try fs.locvars.toOwnedSlice(alloc);
     f.isVarArg = (f.flag & (PF_VAHID | PF_VATAB)) != 0;
+    // Reference close_func checkGC (lua/lparser.c:850): the func-state
+    // shrink/anchor releases may have made objects collectable.
+    lua.luaC_condGC(ls.L);
 }
 
 fn setvararg(fs: *FuncState) !void {

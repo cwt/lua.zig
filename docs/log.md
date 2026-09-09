@@ -3,8 +3,43 @@ type: lessons_learned
 title: Modification Log
 description: Running chronological log of bundle modifications and significant changes.
 tags: [log, changelog]
-timestamp: 2026-09-09T23:30:00Z
+timestamp: 2026-09-09T23:55:00Z
 ---
+
+## 2026-09-09 — P1 (BUG-174): per-instruction GC check moved to the reference's object-registration sites
+
+- **Change**: `lvm.zig` no longer checks `g.gc_count > g.gc_threshold` on
+  every instruction (RC2 of the perf investigation — a structural deviation
+  from `lua/lvm.c`, which has no loop-head GC check). A propagating
+  `luaC_checkGC(L, top)` (mirrors the reference's `checkGC(L, c)` macro)
+  now runs at the three VM opcode sites — NEWTABLE / CONCAT / CLOSURE
+  (`lua/lvm.c:1431/1637/1939`) — and fire-and-forget `luaC_condGC` at the
+  C-API/lexer/parser sites mapped from `lua/lapi.c`
+  (426/549/564/581/592/603/630/800/1125/1305/1366), `llex.c:146`, and
+  `lparser.c:850`. The vararg-table site (`ltm.zig`, C `ltm.c:245`)
+  already existed. `luaC_condGC`'s §0.1-forbidden empty `catch {}` now
+  logs the failed step (matching its own BUG-100 comment).
+- **Regression caught + fixed**: the first NEWTABLE patch ran the check
+  *before* the new table reached the stack; a triggered collection then
+  swept the unanchored table and the slot stored a dangling pointer —
+  5 upstream tests crashed with glibc "unaligned tcache chunk". C's
+  ordering (`sethvalue2s` then `checkGC`) restored; the strengthened P1
+  test keeps live tables across in-loop collections and checks contents.
+- **New tests** (`tests/test_basic.zig`): `luaC_checkGC` threshold/stop/
+  no-op semantics, and a 5000-iteration VM table-allocation loop proving
+  collections still fire mid-execution at the registration sites (182/182,
+  0 leaks).
+- **Verification**: pi-5.5 425B → **397B** instructions (plan estimated
+  −30B; −28B), 15.5s → 15.2s, output byte-identical to the C reference;
+  `./run_testes.sh` 20 PASS / 0 FAIL / 0 CRASH (baseline preserved —
+  `cstack` is fine inside the harness since `tracegc.lua` is found from
+  CWD `lua/testes`; standalone from the repo root it fails identically on
+  the C reference, i.e. environmental).
+- **Tooling note**: `zig build test` prints `failed command: ...
+  test_basic ... --listen=-` even on success (listen-protocol exit
+  artifact in this 0.16 toolchain). Judge by exit code / `--summary all`
+  ("9/9 steps succeeded; 182/182 tests passed").
+- BUG-174 remains OPEN (P2–P4 pending).
 
 ## 2026-09-09 — Vendored pi benchmark into `tests/`; doc references point at the local copy
 

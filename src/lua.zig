@@ -1817,6 +1817,7 @@ pub fn lua_tolstring(L: *lua_State, idx: i32, len: ?*usize) ?[]const u8 {
             const s = luaO_tostringbuff(ptr.*, &buf);
             const ts = lstring.luaS_new(L, s) catch return null;
             ptr.* = TValue{ .string = ts };
+            luaC_condGC(L);
             if (len) |p| p.* = ts.len;
             return ts.s;
         },
@@ -2127,6 +2128,7 @@ pub fn lua_pushlstring(L: *lua_State, s: []const u8, len: usize) ?[]const u8 {
     const ts = lstring.luaS_new(L, s[0..len]) catch return null;
     L.stack[L.top] = TValue{ .string = ts };
     L.top += 1;
+    luaC_condGC(L);
     return ts.s;
 }
 
@@ -2180,16 +2182,21 @@ pub fn lua_pushexternalstring(
     };
     L.stack[L.top] = TValue{ .string = ts };
     L.top += 1;
+    luaC_condGC(L);
     return ts.s;
 }
 
 pub fn lua_pushvfstring(L: *lua_State, fmt: []const u8, argp: ?*anyopaque) ?[]const u8 {
     _ = argp;
-    return lua_pushstring(L, fmt);
+    const s = lua_pushstring(L, fmt);
+    luaC_condGC(L);
+    return s;
 }
 
 pub fn lua_pushfstring(L: *lua_State, fmt: []const u8) ?[]const u8 {
-    return lua_pushstring(L, fmt);
+    const s = lua_pushstring(L, fmt);
+    luaC_condGC(L);
+    return s;
 }
 
 pub fn lua_pushcclosure(L: *lua_State, cfunc: lua_CFunction, n: i32) void {
@@ -2202,6 +2209,7 @@ pub fn lua_pushcclosure(L: *lua_State, cfunc: lua_CFunction, n: i32) void {
                 growStack(L, L.top + 1) catch return;
                 L.stack[L.top] = TValue{ .function = cached };
                 L.top += 1;
+                luaC_condGC(L);
                 return;
             }
         }
@@ -2226,6 +2234,7 @@ pub fn lua_pushcclosure(L: *lua_State, cfunc: lua_CFunction, n: i32) void {
         growStack(L, L.top + 1) catch return;
         L.stack[L.top] = TValue{ .function = cl };
         L.top += 1;
+        luaC_condGC(L);
         return;
     }
     const upvals = L.allocator.alloc(TValue, @intCast(n)) catch return;
@@ -2255,6 +2264,7 @@ pub fn lua_pushcclosure(L: *lua_State, cfunc: lua_CFunction, n: i32) void {
     };
     L.stack[L.top] = TValue{ .function = cl };
     L.top += 1;
+    luaC_condGC(L);
 }
 
 /// Shorthand: push a C function with no upvalues.
@@ -2445,6 +2455,7 @@ pub fn lua_newthread(L: *lua_State) !*lua_State {
     try growStack(L, L.top + 1);
     L.stack[L.top] = TValue{ .thread = L1 };
     L.top += 1;
+    luaC_condGC(L);
     return L1;
 }
 
@@ -3411,6 +3422,7 @@ pub fn lua_createtable(L: *lua_State, narr: i32, nrec: i32) void {
     registerGC(L, t) catch return;
     L.stack[L.top] = TValue{ .table = t };
     L.top += 1;
+    luaC_condGC(L);
 }
 
 pub fn lua_newuserdatauv(L: *lua_State, sz: usize, nuvalue: i32) ?*anyopaque {
@@ -4136,6 +4148,7 @@ pub fn luaG_ordererror(L: *lua_State, p1: TValue, p2: TValue) !void {
 }
 
 pub fn lua_load(L: *lua_State, reader: lua_Reader, dt: ?*anyopaque, chunkname: []const u8, mode: []const u8) i32 {
+    luaC_condGC(L);
     const initial_top = L.top;
     var size: usize = 0;
     const first_slice = (reader(L, dt, &size) catch |e| {
@@ -4683,6 +4696,7 @@ pub fn lua_setwarnf(L: *lua_State, f: ?lua_WarnFunction, ud: ?*anyopaque) void {
 
 pub fn lua_warning(L: *lua_State, msg: []const u8, tocont: i32) void {
     luaE_warning(L, msg, tocont);
+    luaC_condGC(L);
 }
 
 fn getGCObject(g: *global_State, ptr: anytype) ?*VMGCObject {
@@ -5070,11 +5084,32 @@ fn luaS_clearcache(L: *lua_State) void {
 pub inline fn luaC_condGC(L: *lua_State) void {
     const g = G(L);
     // Compare the live-object count against the count-based threshold (the
-    // same condition the VM loop uses); comparing totalbytes here would fire
-    // constantly, since a few large live objects can exceed the threshold.
-    // BUG-100: GC failure on condGC is logged rather than silently ignored.
+    // same condition the VM loop used to check per instruction); comparing
+    // totalbytes here would fire constantly, since a few large live objects
+    // can exceed the threshold.
+    // BUG-100: GC failure on condGC is reported, not silently swallowed.
     if (g.gc_running and !g.gc_in_progress and g.gc_count > g.gc_threshold) {
-        _ = luaC_collectgarbage(L) catch {}; // conditional GC is opportunistic
+        luaC_collectgarbage(L) catch |err| {
+            std.debug.print("luazig: conditional GC step failed: {t}\n", .{err});
+        };
+    }
+}
+
+/// Port of the reference `checkGC(L, c)` macro (lua/lvm.c:1184): a
+/// conditional collection at an object-registration site, with `top` set
+/// around the step so an emergency collection sees the right stack top
+/// (the reference's `(savepc(ci), L->top.p = c)` pre-expression). Used at
+/// the VM opcode sites (NEWTABLE/CONCAT/CLOSURE). Unlike `luaC_condGC`
+/// (fire-and-forget, matching the reference's void `luaC_checkGC` at the
+/// C-API sites), this propagates OOM, preserving the VM loop's previous
+/// `try` semantics (a GC failure still surfaces as `LUA_ERRMEM`).
+pub inline fn luaC_checkGC(L: *lua_State, top: usize) anyerror!void {
+    const g = G(L);
+    if (g.gc_running and !g.gc_in_progress and g.gc_count > g.gc_threshold) {
+        const old_top = L.top;
+        L.top = top;
+        defer L.top = old_top;
+        try luaC_collectgarbage(L);
     }
 }
 
@@ -5957,6 +5992,7 @@ pub fn lua_closeslot(L: *lua_State, idx: i32) void {
         }
     }
     _ = close_one_slot(L, abs, null) catch null;
+    luaC_condGC(L);
 }
 
 pub fn luaL_newstate_io(L: *lua_State, gpa: std.mem.Allocator, io: std.Io) !void {
