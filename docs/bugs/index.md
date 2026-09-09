@@ -185,7 +185,7 @@ timestamp: '2026-09-08T21:20:00Z'
 | [BUG-156](156.md) | `corolib.zig`: `coroutine.wrap` on dead coroutine raises "attempt to call a nil value" instead of "cannot resume dead coroutine" | `MED` | ✅ FIXED |
 | [BUG-157](157.md) | `loadlib.zig`: `package.searchpath` with `init=".", sep="."` returns the bare name instead of the expanded path (attrib.lua:138) | `MED` | ✅ FIXED |
 | [BUG-158](158.md) | `lua.zig`/`baselib.zig`: `collectgarbage("generational")` does not return the previous GC mode (gc.lua:15) | `MED` | ✅ FIXED |
-| [BUG-159](159.md) | `iolib.zig`: `io.stdin:seek("set", 1000)` invalid seek does not return `(nil, msg, code)` (files.lua:88) | `MED` | ⏳ OPEN |
+| [BUG-159](159.md) | `iolib.zig`: `io.stdin:seek("set", 1000)` invalid seek does not return `(nil, msg, code)` (files.lua:88) | `MED` | ✅ FIXED |
 | [BUG-160](160.md) | `lvm.zig`/`lua.zig`: yield from a resumed-coroutine metamethod chain mis-tracked — "attempt to yield from outside a coroutine" (big.lua:56) | `HIGH` | ❌ FALSE POSITIVE |
 | [BUG-161](161.md) | `corolib.zig`/`lua.zig`: process crash (core dump) in the `coroutine.close` chain — missing depth guard (cstack.lua) | `CRITICAL` | ✅ FIXED |
 | [BUG-162](162.md) | `lvm.zig`: `luaV_finishOp` lacks LT/LE/GTI/GEI/EQ/CONCAT completion cases for yields inside comparison/concat metamethods | `HIGH` | ✅ FIXED |

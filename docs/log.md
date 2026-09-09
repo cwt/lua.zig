@@ -6,6 +6,25 @@ tags: [log, changelog]
 timestamp: 2026-09-08T21:20:00Z
 ---
 
+## 2026-09-09 — Fix BUG-159: f_seek invalid-seek result shape and whence validation
+
+- **Bug Fixed**: `BUG-159` (MED) — `io.stdin:seek("set", 1000)` (and any
+  non-seekable stream) did not return the reference three-value failure
+  `(nil, message, code)`; the port pushed a bare `false` and silently
+  coerced a bad `whence` to `"cur"` (`lua/testes/files.lua:86-88`).
+- **Changes** (`src/lib/iolib.zig` `f_seek`, `src/lauxlib.zig`):
+  - `whence` now validated via `luaL_checkoption` (invalid → reference
+    `bad argument` error); offset via `luaL_optinteger`.
+  - On `lseek` failure: `errno` cleared pre-syscall then captured; result is
+    `luaL_fileresult(false, null, errno)` = `(nil, strerror, errno)`.
+  - Added `29 => "Illegal seek"` (ESPIPE) to `strerrorName` so the message
+    is meaningful on pipes/stdin.
+- **Verification**:
+  - New unit test `BUG-159` in `tests/test_basic.zig` (pipe seek shape, valid
+    seek, invalid whence error).
+  - `io.popen(...) :seek("set",0)` → `(nil, "Illegal seek", 29)` confirmed.
+  - `zig build test` → 174/174 passing, 0 leaks. `./run_testes.sh` → 20 PASS / 0 FAIL / 0 CRASH.
+
 ## 2026-09-09 — Fix BUG-158: collectgarbage mode round-trip; log BUG-168/169
 
 - **BUG-158 Fixed** (`src/lua.zig`, `src/lib/baselib.zig`):

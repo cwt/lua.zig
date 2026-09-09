@@ -5823,3 +5823,28 @@ test "BUG-158: collectgarbage generational/incremental returns the previous mode
     const status = try lua.luaL_dostring(&L, script, "=(test_bug158)");
     try std.testing.expectEqual(lua.LUA_OK, status);
 }
+
+test "BUG-159: f_seek returns (nil, message, code) on invalid seek and validates whence" {
+    const gpa = std.testing.allocator;
+    var L: lua.lua_State = undefined;
+    try lua.luaL_newstate(&L, gpa);
+    defer lua.lua_close(&L);
+    try lua.luaL_openlibs(&L);
+
+    const script =
+        \\-- corpus from lua/testes/files.lua:86-88 (invalid seek result shape)
+        \\local p = io.popen("echo hi")   -- pipe: not seekable
+        \\local status, msg, code = p:seek("set", 0)
+        \\assert(not status and type(msg) == "string" and type(code) == "number")
+        \\p:close()
+        \\-- a valid seek on a regular file still returns the new position
+        \\local f = io.open("/dev/null", "r")
+        \\assert(f:seek("set", 0) == 0)
+        \\f:close()
+        \\-- an invalid `whence` raises an error (not a silent fallback)
+        \\local ok, err = pcall(io.stdin.seek, io.stdin, "bogus")
+        \\assert(not ok and type(err) == "string")
+    ;
+    const status = try lua.luaL_dostring(&L, script, "=(test_bug159)");
+    try std.testing.expectEqual(lua.LUA_OK, status);
+}

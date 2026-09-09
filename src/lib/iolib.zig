@@ -691,16 +691,26 @@ fn f_write(L_: *L) !i32 {
 
 fn f_seek(L_: *L) !i32 {
     const p = try tofile(L_, 1);
-    const whence_s = lua.lua_tostring(L_, 2) orelse "cur";
-    const offset = lua.lua_tointeger(L_, 3) orelse 0;
-    const whence: c_int = if (std.mem.eql(u8, whence_s, "set")) 0 else if (std.mem.eql(u8, whence_s, "end")) 2 else 1;
+    // Port of the reference f_seek (lua/liolib.c): validate `whence` via
+    // luaL_checkoption (invalid value -> "bad argument" error), the offset
+    // via luaL_optinteger (non-integer -> error), then lseek. On failure
+    // return (nil, message, errno); on success return the new position.
+    var seeknames = [_][]const u8{ "set", "cur", "end" };
+    const op = try lauxlib.luaL_checkoption(L_, 2, "cur", &seeknames);
+    const offset = lauxlib.luaL_optinteger(L_, 3, 0);
+    const whence: c_int = switch (op) {
+        0 => 0, // SEEK_SET
+        1 => 1, // SEEK_CUR
+        else => 2, // SEEK_END
+    };
+    std.c._errno().* = 0;
     const result = std.c.lseek(p.fd, offset, whence);
     if (result >= 0) {
-        lua.lua_pushinteger(L_, @intCast(result));
+        lua.lua_pushinteger(L_, @as(lua.lua_Integer, @intCast(result)));
         return 1;
     }
-    lua.lua_pushboolean(L_, 0);
-    return 1;
+    const eno = @as(i32, @intCast(std.c._errno().*));
+    return lauxlib.luaL_fileresult(L_, false, null, eno);
 }
 
 fn f_setvbuf(L_: *L) !i32 {

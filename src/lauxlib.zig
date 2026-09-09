@@ -950,6 +950,7 @@ pub fn strerrorName(eno: i32) []const u8 {
         22 => "Invalid argument",
         24 => "Too many open files",
         28 => "No space left on device",
+        29 => "Illegal seek",
         30 => "Read-only file system",
         40 => "Too many levels of symbolic links",
         90 => "Message too long",
