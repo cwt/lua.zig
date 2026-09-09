@@ -6,6 +6,34 @@ tags: [log, changelog]
 timestamp: 2026-09-08T21:20:00Z
 ---
 
+## 2026-09-09 — Fix BUG-163: string arithmetic dispatches the string metatable, not a VM fast path
+
+- **Bug Fixed**: `BUG-163` (MED) — the VM arithmetic fast path coerced
+  strings to numbers (via `toNumeric`), so a user override of the string
+  metatable's `__add`…`__unm` was silently ignored; the reference keeps string
+  arithmetic in the *library* (`lua/lstrlib.c`) and only integer/float reach
+  the fast path (`tonumberns`).
+- **Changes** (`src/lvm.zig`):
+  - Added `toNumericNS` (integer/float only; strings → null), mirroring the
+    C `tonumberns`.
+  - Switched all arithmetic opcode fast paths to `toNumericNS`: ADDI/ADDK/
+    SUBK/MULK/MODK/POWK/DIVK/IDIVK/BANDK/BORK/BXORK/SHLI/SHRI, the
+    register-register ADD/SUB/MUL/MOD/POW/DIV/IDIV/BAND/BOR/BXOR/SHL/SHR,
+    and UNM/BNOT (39 call sites). A string operand now falls through to the
+    paired MMBIN/MMBINI/MMBINK opcode (emitted by `finishbinexpval`), which
+    dispatches `luaT_trybinTM` → the string metatable's `__add`…`__unm`.
+  - Numeric FOR loops keep `toNumeric` (the reference coerces string bounds
+    via `tonumber`).
+- **Verification**:
+  - New unit test `BUG-163` in `tests/test_basic.zig` (string arith, user
+    override + restore, table `__add` wins).
+  - `"2"+1`→3, `"2"+"3"`→5, `-"5"`→-5; user `__add`/`__sub` overrides take
+    effect; removing `__add` raises the reference
+    "attempt to perform arithmetic on a string value".
+  - `lua/testes/strings.lua:210` fails identically on the pre-fix parent
+    (a pre-existing `string.format` defect, unrelated).
+  - `zig build test` → 175/175 passing, 0 leaks. `./run_testes.sh` → 20 PASS / 0 FAIL / 0 CRASH.
+
 ## 2026-09-09 — Fix BUG-159: f_seek invalid-seek result shape and whence validation
 
 - **Bug Fixed**: `BUG-159` (MED) — `io.stdin:seek("set", 1000)` (and any

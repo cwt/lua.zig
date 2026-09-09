@@ -25,6 +25,20 @@ fn toNumeric(v: lua.TValue) ?lua.TValue {
     };
 }
 
+/// Number-only variant of toNumeric: accepts integer/float, rejects strings.
+/// Mirrors the C reference `tonumberns` used by the arithmetic opcode fast
+/// paths: a string operand must NOT be coerced here, so it falls through to
+/// the paired MMBIN/MMBINI/MMBINK opcode, which dispatches the string
+/// library's `__add`…`__unm` metamethods (BUG-163). FOR loops keep using
+/// `toNumeric` because the reference numeric `for` coerces string bounds.
+fn toNumericNS(v: lua.TValue) ?lua.TValue {
+    return switch (v) {
+        .integer => v,
+        .number => v,
+        else => null,
+    };
+}
+
 inline fn asFloat(v: lua.TValue) f64 {
     return switch (v) {
         .number => |n| n,
@@ -875,7 +889,7 @@ pub fn run(L: *lua.lua_State, active_ci: *lua.CallInfo) anyerror!void {
                 const ra = ci.base + @as(usize, @intCast(GETARG_A(instruction)));
                 const rb = L.stack[ci.base + @as(usize, @intCast(GETARG_B(instruction)))];
                 const sc = GETARG_sC(instruction);
-                if (toNumeric(rb)) |nv| {
+                if (toNumericNS(rb)) |nv| {
                     if (nv == .integer) {
                         L.stack[ra] = .{ .integer = nv.integer +% sc };
                     } else {
@@ -888,7 +902,7 @@ pub fn run(L: *lua.lua_State, active_ci: *lua.CallInfo) anyerror!void {
                 const ra = ci.base + @as(usize, @intCast(GETARG_A(instruction)));
                 const rb = L.stack[ci.base + @as(usize, @intCast(GETARG_B(instruction)))];
                 const rc = proto.k[@as(usize, @intCast(GETARG_C(instruction)))];
-                if (toNumeric(rb)) |nv| {
+                if (toNumericNS(rb)) |nv| {
                     if (nv == .integer and rc == .integer) {
                         L.stack[ra] = .{ .integer = nv.integer +% rc.integer };
                     } else if (nv.isNumberValue() and rc.isNumberValue()) {
@@ -901,7 +915,7 @@ pub fn run(L: *lua.lua_State, active_ci: *lua.CallInfo) anyerror!void {
                 const ra = ci.base + @as(usize, @intCast(GETARG_A(instruction)));
                 const rb = L.stack[ci.base + @as(usize, @intCast(GETARG_B(instruction)))];
                 const rc = proto.k[@as(usize, @intCast(GETARG_C(instruction)))];
-                if (toNumeric(rb)) |nv| {
+                if (toNumericNS(rb)) |nv| {
                     if (nv == .integer and rc == .integer) {
                         L.stack[ra] = .{ .integer = nv.integer -% rc.integer };
                     } else if (nv.isNumberValue() and rc.isNumberValue()) {
@@ -914,7 +928,7 @@ pub fn run(L: *lua.lua_State, active_ci: *lua.CallInfo) anyerror!void {
                 const ra = ci.base + @as(usize, @intCast(GETARG_A(instruction)));
                 const rb = L.stack[ci.base + @as(usize, @intCast(GETARG_B(instruction)))];
                 const rc = proto.k[@as(usize, @intCast(GETARG_C(instruction)))];
-                if (toNumeric(rb)) |nv| {
+                if (toNumericNS(rb)) |nv| {
                     if (nv == .integer and rc == .integer) {
                         L.stack[ra] = .{ .integer = nv.integer *% rc.integer };
                     } else if (nv.isNumberValue() and rc.isNumberValue()) {
@@ -927,7 +941,7 @@ pub fn run(L: *lua.lua_State, active_ci: *lua.CallInfo) anyerror!void {
                 const ra = ci.base + @as(usize, @intCast(GETARG_A(instruction)));
                 const rb = L.stack[ci.base + @as(usize, @intCast(GETARG_B(instruction)))];
                 const rc = proto.k[@as(usize, @intCast(GETARG_C(instruction)))];
-                if (toNumeric(rb)) |nv| {
+                if (toNumericNS(rb)) |nv| {
                     if (nv == .integer and rc == .integer) {
                         if (rc.integer == 0) return lua.luaG_runerror(L, "attempt to perform 'n%0'");
                         const r: i64 = if (rc.integer == -1) 0 else @rem(nv.integer, rc.integer);
@@ -943,7 +957,7 @@ pub fn run(L: *lua.lua_State, active_ci: *lua.CallInfo) anyerror!void {
                 const ra = ci.base + @as(usize, @intCast(GETARG_A(instruction)));
                 const rb = L.stack[ci.base + @as(usize, @intCast(GETARG_B(instruction)))];
                 const rc = proto.k[@as(usize, @intCast(GETARG_C(instruction)))];
-                if (toNumeric(rb)) |nv| {
+                if (toNumericNS(rb)) |nv| {
                     if (nv.isNumberValue() and rc.isNumberValue()) {
                         L.stack[ra] = .{ .number = libm.getLibm().pow(nv.toFloat(), rc.toFloat()) };
                         ci.savedpc += 1;
@@ -954,7 +968,7 @@ pub fn run(L: *lua.lua_State, active_ci: *lua.CallInfo) anyerror!void {
                 const ra = ci.base + @as(usize, @intCast(GETARG_A(instruction)));
                 const rb = L.stack[ci.base + @as(usize, @intCast(GETARG_B(instruction)))];
                 const rc = proto.k[@as(usize, @intCast(GETARG_C(instruction)))];
-                if (toNumeric(rb)) |nv| {
+                if (toNumericNS(rb)) |nv| {
                     if (nv.isNumberValue() and rc.isNumberValue()) {
                         L.stack[ra] = .{ .number = nv.toFloat() / rc.toFloat() };
                         ci.savedpc += 1;
@@ -965,7 +979,7 @@ pub fn run(L: *lua.lua_State, active_ci: *lua.CallInfo) anyerror!void {
                 const ra = ci.base + @as(usize, @intCast(GETARG_A(instruction)));
                 const rb = L.stack[ci.base + @as(usize, @intCast(GETARG_B(instruction)))];
                 const rc = proto.k[@as(usize, @intCast(GETARG_C(instruction)))];
-                if (toNumeric(rb)) |nv| {
+                if (toNumericNS(rb)) |nv| {
                     if (nv == .integer and rc == .integer) {
                         const ib = nv.integer;
                         const ic = rc.integer;
@@ -984,7 +998,7 @@ pub fn run(L: *lua.lua_State, active_ci: *lua.CallInfo) anyerror!void {
                 const ra = ci.base + @as(usize, @intCast(GETARG_A(instruction)));
                 const rb = L.stack[ci.base + @as(usize, @intCast(GETARG_B(instruction)))];
                 const rc = proto.k[@as(usize, @intCast(GETARG_C(instruction)))];
-                if (toNumeric(rb)) |nv| {
+                if (toNumericNS(rb)) |nv| {
                     if (nv.isNumberValue() and rc.isNumberValue()) {
                         const ib = nv.toIntegerExactOpt() orelse return lua.luaG_tointerror(L, nv);
                         const ic = rc.toIntegerExactOpt() orelse return lua.luaG_tointerror(L, rc);
@@ -997,7 +1011,7 @@ pub fn run(L: *lua.lua_State, active_ci: *lua.CallInfo) anyerror!void {
                 const ra = ci.base + @as(usize, @intCast(GETARG_A(instruction)));
                 const rb = L.stack[ci.base + @as(usize, @intCast(GETARG_B(instruction)))];
                 const rc = proto.k[@as(usize, @intCast(GETARG_C(instruction)))];
-                if (toNumeric(rb)) |nv| {
+                if (toNumericNS(rb)) |nv| {
                     if (nv.isNumberValue() and rc.isNumberValue()) {
                         const ib = nv.toIntegerExactOpt() orelse return lua.luaG_tointerror(L, nv);
                         const ic = rc.toIntegerExactOpt() orelse return lua.luaG_tointerror(L, rc);
@@ -1010,7 +1024,7 @@ pub fn run(L: *lua.lua_State, active_ci: *lua.CallInfo) anyerror!void {
                 const ra = ci.base + @as(usize, @intCast(GETARG_A(instruction)));
                 const rb = L.stack[ci.base + @as(usize, @intCast(GETARG_B(instruction)))];
                 const rc = proto.k[@as(usize, @intCast(GETARG_C(instruction)))];
-                if (toNumeric(rb)) |nv| {
+                if (toNumericNS(rb)) |nv| {
                     if (nv.isNumberValue() and rc.isNumberValue()) {
                         const ib = nv.toIntegerExactOpt() orelse return lua.luaG_tointerror(L, nv);
                         const ic = rc.toIntegerExactOpt() orelse return lua.luaG_tointerror(L, rc);
@@ -1023,7 +1037,7 @@ pub fn run(L: *lua.lua_State, active_ci: *lua.CallInfo) anyerror!void {
                 const ra = ci.base + @as(usize, @intCast(GETARG_A(instruction)));
                 const rb = L.stack[ci.base + @as(usize, @intCast(GETARG_B(instruction)))];
                 const sc = GETARG_sC(instruction);
-                if (toNumeric(rb)) |nv| {
+                if (toNumericNS(rb)) |nv| {
                     if (nv.isNumberValue()) {
                         const ib = nv.toIntegerExactOpt() orelse return lua.luaG_tointerror(L, nv);
                         L.stack[ra] = .{ .integer = lua.luaV_shift(sc, ib) };
@@ -1035,7 +1049,7 @@ pub fn run(L: *lua.lua_State, active_ci: *lua.CallInfo) anyerror!void {
                 const ra = ci.base + @as(usize, @intCast(GETARG_A(instruction)));
                 const rb = L.stack[ci.base + @as(usize, @intCast(GETARG_B(instruction)))];
                 const sc = GETARG_sC(instruction);
-                if (toNumeric(rb)) |nv| {
+                if (toNumericNS(rb)) |nv| {
                     if (nv.isNumberValue()) {
                         const ib = nv.toIntegerExactOpt() orelse return lua.luaG_tointerror(L, nv);
                         L.stack[ra] = .{ .integer = lua.luaV_shift(ib, -%sc) };
@@ -1050,8 +1064,8 @@ pub fn run(L: *lua.lua_State, active_ci: *lua.CallInfo) anyerror!void {
                 if (rb == .integer and rc == .integer) {
                     L.stack[ra] = .{ .integer = rb.integer +% rc.integer };
                     ci.savedpc += 1;
-                } else if (toNumeric(rb)) |n1| {
-                    if (toNumeric(rc)) |n2| {
+                } else if (toNumericNS(rb)) |n1| {
+                    if (toNumericNS(rc)) |n2| {
                         if (n1 == .integer and n2 == .integer) {
                             L.stack[ra] = .{ .integer = n1.integer +% n2.integer };
                         } else {
@@ -1068,8 +1082,8 @@ pub fn run(L: *lua.lua_State, active_ci: *lua.CallInfo) anyerror!void {
                 if (rb == .integer and rc == .integer) {
                     L.stack[ra] = .{ .integer = rb.integer -% rc.integer };
                     ci.savedpc += 1;
-                } else if (toNumeric(rb)) |n1| {
-                    if (toNumeric(rc)) |n2| {
+                } else if (toNumericNS(rb)) |n1| {
+                    if (toNumericNS(rc)) |n2| {
                         if (n1 == .integer and n2 == .integer) {
                             L.stack[ra] = .{ .integer = n1.integer -% n2.integer };
                         } else {
@@ -1086,8 +1100,8 @@ pub fn run(L: *lua.lua_State, active_ci: *lua.CallInfo) anyerror!void {
                 if (rb == .integer and rc == .integer) {
                     L.stack[ra] = .{ .integer = rb.integer *% rc.integer };
                     ci.savedpc += 1;
-                } else if (toNumeric(rb)) |n1| {
-                    if (toNumeric(rc)) |n2| {
+                } else if (toNumericNS(rb)) |n1| {
+                    if (toNumericNS(rc)) |n2| {
                         if (n1 == .integer and n2 == .integer) {
                             L.stack[ra] = .{ .integer = n1.integer *% n2.integer };
                         } else {
@@ -1109,8 +1123,8 @@ pub fn run(L: *lua.lua_State, active_ci: *lua.CallInfo) anyerror!void {
                     const r: i64 = if (rc.integer == -1) 0 else @rem(rb.integer, rc.integer);
                     L.stack[ra] = .{ .integer = if (r != 0 and (r ^ rc.integer) < 0) r + rc.integer else r };
                     ci.savedpc += 1;
-                } else if (toNumeric(rb)) |n1| {
-                    if (toNumeric(rc)) |n2| {
+                } else if (toNumericNS(rb)) |n1| {
+                    if (toNumericNS(rc)) |n2| {
                         if (n1 == .integer and n2 == .integer) {
                             if (n2.integer == 0) return lua.luaG_runerror(L, "attempt to perform 'n%0'");
                             const r: i64 = if (n2.integer == -1) 0 else @rem(n1.integer, n2.integer);
@@ -1127,8 +1141,8 @@ pub fn run(L: *lua.lua_State, active_ci: *lua.CallInfo) anyerror!void {
                 const ra = ci.base + @as(usize, @intCast(GETARG_A(instruction)));
                 const rb = L.stack[ci.base + @as(usize, @intCast(GETARG_B(instruction)))];
                 const rc = L.stack[ci.base + @as(usize, @intCast(GETARG_C(instruction)))];
-                if (toNumeric(rb)) |n1| {
-                    if (toNumeric(rc)) |n2| {
+                if (toNumericNS(rb)) |n1| {
+                    if (toNumericNS(rc)) |n2| {
                         L.stack[ra] = .{ .number = libm.getLibm().pow(asFloat(n1), asFloat(n2)) };
                         ci.savedpc += 1;
                     }
@@ -1138,8 +1152,8 @@ pub fn run(L: *lua.lua_State, active_ci: *lua.CallInfo) anyerror!void {
                 const ra = ci.base + @as(usize, @intCast(GETARG_A(instruction)));
                 const rb = L.stack[ci.base + @as(usize, @intCast(GETARG_B(instruction)))];
                 const rc = L.stack[ci.base + @as(usize, @intCast(GETARG_C(instruction)))];
-                if (toNumeric(rb)) |n1| {
-                    if (toNumeric(rc)) |n2| {
+                if (toNumericNS(rb)) |n1| {
+                    if (toNumericNS(rc)) |n2| {
                         L.stack[ra] = .{ .number = asFloat(n1) / asFloat(n2) };
                         ci.savedpc += 1;
                     }
@@ -1160,8 +1174,8 @@ pub fn run(L: *lua.lua_State, active_ci: *lua.CallInfo) anyerror!void {
                 } else if (rb.isNumberValue() and rc.isNumberValue()) {
                     L.stack[ra] = .{ .number = @floor(rb.toFloat() / rc.toFloat()) };
                     ci.savedpc += 1;
-                } else if (toNumeric(rb)) |n1| {
-                    if (toNumeric(rc)) |n2| {
+                } else if (toNumericNS(rb)) |n1| {
+                    if (toNumericNS(rc)) |n2| {
                         if (n1 == .integer and n2 == .integer) {
                             const ib = n1.integer;
                             const ic = n2.integer;
@@ -1186,8 +1200,8 @@ pub fn run(L: *lua.lua_State, active_ci: *lua.CallInfo) anyerror!void {
                     const ic = rc.toIntegerExactOpt() orelse return lua.luaG_tointerror(L, rc);
                     L.stack[ra] = .{ .integer = ib & ic };
                     ci.savedpc += 1;
-                } else if (toNumeric(rb)) |n1| {
-                    if (toNumeric(rc)) |n2| {
+                } else if (toNumericNS(rb)) |n1| {
+                    if (toNumericNS(rc)) |n2| {
                         const ib = n1.toIntegerExactOpt() orelse return lua.luaG_tointerror(L, n1);
                         const ic = n2.toIntegerExactOpt() orelse return lua.luaG_tointerror(L, n2);
                         L.stack[ra] = .{ .integer = ib & ic };
@@ -1204,8 +1218,8 @@ pub fn run(L: *lua.lua_State, active_ci: *lua.CallInfo) anyerror!void {
                     const ic = rc.toIntegerExactOpt() orelse return lua.luaG_tointerror(L, rc);
                     L.stack[ra] = .{ .integer = ib | ic };
                     ci.savedpc += 1;
-                } else if (toNumeric(rb)) |n1| {
-                    if (toNumeric(rc)) |n2| {
+                } else if (toNumericNS(rb)) |n1| {
+                    if (toNumericNS(rc)) |n2| {
                         const ib = n1.toIntegerExactOpt() orelse return lua.luaG_tointerror(L, n1);
                         const ic = n2.toIntegerExactOpt() orelse return lua.luaG_tointerror(L, n2);
                         L.stack[ra] = .{ .integer = ib | ic };
@@ -1222,8 +1236,8 @@ pub fn run(L: *lua.lua_State, active_ci: *lua.CallInfo) anyerror!void {
                     const ic = rc.toIntegerExactOpt() orelse return lua.luaG_tointerror(L, rc);
                     L.stack[ra] = .{ .integer = ib ^ ic };
                     ci.savedpc += 1;
-                } else if (toNumeric(rb)) |n1| {
-                    if (toNumeric(rc)) |n2| {
+                } else if (toNumericNS(rb)) |n1| {
+                    if (toNumericNS(rc)) |n2| {
                         const ib = n1.toIntegerExactOpt() orelse return lua.luaG_tointerror(L, n1);
                         const ic = n2.toIntegerExactOpt() orelse return lua.luaG_tointerror(L, n2);
                         L.stack[ra] = .{ .integer = ib ^ ic };
@@ -1240,8 +1254,8 @@ pub fn run(L: *lua.lua_State, active_ci: *lua.CallInfo) anyerror!void {
                     const ic = rc.toIntegerExactOpt() orelse return lua.luaG_tointerror(L, rc);
                     L.stack[ra] = .{ .integer = lua.luaV_shift(ib, ic) };
                     ci.savedpc += 1;
-                } else if (toNumeric(rb)) |n1| {
-                    if (toNumeric(rc)) |n2| {
+                } else if (toNumericNS(rb)) |n1| {
+                    if (toNumericNS(rc)) |n2| {
                         const ib = n1.toIntegerExactOpt() orelse return lua.luaG_tointerror(L, n1);
                         const ic = n2.toIntegerExactOpt() orelse return lua.luaG_tointerror(L, n2);
                         L.stack[ra] = .{ .integer = lua.luaV_shift(ib, ic) };
@@ -1258,8 +1272,8 @@ pub fn run(L: *lua.lua_State, active_ci: *lua.CallInfo) anyerror!void {
                     const ic = rc.toIntegerExactOpt() orelse return lua.luaG_tointerror(L, rc);
                     L.stack[ra] = .{ .integer = lua.luaV_shift(ib, -%ic) };
                     ci.savedpc += 1;
-                } else if (toNumeric(rb)) |n1| {
-                    if (toNumeric(rc)) |n2| {
+                } else if (toNumericNS(rb)) |n1| {
+                    if (toNumericNS(rc)) |n2| {
                         const ib = n1.toIntegerExactOpt() orelse return lua.luaG_tointerror(L, n1);
                         const ic = n2.toIntegerExactOpt() orelse return lua.luaG_tointerror(L, n2);
                         L.stack[ra] = .{ .integer = lua.luaV_shift(ib, -%ic) };
@@ -1313,7 +1327,7 @@ pub fn run(L: *lua.lua_State, active_ci: *lua.CallInfo) anyerror!void {
                     L.stack[ra] = .{ .integer = -%rb.integer };
                 } else if (rb == .number) {
                     L.stack[ra] = .{ .number = -rb.number };
-                } else if (toNumeric(rb)) |nv| {
+                } else if (toNumericNS(rb)) |nv| {
                     if (nv == .integer) {
                         L.stack[ra] = .{ .integer = -%nv.integer };
                     } else {
@@ -1330,7 +1344,7 @@ pub fn run(L: *lua.lua_State, active_ci: *lua.CallInfo) anyerror!void {
                 if (rb.isNumberValue()) {
                     const ib = rb.toIntegerExactOpt() orelse return lua.luaG_tointerror(L, rb);
                     L.stack[ra] = .{ .integer = ~ib };
-                } else if (toNumeric(rb)) |nv| {
+                } else if (toNumericNS(rb)) |nv| {
                     const ib = nv.toIntegerExactOpt() orelse return lua.luaG_tointerror(L, nv);
                     L.stack[ra] = .{ .integer = ~ib };
                 } else {

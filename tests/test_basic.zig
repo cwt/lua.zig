@@ -5848,3 +5848,27 @@ test "BUG-159: f_seek returns (nil, message, code) on invalid seek and validates
     const status = try lua.luaL_dostring(&L, script, "=(test_bug159)");
     try std.testing.expectEqual(lua.LUA_OK, status);
 }
+
+test "BUG-163: string arithmetic dispatches the string metatable __add..__unm, not a VM fast path" {
+    const gpa = std.testing.allocator;
+    var L: lua.lua_State = undefined;
+    try lua.luaL_newstate(&L, gpa);
+    defer lua.lua_close(&L);
+    try lua.luaL_openlibs(&L);
+
+    const script =
+        \\-- bug report: a user override of the string metatable __add must be called
+        \\print("2" + 1)                       -- "3" via the library __add
+        \\local strmt = getmetatable("")
+        \\local orig = strmt.__add
+        \\strmt.__add = function (a, b) return "overridden" end
+        \\assert("10" + 1 == "overridden")
+        \\strmt.__add = orig
+        \\assert("10" + 1 == 11)
+        \\-- a table with its own __add still wins for table operands
+        \\local t = setmetatable({}, { __add = function () return 99 end })
+        \\assert(t + 1 == 99)
+    ;
+    const status = try lua.luaL_dostring(&L, script, "=(test_bug163)");
+    try std.testing.expectEqual(lua.LUA_OK, status);
+}

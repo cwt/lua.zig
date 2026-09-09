@@ -189,7 +189,7 @@ timestamp: '2026-09-08T21:20:00Z'
 | [BUG-160](160.md) | `lvm.zig`/`lua.zig`: yield from a resumed-coroutine metamethod chain mis-tracked — "attempt to yield from outside a coroutine" (big.lua:56) | `HIGH` | ❌ FALSE POSITIVE |
 | [BUG-161](161.md) | `corolib.zig`/`lua.zig`: process crash (core dump) in the `coroutine.close` chain — missing depth guard (cstack.lua) | `CRITICAL` | ✅ FIXED |
 | [BUG-162](162.md) | `lvm.zig`: `luaV_finishOp` lacks LT/LE/GTI/GEI/EQ/CONCAT completion cases for yields inside comparison/concat metamethods | `HIGH` | ✅ FIXED |
-| [BUG-163](163.md) | `lvm.zig`: VM arithmetic fast path coerces strings directly, shadowing user `__add`…`__unm` on the string metatable | `MED` | ⏳ OPEN |
+| [BUG-163](163.md) | `lvm.zig`: VM arithmetic fast path coerces strings directly, shadowing user `__add`…`__unm` on the string metatable | `MED` | ✅ FIXED |
 | [BUG-164](164.md) | `debug.zig`: `debug.debug()` is a placeholder ("compilation not supported"); residual swallowed-write `catch {}` | `LOW` | ⏳ OPEN |
 | [BUG-165](165.md) | `loadlib.zig`/`luaconf.zig`: default `package.cpath` lacks the `lua/5.5` C-dir components — main.lua:193 fails | `MED` | ⏳ OPEN |
 | [BUG-166](166.md) | `run_testes.sh`: skips 15 of 34 upstream files — the "PASS 19, FAIL 0" claim masks real standalone failures | `LOW` | ⏳ OPEN |
