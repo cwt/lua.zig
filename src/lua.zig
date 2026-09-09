@@ -5020,6 +5020,30 @@ fn isWhiteGCObject(g: *global_State, val: TValue) bool {
     return false;
 }
 
+/// Port of the reference `iscleared` (lua/lgc.c:223): decides whether a weak
+/// table entry's key/value must be removed during the weak sweep. Strings
+/// are NEVER removed from weak tables ("strings behave as 'values', so are
+/// never removed") — the reference marks them on sight, and so do we, so the
+/// string sweep keeps them alive (BUG-172: unmarked short-string keys were
+/// freed while still referenced by table nodes, corrupting the entries).
+/// Non-collectable values are never cleared.
+fn isClearedGCValue(g: *global_State, val: TValue) bool {
+    switch (val) {
+        .string => |s| {
+            if (s) |str| {
+                str.marked = true;
+                // Long/external strings live in allgc; keep their GC object
+                // alive across the sweep as well.
+                if (getGCObject(g, str)) |gc| {
+                    gc.color = .black;
+                }
+            }
+            return false;
+        },
+        else => return isWhiteGCObject(g, val),
+    }
+}
+
 fn luaS_clearcache(L: *lua_State) void {
     const g = G(L);
     for (&g.strcache) |*bucket| {
@@ -5168,7 +5192,7 @@ pub fn luaC_collectgarbage(L: *lua_State) !void {
                             // Clear weak array part (only values can be weak)
                             if (mode.vals) {
                                 for (t.array.items) |*val| {
-                                    if (isWhiteGCObject(g, val.*)) {
+                                    if (isClearedGCValue(g, val.*)) {
                                         val.* = .nil;
                                     }
                                 }
@@ -5176,8 +5200,8 @@ pub fn luaC_collectgarbage(L: *lua_State) !void {
                             // Clear weak hash part
                             for (t.node.items) |*nd| {
                                 if (nd.key != .nil and nd.val != .nil) {
-                                    const key_white = mode.keys and isWhiteGCObject(g, nd.key);
-                                    const val_white = mode.vals and isWhiteGCObject(g, nd.val);
+                                    const key_white = mode.keys and isClearedGCValue(g, nd.key);
+                                    const val_white = mode.vals and isClearedGCValue(g, nd.val);
                                     if (key_white or val_white) {
                                         nd.val = .nil;
                                     }
