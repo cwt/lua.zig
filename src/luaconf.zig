@@ -60,6 +60,12 @@ pub const LUA_DIRSEP: []const u8 = "/";
 
 pub const LUA_IGMARK: []const u8 = "-";
 
+// Name of the library the stand-alone REPL tries to load for readline
+// facilities (mirrors lua/luaconf.h under LUA_USE_LINUX; overridable via
+// the LUA_READLINELIB environment variable). A failure to load it makes
+// the stand-alone emit a warning and run without readline. (BUG-170)
+pub const LUA_READLINELIB: []const u8 = "libreadline.so";
+
 // ===================================================================
 // Exported symbols
 // ===================================================================

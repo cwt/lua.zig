@@ -971,6 +971,70 @@ pub fn luaL_execresult(L: *lua.lua_State, stat: i32) i32 {
 }
 
 // ===================================================================
+// Warning system (port of lua/lauxlib.c:1085-1140 warnf state machine)
+// ===================================================================
+// Three handlers: `warnfon` (on: ready to start a new message),
+// `warnfoff` (off: only control messages are processed), and `warnfcont`
+// (the previous message is being continued). Messages are written to
+// stderr (the reference's lua_writestringerror).
+
+fn warnWriteErr(L: *lua.lua_State, msg: []const u8) void {
+    if (L.l_G) |g| {
+        std.Io.File.stderr().writeStreamingAll(g.io, msg) catch {
+            // Best-effort write: the warning callback returns void (the
+            // reference fprintf's into stderr), so a failed write can only
+            // drop the warning text — there is no channel left to report
+            // it through. Annotated deliberate best-effort (BUG-133
+            // convention): the diagnostic simply fails to print, no other
+            // state is affected.
+            return;
+        };
+    }
+}
+
+/// Check whether `message` is a warning control message (`@off`/`@on`);
+/// execute it and return true. Unknown `@` messages are ignored but still
+/// count as control messages (port of `checkcontrol`).
+fn warnCheckcontrol(L: *lua.lua_State, message: []const u8, tocont: i32) bool {
+    if (tocont != 0 or message.len == 0 or message[0] != '@') return false;
+    const ctl = message[1..];
+    if (std.mem.eql(u8, ctl, "off")) {
+        lua.lua_setwarnf(L, warnfoff, L); // turn warnings off
+    } else if (std.mem.eql(u8, ctl, "on")) {
+        lua.lua_setwarnf(L, warnfon, L); // turn warnings on
+    }
+    return true;
+}
+
+/// `warnfoff`: warning system is off — only control messages are processed.
+pub fn warnfoff(ud: ?*anyopaque, message: []const u8, tocont: i32) void {
+    const L: *lua.lua_State = @ptrCast(@alignCast(ud.?));
+    _ = warnCheckcontrol(L, message, tocont);
+}
+
+/// `warnfcont`: the previous message is to be continued — write the piece
+/// and finish the message when this is the last part.
+pub fn warnfcont(ud: ?*anyopaque, message: []const u8, tocont: i32) void {
+    const L: *lua.lua_State = @ptrCast(@alignCast(ud.?));
+    warnWriteErr(L, message);
+    if (tocont != 0) {
+        lua.lua_setwarnf(L, warnfcont, L); // to be continued
+    } else {
+        warnWriteErr(L, "\n"); // finish message with end-of-line
+        lua.lua_setwarnf(L, warnfon, L); // next call is a new message
+    }
+}
+
+/// `warnfon`: ready to start a new warning — handle control messages,
+/// otherwise prefix the message (port of lauxlib.c `warnfon`).
+pub fn warnfon(ud: ?*anyopaque, message: []const u8, tocont: i32) void {
+    const L: *lua.lua_State = @ptrCast(@alignCast(ud.?));
+    if (warnCheckcontrol(L, message, tocont)) return;
+    warnWriteErr(L, "Lua warning: ");
+    warnfcont(ud, message, tocont);
+}
+
+// ===================================================================
 // Library opening functions
 // ===================================================================
 

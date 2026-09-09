@@ -1,6 +1,7 @@
 const std = @import("std");
 const lua = @import("lua.zig");
 const lauxlib = lua.lauxlib;
+const luaconf = @import("luaconf.zig");
 const build_options = @import("build_options");
 
 /// Action resulting from -e, -l, -W options.
@@ -324,7 +325,52 @@ fn readAllStdin(io: std.Io, gpa: std.mem.Allocator) ![]u8 {
     return list.toOwnedSlice(gpa);
 }
 
+/// Loaded readline library handle, kept for the process lifetime (the
+/// reference never dlclose's it either).
+var readline_lib: ?*std.DynLib = null;
+
+/// Port of the reference `lua_initreadline` (lua/lua.c:515): try to
+/// dynamically load the readline library named by the LUA_READLINELIB
+/// environment variable (or the luaconf default) for the REPL. On failure
+/// emit the reference three-part warning and run without readline. The
+/// 'readline'/'add_history' symbols are resolved but intentionally not wired
+/// into the line-based REPL (readline/history support is out of scope for
+/// this driver; see AGENTS.md H.6 notes).
+fn luaInitReadline(L: *lua.lua_State) !void {
+    if (readline_lib != null) return; // already loaded
+    const rllib = (lauxlib.luaL_getenv(L, "LUA_READLINELIB") catch null) orelse
+        luaconf.LUA_READLINELIB; // use default name
+    const rllib_z = try L.allocator.allocSentinel(u8, rllib.len, 0);
+    defer L.allocator.free(rllib_z);
+    @memcpy(rllib_z[0..rllib.len], rllib);
+
+    const lib = try L.allocator.create(std.DynLib);
+    lib.* = std.DynLib.open(rllib_z) catch {
+        L.allocator.destroy(lib);
+        // Could not load: emit the reference warning (assembled from three
+        // lua_warning calls with the tocont continuation protocol).
+        lua.lua_warning(L, "unable to load readline library '", 1);
+        lua.lua_warning(L, rllib, 1);
+        lua.lua_warning(L, "'", 0);
+        return;
+    };
+    // Could load the library: resolve the facilities (unused by this
+    // line-based REPL, but resolved so a non-readline library fails here,
+    // like the reference).
+    const has_readline = lib.lookup(?*const anyopaque, "readline") != null;
+    if (!has_readline) {
+        lib.close();
+        L.allocator.destroy(lib);
+        lua.lua_warning(L, "unable to load readline library '", 1);
+        lua.lua_warning(L, rllib, 1);
+        lua.lua_warning(L, "'", 0);
+        return;
+    }
+    readline_lib = lib; // everything ok
+}
+
 fn runRepl(L: *lua.lua_State, io: std.Io, gpa: std.mem.Allocator, print_banner: bool) !void {
+    try luaInitReadline(L);
     if (print_banner) {
         try stdoutWrite(io, lua.LUA_COPYRIGHT);
         try stdoutWrite(io, "\n");
@@ -433,6 +479,10 @@ pub fn main(init: std.process.Init) !u8 {
     try lua.createargtable(L, argv_list.items, parsed.script_idx);
 
     var had_error = false;
+
+    // Reference `runargs`: the stand-alone starts with warnings off; the -W
+    // option turns them back on (processed in the actions loop below).
+    lua.lua_warning(L, "@off", 0);
 
     if (!parsed.ignore_env) {
         if (try handleLuainit(L, io, progname)) {

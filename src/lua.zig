@@ -6019,6 +6019,10 @@ pub fn luaL_newstate_io(L: *lua_State, gpa: std.mem.Allocator, io: std.Io) !void
     try registerGC(L, globals_tab);
     try ltable.setInt(registry_tab, 2, TValue{ .table = globals_tab });
     try ltm.luaT_init(L);
+    // Install the default warning handler (port of the reference
+    // luaL_newstate: `lua_setwarnf(L, warnfon, L)`), so warnings start ON
+    // and are turned off by the stand-alone driver's `@off` control message.
+    lua_setwarnf(L, lauxlib.warnfon, L);
 }
 
 pub fn luaL_newstate(L: *lua_State, gpa: std.mem.Allocator) !void {

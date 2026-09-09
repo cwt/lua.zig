@@ -5974,3 +5974,62 @@ test "BUG-169: collectgarbage step is bounded so dosteps(10) < dosteps(2)" {
     const status = try lua.luaL_dostring(&L, script, "=(test_bug169)");
     try std.testing.expectEqual(lua.LUA_OK, status);
 }
+
+test "BUG-170: warning state machine handles @off/@on and tocont continuation" {
+    const gpa = std.testing.allocator;
+    var L: lua.lua_State = undefined;
+    try lua.luaL_newstate(&L, gpa);
+    defer lua.lua_close(&L);
+
+    // luaL_newstate installs the reference default (warnings on).
+    try std.testing.expect(L.l_G.?.warnf == lauxlib.warnfon);
+
+    // '@off' turns warnings off; '@on' back on.
+    lua.lua_warning(&L, "@off", 0);
+    try std.testing.expect(L.l_G.?.warnf == lauxlib.warnfoff);
+    lua.lua_warning(&L, "@on", 0);
+    try std.testing.expect(L.l_G.?.warnf == lauxlib.warnfon);
+
+    // Unknown control messages are ignored but still count as control.
+    lua.lua_warning(&L, "@allow", 0);
+    try std.testing.expect(L.l_G.?.warnf == lauxlib.warnfon);
+
+    // A 'tocont' warning switches to the continuation handler until a final
+    // (tocont == 0) part completes the message. (These print to stderr.)
+    lua.lua_warning(&L, "continuing ", 1);
+    try std.testing.expect(L.l_G.?.warnf == lauxlib.warnfcont);
+    lua.lua_warning(&L, "done", 0);
+    try std.testing.expect(L.l_G.?.warnf == lauxlib.warnfon);
+}
+
+test "BUG-170: CLI warns when LUA_READLINELIB cannot be loaded at REPL entry" {
+    const gpa = std.testing.allocator;
+    var threaded: std.Io.Threaded = .init_single_threaded;
+    threaded.allocator = gpa;
+    defer threaded.deinit();
+    const io = threaded.io();
+
+    // `zig build test` builds the interpreter into zig-out/bin/luazig.
+    const bin = "zig-out/bin/luazig";
+    std.Io.Dir.cwd().access(io, bin, .{}) catch |err| switch (err) {
+        error.FileNotFound => return, // binary not built; skip
+        else => return err,
+    };
+
+    var env_map = std.process.Environ.Map.init(gpa);
+    defer env_map.deinit();
+    try env_map.put("LUA_READLINELIB", "xuxu");
+
+    // Entering the REPL with a loadable readline library named by the env
+    // var emits no warning; a non-existent one emits the reference warning
+    // (corpus from lua/testes/main.lua:200-206).
+    const result = try std.process.run(gpa, io, .{
+        .argv = &[_][]const u8{ bin, "-W", "-i" },
+        .environ_map = &env_map,
+    });
+    defer gpa.free(result.stdout);
+    defer gpa.free(result.stderr);
+    try std.testing.expect(
+        std.mem.indexOf(u8, result.stderr, "warning: unable to load readline library 'xuxu'") != null,
+    );
+}

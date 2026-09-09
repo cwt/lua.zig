@@ -6,6 +6,28 @@ tags: [log, changelog]
 timestamp: 2026-09-08T21:20:00Z
 ---
 
+## 2026-09-09 — Fix BUG-170: warning state machine + LUA_READLINELIB loading
+
+- **Bug Fixed**: `BUG-170` (MED) — the 5.5.1 `LUA_READLINELIB` feature was
+  missing: `main.lua:206` expects the warning `unable to load readline
+  library 'xuxu'` when the REPL entry cannot load the named library.
+- **Changes**:
+  - `src/lauxlib.zig`: ported the reference warning state machine
+    (`warnfon`/`warnfoff`/`warnfcont` + `checkcontrol` for `@off`/`@on`);
+    installed as default by `luaL_newstate_io` (reference `luaL_newstate`).
+  - `src/lib/baselib.zig`: `warn` now routes through the warning machinery
+    with the tocont protocol (was: direct stderr write).
+  - `src/luazig.zig`: ported `lua_initreadline` (dlopen `LUA_READLINELIB` or
+    the `libreadline.so` default at REPL entry, resolve `readline`, warn the
+    three-part reference message on failure); the stand-alone sends `@off` at
+    startup like `runargs`; `-E` ignores the env var via `luaL_getenv`.
+  - `src/luaconf.zig`: added `LUA_READLINELIB = "libreadline.so"`.
+- **Verification**: new unit tests (state-machine transitions + CLI subprocess
+  warning); `main.lua` proceeds past line 206; `zig build test` → 180/180,
+  0 leaks; `./run_testes.sh` → 20 PASS / 0 FAIL / 0 CRASH. (The main.lua:211
+  `-E` assertion is environment-dependent — it needs `libreadline.so`, which
+  this machine lacks; the C reference behaves identically.)
+
 ## 2026-09-09 — Fix BUG-169: collectgarbage("step") is now bounded; log BUG-172
 
 - **Bug Fixed**: `BUG-169` (MED) — `LUA_GCSTEP` ran a full synchronous

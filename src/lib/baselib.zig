@@ -437,21 +437,24 @@ fn print(L: *lua.lua_State) anyerror!i32 {
 }
 
 fn warn(L: *lua.lua_State) anyerror!i32 {
+    // Port of the reference luaB_warn (lua/lbaselib.c:46): every argument
+    // goes through the warning machinery with the tocont continuation
+    // protocol, so '@off'/'@on' control messages and the "Lua warning: "
+    // prefix behave like the reference.
     const n = lua.lua_gettop(L);
-    const io = L.l_G.?.io;
-    var i: i32 = 1;
+    _ = try lauxlib.luaL_checkstring(L, 1); // at least one argument
+    var i: i32 = 2;
     while (i <= n) : (i += 1) {
-        var len: usize = 0;
-        const s = try lauxlib.luaL_tolstring(L, i, &len);
-        if (!@import("builtin").is_test) {
-            if (s) |str| {
-                try std.Io.File.stderr().writeStreamingAll(io, str);
-            }
-        }
-        lua.lua_pop(L, 1);
+        _ = try lauxlib.luaL_checkstring(L, i); // all arguments are strings
     }
-    if (!@import("builtin").is_test) {
-        try std.Io.File.stderr().writeStreamingAll(io, "\n");
+    i = 1;
+    while (i < n) : (i += 1) {
+        if (lua.lua_tostring(L, i)) |s| {
+            lua.lua_warning(L, s, 1);
+        }
+    }
+    if (lua.lua_tostring(L, n)) |s| {
+        lua.lua_warning(L, s, 0); // close warning
     }
     return 0;
 }
