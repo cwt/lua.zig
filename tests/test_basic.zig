@@ -4334,9 +4334,11 @@ test "H.10 GC completeness (stop, restart, isrunning, collect, step, GCPARAM get
     try std.testing.expect(lua.lua_gc(&L, lua.LUA_GCCOUNT, 0, 0) > 0);
     try std.testing.expect(lua.lua_gc(&L, lua.LUA_GCCOUNTB, 0, 0) >= 0);
 
-    // GCGEN / GCINC (acknowledge, return 0)
-    try std.testing.expectEqual(@as(i32, 0), lua.lua_gc(&L, lua.LUA_GCGEN, 0, 0));
-    try std.testing.expectEqual(@as(i32, 0), lua.lua_gc(&L, lua.LUA_GCINC, 0, 0));
+    // GCGEN / GCINC: switch the tracked mode and return the *previous* mode
+    // constant (BUG-158; default mode is incremental). Port of lua/lapi.c.
+    try std.testing.expectEqual(@as(i32, lua.LUA_GCINC), lua.lua_gc(&L, lua.LUA_GCGEN, 0, 0));
+    try std.testing.expectEqual(@as(i32, lua.LUA_GCGEN), lua.lua_gc(&L, lua.LUA_GCINC, 0, 0));
+    try std.testing.expectEqual(@as(i32, lua.LUA_GCINC), lua.lua_gc(&L, lua.LUA_GCINC, 0, 0));
 
     // Invalid option -> -1
     try std.testing.expectEqual(@as(i32, -1), lua.lua_gc(&L, 999, 0, 0));
@@ -4395,19 +4397,20 @@ test "H.10 GC completeness (stop, restart, isrunning, collect, step, GCPARAM get
     // Verify via direct API
     try std.testing.expectEqual(@as(i32, 175), lua.lua_gc(&L, lua.LUA_GCPARAM, lua.LUA_GCPSTEPMUL, -1));
 
-    // "generational" and "incremental" options (acknowledged, return 0)
+    // "generational" and "incremental" options now return the *previous* mode
+    // as a string (BUG-158). Mode is incremental at this point, so:
     _ = lua.lua_getglobal(&L, "collectgarbage");
     _ = lua.lua_pushstring(&L, "generational");
     try lua.lua_call(&L, 1, 1);
-    try std.testing.expectEqual(@as(i32, lua.LUA_TNUMBER), lua.lua_type(&L, -1));
-    try std.testing.expectEqual(@as(f64, 0.0), lua.lua_tonumber(&L, -1));
+    try std.testing.expectEqual(@as(i32, lua.LUA_TSTRING), lua.lua_type(&L, -1));
+    try std.testing.expectEqualStrings("incremental", lua.lua_tostring(&L, -1).?);
     lua.lua_pop(&L, 1);
 
     _ = lua.lua_getglobal(&L, "collectgarbage");
     _ = lua.lua_pushstring(&L, "incremental");
     try lua.lua_call(&L, 1, 1);
-    try std.testing.expectEqual(@as(i32, lua.LUA_TNUMBER), lua.lua_type(&L, -1));
-    try std.testing.expectEqual(@as(f64, 0.0), lua.lua_tonumber(&L, -1));
+    try std.testing.expectEqual(@as(i32, lua.LUA_TSTRING), lua.lua_type(&L, -1));
+    try std.testing.expectEqualStrings("generational", lua.lua_tostring(&L, -1).?);
     lua.lua_pop(&L, 1);
 
     // Verify state still usable after GC operations
@@ -5796,5 +5799,27 @@ test "BUG-157: package.searchpath name conversion (sep->dirsep) and single-value
         \\os.remove("bug157d/sub"); os.execute("rmdir bug157d")
     ;
     const status = try lua.luaL_dostring(&L, script, "=(test_bug157)");
+    try std.testing.expectEqual(lua.LUA_OK, status);
+}
+
+test "BUG-158: collectgarbage generational/incremental returns the previous mode" {
+    const gpa = std.testing.allocator;
+    var L: lua.lua_State = undefined;
+    try lua.luaL_newstate(&L, gpa);
+    defer lua.lua_close(&L);
+    try lua.luaL_openlibs(&L);
+
+    const script =
+        \\-- corpus from lua/testes/gc.lua:14-15 (mode round-trip)
+        \\assert(collectgarbage("generational") == "incremental")
+        \\assert(collectgarbage("generational") == "generational")
+        \\assert(collectgarbage("incremental") == "generational")
+        \\assert(collectgarbage("incremental") == "incremental")
+        \\-- other options still behave
+        \\assert(type(collectgarbage("count")) == "number")
+        \\assert(collectgarbage("isrunning") == true)
+        \\assert(collectgarbage("step", 0) == false or collectgarbage("step", 0) == true)
+    ;
+    const status = try lua.luaL_dostring(&L, script, "=(test_bug158)");
     try std.testing.expectEqual(lua.LUA_OK, status);
 }

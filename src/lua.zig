@@ -1124,6 +1124,12 @@ pub const global_State = struct {
     /// GC parameters (get/set via LUA_GCPARAM). Initialised to defaults
     /// matching the C reference (lstate.c setgcparam calls).
     gcparams: [LUA_GCPN]u8 = [_]u8{ 10, 20, 50, 200, 200, 13 },
+    /// Current GC mode (LUA_GCINC default or LUA_GCGEN). `lua_gc` with
+    /// LUA_GCGEN/LUA_GCINC switches the mode and returns the *previous* one,
+    /// matching `collectgarbage("generational"/"incremental")` returning the
+    /// old mode name (BUG-158). The engine stays mark-and-sweep; only the
+    /// mode label is tracked so the return-value contract is conformant.
+    gc_mode: i32 = LUA_GCINC,
 };
 
 inline fn G(L: *lua_State) *global_State {
@@ -5331,12 +5337,14 @@ pub fn lua_gc(L: *lua_State, what: i32, arg: i32, value: i32) i32 {
             return if (g.gc_running) 1 else 0;
         },
         LUA_GCGEN => {
-            // Acknowledge request for generational mode; keep mark-and-sweep.
-            return 0;
+            const old = g.gc_mode;
+            g.gc_mode = LUA_GCGEN;
+            return old;
         },
         LUA_GCINC => {
-            // Acknowledge request for incremental mode; keep mark-and-sweep.
-            return 0;
+            const old = g.gc_mode;
+            g.gc_mode = LUA_GCINC;
+            return old;
         },
         LUA_GCPARAM => {
             const param = @as(usize, @intCast(arg));

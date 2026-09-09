@@ -6,6 +6,31 @@ tags: [log, changelog]
 timestamp: 2026-09-08T21:20:00Z
 ---
 
+## 2026-09-09 — Fix BUG-158: collectgarbage mode round-trip; log BUG-168/169
+
+- **BUG-158 Fixed** (`src/lua.zig`, `src/lib/baselib.zig`):
+  - `collectgarbage("generational"/"incremental")` must return the previous
+    mode name. Added `global_State.gc_mode` (default `LUA_GCINC`); `lua_gc`
+    `LUA_GCGEN`/`LUA_GCINC` now switch the mode and return the previous mode
+    constant (port of `lua/lapi.c`). `baselib.collectgarbage` gained a
+    dedicated case porting the C `pushmode` helper, pushing the previous mode
+    string (or failing on invalid result).
+  - Unblocks the gc.lua:14-15 round-trip. New unit test `BUG-158` in
+    `tests/test_basic.zig`.
+- **New defects logged** (discovered while verifying BUG-156/158 against the
+  standalone upstream files, not part of the medium-bug batch):
+  - `BUG-168` (CRITICAL, OPEN): double-free/abort when a `__close` metamethod
+    calls `coroutine.close(co)` on the thread being closed
+    (coroutine.lua:174-187). Previously masked because coroutine.lua bailed
+    at line 69 before BUG-156 was fixed.
+  - `BUG-169` (MED, OPEN): `LUA_GCSTEP` runs a full synchronous collection
+    every call, so gc.lua:71 `dosteps(10) < dosteps(2)` fails.
+- **Verification**:
+  - `zig build test` → 173/173 passing, 0 leaks.
+  - `./run_testes.sh` → 20 PASS / 0 FAIL / 0 CRASH.
+  - `lua/testes/gc.lua:14-15` passes standalone (file now proceeds to the
+    separate BUG-169 step-counting assert at line 71).
+
 ## 2026-09-09 — Fix BUG-157: package.searchpath name-conversion dropped the template
 
 - **Bug Fixed**: `BUG-157` (MED) — `package.searchpath` with an explicit

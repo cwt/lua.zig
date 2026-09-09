@@ -184,6 +184,18 @@ fn collectgarbage(L: *lua.lua_State) anyerror!i32 {
             lua.lua_pushboolean(L, if (res != 0) 1 else 0);
             return 1;
         },
+        lua.LUA_GCGEN, lua.LUA_GCINC => {
+            // Port of the C `pushmode` helper: switching modes returns the
+            // name of the previous mode as a string (BUG-158).
+            const old = lua.lua_gc(L, which, 0, 0);
+            if (old < 0) {
+                lauxlib.luaL_pushfail(L);
+            } else {
+                const name = if (old == lua.LUA_GCINC) "incremental" else "generational";
+                _ = lua.lua_pushstring(L, name);
+            }
+            return 1;
+        },
         else => {
             const ex = @as(i32, @intCast(lauxlib.luaL_optinteger(L, 2, 0)));
             const res = lua.lua_gc(L, which, ex, 0);

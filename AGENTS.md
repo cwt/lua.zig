@@ -568,7 +568,7 @@ The Lua 5.5.0 `lua.h` retains these for backward compatibility:
   - `LUA_GCISRUNNING` returns flag state ✅
   - `LUA_GCSTEP` runs synchronous full collection ✅
   - `LUA_GCCOUNT`/`COUNTB` return 0 (no allocator stats available) ✅
-  - `LUA_GCGEN`/`GCINC` acknowledge mode switch (keep mark-and-sweep) ✅
+  - `LUA_GCGEN`/`GCINC` switch the tracked mode (`global_State.gc_mode`) and return the previous mode constant; engine stays mark-and-sweep (BUG-158) ✅
 - `LUA_GCPARAM` get/set for all 6 parameters (`MINORMUL`/`MAJORMINOR`/`MINORMAJOR`/`PAUSE`/`STEPMUL`/`STEPSIZE`) stored in `global_State.gcparams[]` ✅
 - GC constants fixed to match Lua 5.5.0 (removed `LUA_GCSETPAUSE`/`LUA_GCSETSTEPMUL`, added `LUA_GCISRUNNING=6`/`GCGEN=7`/`GCINC=8`/`GCPARAM=9`) ✅
 - `lauxlib.luaL_checkoption` `def` parameter changed from `[]const u8` to `?[]const u8` for null-default support ✅
