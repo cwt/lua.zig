@@ -476,6 +476,14 @@ fn close_one_slot(L: *lua_State, abs: usize, err_val: ?TValue) anyerror!?TValue 
     if (err_val) |err| {
         ltm.luaT_callTM2(L, tm.?, &v, &err) catch |e| {
             if (e == error.Yield) return e;
+            if (e == error.ThreadClosed) {
+                // The `__close` handler closed the thread itself (a
+                // `coroutine.close` self-close). Propagate the signal so
+                // `closeupvals` can treat it as a clean self-close rather
+                // than a close error (BUG-168).
+                L.top = old_top;
+                return error.ThreadClosed;
+            }
             const saved_err = if (L.top > old_top and L.top - 1 < L.stack.len) L.stack[L.top - 1] else TValue{ .nil = {} };
             L.top = old_top;
             if (e == error.NotAFunction) {
@@ -502,6 +510,10 @@ fn close_one_slot(L: *lua_State, abs: usize, err_val: ?TValue) anyerror!?TValue 
     } else {
         ltm.luaT_callTM1(L, tm.?, &v) catch |e| {
             if (e == error.Yield) return e;
+            if (e == error.ThreadClosed) {
+                L.top = old_top;
+                return error.ThreadClosed;
+            }
             const saved_err = if (L.top > old_top and L.top - 1 < L.stack.len) L.stack[L.top - 1] else TValue{ .nil = {} };
             L.top = old_top;
             if (e == error.NotAFunction) {
@@ -577,25 +589,39 @@ pub fn closeupvals(L: *lua_State, limit: usize, err_val: ?TValue) !void {
             }
             const old_top = L.top;
             L.top = gc_safe_top;
-            if (try close_one_slot(L, abs, current_err)) |new_err| {
-                L.top = old_top;
+            const close_res = close_one_slot(L, abs, current_err) catch |e| {
+                if (e == error.ThreadClosed) {
+                    // A `__close` handler closed the thread itself (a
+                    // `coroutine.close` self-close; the reference models this
+                    // as a non-local `luaD_throwbaselevel`). This is a clean
+                    // self-close, not a close error: stop closing the
+                    // remaining TBC slots on this thread and finish normally
+                    // (BUG-168).
+                    L.top = old_top;
+                    L.tbclist.clearRetainingCapacity();
+                    return;
+                }
+                // error.Yield and any other close error propagate to the
+                // caller of `closeupvals`.
+                return e;
+            };
+            L.top = old_top;
+            if (close_res) |ne| {
                 if (needs_err_push) {
                     if (err_idx < L.stack.len) {
-                        L.stack[err_idx] = new_err;
+                        L.stack[err_idx] = ne;
                     }
                 } else {
                     if (L.top >= L.stack.len) {
                         try growStack(L, L.top + 5);
                     }
-                    L.stack[L.top] = new_err;
+                    L.stack[L.top] = ne;
                     err_idx = L.top;
                     L.top += 1;
                     needs_err_push = true;
                 }
                 has_err = true;
                 close_raised = true;
-            } else {
-                L.top = old_top;
             }
         } else {
             break;
@@ -799,6 +825,30 @@ fn freeAllCallInfos(L: *lua_State) void {
         f = nextf;
     }
     L.ci_free = null;
+    L.ci = &L.base_ci;
+    L.base_ci.next = null;
+}
+
+/// Recycle the active CallInfo chain into the freelist WITHOUT destroying it
+/// (BUG-168). Used for a self-close (`coroutine.close()` from the coroutine
+/// itself): the CallInfo structs may still be referenced by live C frames that
+/// are mid-unwind, so destroying them would be a use-after-free. Instead we
+/// detach the chain and link it onto `L.ci_free` for later reuse; the owning
+/// `lua_close`/`lua_closethread` frees them. `L.ci` is reset to the base CI
+/// so the thread is logically terminated (and `lua_resume` computes a zero
+/// result count).
+fn recycleCallInfos(L: *lua_State) void {
+    var curr = L.ci;
+    while (curr) |ci| {
+        const prev = ci.previous;
+        if (ci != &L.base_ci) {
+            ci.previous = null;
+            ci.next = null;
+            ci.freenext = L.ci_free;
+            L.ci_free = ci;
+        }
+        curr = prev;
+    }
     L.ci = &L.base_ci;
     L.base_ci.next = null;
 }
@@ -1227,6 +1277,17 @@ pub const lua_State = struct {
     err_name: ?[]const u8 = null,
     err_namewhat: ?[]const u8 = null,
     nCcalls: u32,
+    /// Re-entrancy guard for `lua_closethread`: set while a thread is being
+    /// closed so a nested self-close (a `__close` metamethod calling
+    /// `coroutine.close` on the thread it is running on) skips the
+    /// destructive teardown that would free the live CallInfo chain the outer
+    /// close (and its `__close` C frames) still holds (BUG-168).
+    close_in_progress: bool = false,
+    /// Set once a closed thread's pending error has been reported by
+    /// `lua_closethread`, so a subsequent close of the same (already-closed)
+    /// thread is clean instead of re-reporting the stale error (BUG-168, the
+    /// "after closing, no more errors" case in coroutine.lua).
+    close_err_consumed: bool = false,
     /// Number of non-yieldable contexts entered (mirrors the reference's high
     /// 16 bits of nCcalls). The main thread starts at 1; parsing increments it.
     /// `lua_isyieldable` is true iff this is zero.
@@ -2383,6 +2444,27 @@ pub fn lua_newthread(L: *lua_State) !*lua_State {
 pub fn lua_closethread(L: *lua_State, from: ?*lua_State) i32 {
     L.nCcalls = if (from) |f| f.nCcalls else 0;
     const old_status = L.status;
+
+    // Re-entrancy guard (BUG-168): a `__close` metamethod may call
+    // `coroutine.close(co)` on the very thread being closed. The outer
+    // `lua_closethread` set `close_in_progress` before running `closeupvals`,
+    // so this nested call must NOT re-run the destructive teardown —
+    // `closeupvals` would re-enter the still-active TBC loop and
+    // `freeAllCallInfos` would free the live CallInfo chain that the outer
+    // close (and its `__close` C frames, whose `luaT_callTM*` handlers keep a
+    // pointer to `old_ci`) still use. Just finalize the status and return;
+    // the outer close performs the real teardown.
+    if (L.close_in_progress) {
+        L.top = 1;
+        if (L.top < L.stack.len) {
+            @memset(L.stack[L.top..], .{ .nil = {} });
+        }
+        L.status = LUA_OK;
+        return LUA_OK;
+    }
+    L.close_in_progress = true;
+    defer L.close_in_progress = false;
+
     var err_val: ?TValue = if (old_status != 0 and old_status != LUA_YIELD)
         (if (L.err_obj != .nil) L.err_obj else if (L.top > 0) L.stack[L.top - 1] else null)
     else
@@ -2402,7 +2484,19 @@ pub fn lua_closethread(L: *lua_State, from: ?*lua_State) i32 {
         }
     };
 
-    freeAllCallInfos(L);
+    // A self-close (L == from, e.g. `coroutine.close()` inside the coroutine
+    // it is closing) must NOT destroy the CallInfo chain here: the thread
+    // still has active frames (the running `__close` / pcall machinery) that
+    // the `error.ThreadClosed` unwind traverses, and destroying them would be
+    // a use-after-free. Instead recycle them into the freelist and reset
+    // `L.ci` to the base CI so the thread is logically terminated (BUG-168).
+    // An external close (from a different thread, or `from == null`) does the
+    // real teardown.
+    if (from == null or from != L) {
+        freeAllCallInfos(L);
+    } else {
+        recycleCallInfos(L);
+    }
 
     if (close_err) {
         if (L.stack.len > 1) {
@@ -2415,10 +2509,22 @@ pub fn lua_closethread(L: *lua_State, from: ?*lua_State) i32 {
             @memset(L.stack[L.top..], .{ .nil = {} });
         }
         L.status = LUA_ERRRUN;
+        L.close_err_consumed = true;
         return LUA_ERRRUN;
     }
 
     if (old_status != 0 and old_status != LUA_YIELD) {
+        if (L.close_err_consumed) {
+            // This thread's close error was already reported by a previous
+            // close; a re-close is clean (coroutine.lua: "after closing, no
+            // more errors").
+            L.top = 1;
+            if (L.top < L.stack.len) {
+                @memset(L.stack[L.top..], .{ .nil = {} });
+            }
+            L.status = LUA_OK;
+            return LUA_OK;
+        }
         if (err_val) |ev| {
             if (L.stack.len > 1) {
                 L.stack[1] = ev;
@@ -2433,6 +2539,7 @@ pub fn lua_closethread(L: *lua_State, from: ?*lua_State) i32 {
             @memset(L.stack[L.top..], .{ .nil = {} });
         }
         L.status = old_status;
+        L.close_err_consumed = true;
         return old_status;
     } else {
         L.top = 1;
@@ -2440,6 +2547,7 @@ pub fn lua_closethread(L: *lua_State, from: ?*lua_State) i32 {
             @memset(L.stack[L.top..], .{ .nil = {} });
         }
         L.status = LUA_OK;
+        L.close_err_consumed = false;
         return LUA_OK;
     }
 }

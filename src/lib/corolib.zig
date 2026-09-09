@@ -149,6 +149,14 @@ fn luaB_close(L: *lua.lua_State) anyerror!i32 {
                 if (main == co) return lauxlib.luaL_error(L, "cannot close main thread");
             }
             lua.lua_pop(L, 1);
+            // Self-close while the coroutine is running. The reference's
+            // `lua_closethread(co, co)` performs a non-local
+            // `luaD_throwbaselevel` (it does not return), so we model that by
+            // propagating `error.ThreadClosed`, which unwinds the active
+            // frames (caught by any intermediate pcall, mirroring the
+            // reference). The nested `lua_closethread` is re-entrancy-guarded
+            // and skips the destructive `freeAllCallInfos` for a self-close
+            // (BUG-168), so the unwind is safe.
             _ = lua.lua_closethread(co, L);
             return error.ThreadClosed;
         },

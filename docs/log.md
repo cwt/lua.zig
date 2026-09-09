@@ -6,6 +6,45 @@ tags: [log, changelog]
 timestamp: 2026-09-08T21:20:00Z
 ---
 
+## 2026-09-09 — Fix BUG-168: coroutine self-close / re-close no longer double-frees
+
+- **Bug Fixed**: `BUG-168` (CRITICAL) — `free(): double free detected in
+  tcache` / abort when a `__close` metamethod called `coroutine.close(co)` on
+  the very thread being closed (coroutine.lua:174-187), and stale-error
+  re-report on a second close.
+- **Root cause**: re-entrant `lua_closethread` — the nested call's
+  `freeAllCallInfos` destroyed the live CallInfo chain the outer close and its
+  `__close` C frames (holding a pointer to `old_ci` in `luaT_callTM*`) still
+  used.
+- **Changes** (`src/lua.zig`, `src/lib/corolib.zig`):
+  - `close_in_progress` re-entrancy guard: a nested self-close skips the
+    destructive teardown and just finalizes status.
+  - `close_err_consumed` flag: a closed thread's error is reported exactly
+    once; a re-close is clean.
+  - Self-close uses `recycleCallInfos` (move chain to freelist, reset `L.ci`
+    to base, no destroy) instead of `freeAllCallInfos`, so the frames the
+    `error.ThreadClosed` unwind traverses are not freed; `lua_resume` then
+    computes a zero result count.
+  - `close_one_slot`/`closeupvals` treat `error.ThreadClosed` as a clean
+    self-close (not a close error) so the outer close returns `(true, nil)`.
+  - `corolib.luaB_close` COS_RUN propagates `error.ThreadClosed` (modeling the
+    reference `luaD_throwbaselevel`) so code after `coroutine.close()` in the
+    body does not run.
+- **Verification**:
+  - `coroutine.lua` now runs through the entire `coroutine.close` section
+    (lines 140-330) with no crash/double-free (it fails later at line 380 on
+    an unrelated yield-in-`xpcall`-across-C-boundary gap, BUG-160/162 family).
+  - New unit test `BUG-168` in `tests/test_basic.zig` (close-while-closing,
+    close-after-error + re-close, running self-close) + post-close GC.
+  - `zig build test` → 177/177 passing, 0 leaks. `./run_testes.sh` → 20 PASS / 0 FAIL / 0 CRASH.
+- **New defect logged** (`BUG-171`, HIGH, open): a separate pre-existing
+  upvalue bug surfaced while writing the BUG-168 test — a local assigned at its
+  own declaration and self-referenced through an inner closure (`local co =
+  coroutine.create(function() ... coroutine.close(co) end)`) reads the
+  pre-assignment value (`nil`) instead of the shared cell. The upstream
+  `coroutine.lua` uses the safe `local co; co = ...` form; the BUG-168 test
+  does too.
+
 ## 2026-09-09 — Fix BUG-165: default package.path/cpath use versioned lua/<vdir> dirs; log BUG-170
 
 - **Bug Fixed**: `BUG-165` (MED) — the default `package.cpath` was

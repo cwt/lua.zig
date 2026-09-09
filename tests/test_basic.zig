@@ -5893,3 +5893,52 @@ test "BUG-165: default package.path and package.cpath carry versioned lua/<vdir>
     const status = try lua.luaL_dostring(&L, script, "=(test_bug165)");
     try std.testing.expectEqual(lua.LUA_OK, status);
 }
+
+test "BUG-168: coroutine self-close and re-close are safe (no double-free/UAF)" {
+    const gpa = std.testing.allocator;
+    var L: lua.lua_State = undefined;
+    try lua.luaL_newstate(&L, gpa);
+    defer lua.lua_close(&L);
+    try lua.luaL_openlibs(&L);
+
+    const script =
+        \\local function func2close (f)
+        \\  return setmetatable({}, {__close = f})
+        \\end
+        \\-- 1. close a coroutine while its __close is closing it (coroutine.lua:174-184).
+        \\-- Use the `local co; co = ...` form (as upstream does): a local that is
+        \\-- assigned at its declaration and self-captured hits a separate, pre-existing
+        \\-- upvalue bug (out of scope here).
+        \\local co1
+        \\co1 = coroutine.create(function ()
+        \\  local x <close> = func2close(function () coroutine.close(co1) end)
+        \\  coroutine.yield(20)
+        \\end)
+        \\assert(select(2, coroutine.resume(co1)) == 20)
+        \\local st, msg = coroutine.close(co1)
+        \\assert(st and msg == nil)
+        \\-- 2. close a coroutine that died with an error, then close again (coroutine.lua:189-198)
+        \\local co2
+        \\co2 = coroutine.create(error)
+        \\local st0, msg0 = coroutine.resume(co2, 100)
+        \\assert(not st0 and msg0 == 100)
+        \\local st2, msg2 = coroutine.close(co2)
+        \\assert(not st2 and msg2 == 100)
+        \\st2, msg2 = coroutine.close(co2)
+        \\assert(st2 and msg2 == nil)
+        \\-- 3. self-close while running is a clean, non-returning termination (coroutine.lua:318-323)
+        \\local after = false
+        \\local co3
+        \\co3 = coroutine.create(function ()
+        \\  coroutine.close()
+        \\  after = true
+        \\end)
+        \\local ok3 = coroutine.resume(co3)
+        \\assert(ok3 and not after and coroutine.status(co3) == "dead")
+    ;
+    const status = try lua.luaL_dostring(&L, script, "=(test_bug168)");
+    try std.testing.expectEqual(lua.LUA_OK, status);
+
+    // A self-close leaves no live CallInfo chain; a following GC must be clean.
+    try lua.luaC_collectgarbage(&L);
+}
