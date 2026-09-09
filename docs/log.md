@@ -6,6 +6,25 @@ tags: [log, changelog]
 timestamp: 2026-09-08T21:20:00Z
 ---
 
+## 2026-09-09 — Fix BUG-172: strings are never removed from weak tables; log BUG-173
+
+- **Bug Fixed**: `BUG-172` (HIGH) — the weak-table sweep treated strings like
+  ordinary GC objects: short-string keys (not in allgc, swept via
+  `ts.marked`) were never cleared as entries but also never marked, so the
+  strt sweep freed them while table nodes still pointed at them (corrupted
+  key content, `invalid key to 'next'`), and long-string entries were
+  wrongly removed.
+- **Fix** (`src/lua.zig`): added `isClearedGCValue` porting the reference
+  `iscleared` (lua/lgc.c:223): strings are never removed from weak tables and
+  are marked on sight; used for both array and hash parts of the sweep.
+- **Verification**: verified against a Lua 5.4.4 reference binary as oracle
+  (weak-table semantics unchanged in 5.5): gc.lua weak-key section now passes
+  (20 survivors); all weak-mode probes (weak-v / weak-k / weak-kv) match the
+  oracle exactly. `zig build test` green, 0 leaks; `./run_testes.sh` 20/0/0.
+- **New defect logged** (`BUG-173`, HIGH, open): the ephemeron convergence
+  loop (`convergeephemerons`) is missing; gc.lua's later ephemerons torture
+  test (newly reachable after this fix) diverges.
+
 ## 2026-09-09 — BUG-171 marked FALSE POSITIVE (upvalue self-capture)
 
 - **Investigated & Closed as FALSE POSITIVE** (`docs/bugs/171.md`): the

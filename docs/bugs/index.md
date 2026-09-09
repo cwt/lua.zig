@@ -14,7 +14,7 @@ timestamp: '2026-09-08T21:20:00Z'
 # Bug Reports & Defect Catalog — luazig
 
 > Working catalog of defects, bug-avoidance audits, and conformance fixes in the `luazig` codebase.
-> Bugs are numbered `BUG-001` through `BUG-172`.
+> Bugs are numbered `BUG-001` through `BUG-173`.
 > Each document records the location, defect, impact, and fix or resolution.
 
 ## Legend
@@ -198,7 +198,8 @@ timestamp: '2026-09-08T21:20:00Z'
 | [BUG-169](169.md) | `lua.zig`: `LUA_GCSTEP` runs a full synchronous collection every call, so `gc.lua:71` step-counting (`dosteps(10) < dosteps(2)`) diverges from the reference | `MED` | ✅ FIXED |
 | [BUG-170](170.md) | `luazig.zig`: `LUA_READLINELIB` (5.5.1) readline-library loading + warning not implemented — main.lua:206 fails | `MED` | ✅ FIXED |
 | [BUG-171](171.md) | FALSE POSITIVE: assigned-at-declaration self-capture (`local co = f(function() ... co ... end)`) refers to the global per Lua visibility rules — luazig matches the reference | `HIGH` | ❌ FALSE POSITIVE |
-| [BUG-172](172.md) | `lua.zig`/`ltable.zig`: weak-key table element count diverges after collection — gc.lua:249 fails | `HIGH` | ⏳ OPEN |
+| [BUG-172](172.md) | `lua.zig`/`ltable.zig`: weak-key table element count diverges after collection — gc.lua:249 fails | `HIGH` | ✅ FIXED |
+| [BUG-173](173.md) | `lua.zig`: ephemeron convergence loop missing (convergeephemerons) — gc.lua ephemerons section diverges | `HIGH` | ⏳ OPEN |
 
 ## Systematic Bug Audits
 - [BUG-050](050.md) – [BUG-054](054.md): Systematic Bug-Pattern Audit (2026-07-31) cross-cutting codebase analysis.
