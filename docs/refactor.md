@@ -1,7 +1,7 @@
 ---
 type: project_priority
 title: Code Organization — `lua.zig` Breakdown & Deduplication Plan
-description: src/lua.zig is a 6253-line monolith packing seven C reference modules (lapi/ldo/lgc/lstate/ldebug/lobject + headers); verified code duplication (two number parsers, 6x CallInfo-unwind loop, 58 bufPrint-idiom sites, etc.). Two-phase plan: Phase A dedupe (6 commits), Phase B mirror-the-C-file-layout breakdown into 6 new modules + a slim hub. Pure refactoring — zero semantic change, gated by the full test battery.
+description: src/lua.zig is a 6253-line monolith packing seven C reference modules (lapi/ldo/lgc/lstate/ldebug/lobject + headers); verified code duplication (two number parsers, 7x CallInfo-unwind loop, 41 bufPrint-idiom sites, etc.). Two-phase plan: Phase A dedupe (6 commits), Phase B mirror-the-C-file-layout breakdown into 6 new modules + a slim hub. Pure refactoring — zero semantic change, gated by the full test battery.
 tags:
   - refactoring
   - code-organization
@@ -44,7 +44,7 @@ sources:
 | # | Duplication | Locations | C reference |
 |---|-------------|-----------|-------------|
 | D1 | **Two number parsers**: the lexer has its own scanner set, and lobject-side has a separate one | `llex.zig` 326–474 (`l_str2int`, `lua_strx2number`, `l_str2d`, `str2num`) vs `lua.zig` 5744–5902 (`parseInteger`, `parseLocaleNumber`, `tonumberValue`, `isHexDigit`…) | one parser in `lobject.c`, called from `llex.c` |
-| D2 | **CallInfo-unwind loop copy-pasted 6×** ("destroy CIs from `L.ci` down to `old_ci`") | `lua.zig`:957 (`precall`), :3856 (`lua_pcallk`), :4448 (`precover`); `ltm.zig`:143 (`luaD_call`), :186, :218 | one inline loop in `luaD_call_func`/`luaC_…` — 3 sites max, no ltm copy |
+| D2 | **CallInfo-unwind loop copy-pasted 7×** ("destroy CIs from `L.ci` down to the anchor") | `lua.zig`:957 (`precall`), :3856 (`lua_pcallk`), :4448 (`precover`); `ltm.zig`:143 (`luaD_call`), :186, :218, :250 (`callTM1`/`callTM2`/`callTM` helper group) | C keeps one walk in the `luaD_*` call machinery; the ltm copies are port artifacts |
 | D3 | **`close_one_slot`**: two ~30-line near-identical catch blocks (the `callTM2`/`callTM1` branches differ only in call shape) | `lua.zig` 475–540 | C inlines one `aux_close` path |
 | D4 | **`luaG_*` message builders**: seven functions, each ~80% identical boilerplate (fmt → `luaS_new` → push → return) | `lua.zig` 4062–4148 | C shares `luaG_typeerror`-family plumbing |
 | D5 | **`var buf: [N]u8 + std.fmt.bufPrint … catch "fallback"` idiom ×41** (verified: `lua.zig` ×23, `lauxlib.zig` ×8, `lparser.zig` ×10; the other 31 `bufPrint` uses are *different* families — `try`-propagating traceback sites, `if (bufPrint)` branches, the lexer's persistent `errmsg_buf`, and `lib/string/*`'s `string.format` implementation — and are out of scope) | `lua.zig`, `lauxlib.zig`, `lparser.zig` | C uses one `buffprint` helper |
@@ -74,7 +74,10 @@ Order = cheap/safe wins first, riskiest last:
   the error state); the seven wrappers shrink to their unique format
   strings. D4 gone.
 - **A2 → commit 5**: add `fn unwindCis(L: *lua_State, up_to: ?*CallInfo)
-  void` (the D2 loop, once); replace all 6 copy-pasted sites.
+  void` (the D2 walk, once: destroy the chain above `up_to`, keep the
+  embedded `base_ci`, set `L.ci = up_to`, clear `up_to.next`); replace
+  all 7 copy-pasted sites (precover keeps its extra parent-sever line
+  after the call).
 - **A1 → commit 6** *(highest risk, last)*: consolidate the two number
   parsers. Target shape mirrors the C reference: the lobject-side parser
   (`tonumberValue` + `parseLocaleNumber` + friends, staying in `lua.zig`
@@ -142,7 +145,7 @@ decide at commit time by which imports they need.
 - `src/lua.zig`: 6253 → ~800 lines (hub: types + constants + re-exports).
 - Six new modules of 400–1800 lines, each ≈ its C counterpart's size —
   restoring the project's "one Zig file per C file" convention.
-- Deduplication: 2 number parsers → 1; 6 unwind loops → 1 helper; 58
+- Deduplication: 2 number parsers → 1; 7 unwind loops → 1 helper; 41
   bufPrint idiom sites → 1 `fmtMsg`; 7 `luaG_*` boilerplate bodies → 1
   shared tail; duplicate `LUAI_MAXCCALLS` → single source. Net LOC
   roughly **−800…−1200**.

@@ -139,19 +139,7 @@ pub fn luaD_call(L: *lua.lua_State, func_idx: usize, nresults: i32) !void {
         }
         lvm.run(L, new_ci) catch |e| {
             if (e == error.Yield) return e;
-            var curr = L.ci;
-            while (curr) |c| {
-                if (c == old_ci) break;
-                const prev = c.previous;
-                if (c != &L.base_ci) {
-                    L.allocator.destroy(c);
-                }
-                curr = prev;
-            }
-            L.ci = old_ci;
-            if (old_ci) |prev| {
-                prev.next = null;
-            }
+            lua.unwindCis(L, old_ci);
             return e;
         };
     }
@@ -182,19 +170,7 @@ pub fn luaT_callTM1(L: *lua.lua_State, f: lua.TValue, p1: *const lua.TValue) !vo
     L.top = old_top + 2;
     luaD_call(L, old_top, 0) catch |e| {
         if (e == error.Yield) return e;
-        var curr = L.ci;
-        while (curr) |c| {
-            if (c == old_ci) break;
-            const prev = c.previous;
-            if (c != &L.base_ci) {
-                L.allocator.destroy(c);
-            }
-            curr = prev;
-        }
-        L.ci = old_ci;
-        if (old_ci) |prev| {
-            prev.next = null;
-        }
+        lua.unwindCis(L, old_ci);
         // Leave the error object on the stack (at L.top-1) so close_one_slot
         // can propagate a __close error to the next handler.
         return e;
@@ -214,19 +190,7 @@ pub fn luaT_callTM2(L: *lua.lua_State, f: lua.TValue, p1: *const lua.TValue, p2:
     L.top = old_top + 3;
     luaD_call(L, old_top, 0) catch |e| {
         if (e == error.Yield) return e;
-        var curr = L.ci;
-        while (curr) |c| {
-            if (c == old_ci) break;
-            const prev = c.previous;
-            if (c != &L.base_ci) {
-                L.allocator.destroy(c);
-            }
-            curr = prev;
-        }
-        L.ci = old_ci;
-        if (old_ci) |prev| {
-            prev.next = null;
-        }
+        lua.unwindCis(L, old_ci);
         // Leave the error object on the stack (at L.top-1) so close_one_slot
         // can propagate a __close error to the next handler.
         return e;
@@ -246,19 +210,7 @@ pub fn luaT_callTMres(L: *lua.lua_State, f: lua.TValue, p1: *const lua.TValue, p
     L.top = old_top + 3;
     luaD_call(L, old_top, 1) catch |e| {
         if (e == error.Yield) return e;
-        var curr = L.ci;
-        while (curr) |c| {
-            if (c == old_ci) break;
-            const prev = c.previous;
-            if (c != &L.base_ci) {
-                L.allocator.destroy(c);
-            }
-            curr = prev;
-        }
-        L.ci = old_ci;
-        if (old_ci) |prev| {
-            prev.next = null;
-        }
+        lua.unwindCis(L, old_ci);
         L.top = saved_top;
         return e;
     };

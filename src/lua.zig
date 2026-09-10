@@ -838,6 +838,28 @@ fn recycleCallInfos(L: *lua_State) void {
     L.base_ci.next = null;
 }
 
+/// A2 (docs/refactor.md): destroy the CallInfos on the active chain strictly
+/// above `up_to` (walking from `L.ci` down; the embedded `base_ci` is never
+/// destroyed), set `L.ci = up_to` and clear `up_to.next`. Replaces the six
+/// copy-pasted walk loops (precall / lua_pcallk / precover in this file and
+/// luaD_call / luaT_callTM1 / luaT_callTM2 in ltm.zig). A site that must
+/// ALSO sever the parent link (precover) does that after calling this.
+pub fn unwindCis(L: *lua_State, up_to: ?*CallInfo) void {
+    var curr = L.ci;
+    while (curr) |c| {
+        if (c == up_to) break;
+        const prev = c.previous;
+        if (c != &L.base_ci) {
+            L.allocator.destroy(c);
+        }
+        curr = prev;
+    }
+    L.ci = up_to;
+    if (up_to) |u| {
+        u.next = null;
+    }
+}
+
 // Proto flag bits (mirror lua/ldo.h PF_*). A Lua function is vararg when its
 // 'flag' carries PF_VAHID (hidden vararg args) or PF_VATAB (vararg table);
 // such functions begin with OP_VARARGPREP, which relocates the frame and must
@@ -938,19 +960,7 @@ pub fn precall(L: *lua_State, func_idx: usize, nresults: i32) !?*CallInfo {
                 if (e == error.Yield) {
                     return error.Yield;
                 }
-                var curr = L.ci;
-                while (curr) |c| {
-                    if (c == old_ci) break;
-                    const prev = c.previous;
-                    if (c != &L.base_ci) {
-                        L.allocator.destroy(c);
-                    }
-                    curr = prev;
-                }
-                L.ci = old_ci;
-                if (old_ci) |prev| {
-                    prev.next = null;
-                }
+                unwindCis(L, old_ci);
                 return e;
             };
             if (n < 0) {
@@ -3847,19 +3857,7 @@ pub fn lua_pcallk(L: *lua_State, nargs: i32, nresults: i32, errfunc: i32, ctx: l
         var err_obj = L.err_obj;
 
         // Clean up stale CallInfo frames (overflow frames from Lua recursion).
-        var curr = L.ci;
-        while (curr) |c| {
-            if (c == old_ci) break;
-            const prev = c.previous;
-            if (c != &L.base_ci) {
-                L.allocator.destroy(c);
-            }
-            curr = prev;
-        }
-        L.ci = old_ci;
-        if (old_ci) |prev| {
-            prev.next = null;
-        }
+        unwindCis(L, old_ci);
 
         // Restore L.top to its pre-call level (func_idx + nargs + 1), making
         // room for the error handler to execute (the handler's precall checks
@@ -4444,16 +4442,7 @@ fn precover(L: *lua_State) !bool {
     const target_ci = target orelse return false;
 
     // Unwind the frames above the protected call.
-    var curr = L.ci;
-    while (curr) |c| {
-        if (c == target_ci) break;
-        const prev = c.previous;
-        if (c != &L.base_ci) {
-            L.allocator.destroy(c);
-        }
-        curr = prev;
-    }
-    L.ci = target_ci;
+    unwindCis(L, target_ci);
     if (target_ci.previous) |prev| {
         prev.next = null;
     }
