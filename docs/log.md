@@ -6,6 +6,32 @@ tags: [log, changelog]
 timestamp: 2026-09-10T23:55:00Z
 ---
 
+## 2026-09-10 — Refactor B6: `lapi.zig` carved out of `lua.zig` (Phase B: 6/7)
+
+- Pure move (docs/refactor.md Phase B policy): the C API proper
+  (the `lapi.c` port) moved verbatim from `lua.zig` into the new
+  `src/lapi.zig` (112 items, ~1970 lines): index helpers
+  (`idxPtr`/`toAbsoluteIndex`/`lua_absindex`/`stackAt`), get/set/top,
+  all type predicates + conversions, the whole push family, the
+  upvalue API, table/metatable API, `lua_callk`/`lua_pcallk`,
+  `lua_load`/`finishLoad`/`lua_dump`/`lua_next`, `atpanic`/`version`/
+  `getallocf`/`setallocf`, `checkclosemth`/`lua_toclose`/`lua_closeslot`,
+  `luaV_concat`/`lua_concat`/`lua_len`/`lua_arith`/`luaV_shift`/`numMod`,
+  plus `luaL_dostring`/`luaL_dostringReader` and the H.5 `lua_tostring`
+  alias. 112 symbols re-exported so every call site keeps its `lua.`
+  qualification.
+- Visibility bumps only (no signature changes): `getTable`/`numMod`/
+  `toAbsoluteIndex` made pub in lapi.zig; the `TValue.toBoolean`
+  struct method made pub in the hub. lapi.zig re-declares the
+  C externs it needs (`snprintf`/`strtod`/`strspn` via the hub or
+  locally) and imports `ltable`/`lstring`/`ltm`/`lvm`/`lundump`/
+  `ldump`/`lparser`/`libm`/`llimits` directly.
+- `lua.zig` 2839 -> 883 lines (B7 hub territory).
+- Verification: 188/188 unit tests; upstream PASS 20 / FAIL 0;
+  `tests/pi-5.5.lua` byte-identical; perf gate 375.57B instructions
+  (P4 baseline 375.6B - invariant). §0.1: move + qualification, no
+  semantic edits.
+
 ## 2026-09-10 — Refactor B3: lobject.c remainder moved into lobject.zig (Phase B: 3/7, plan numbering)
 
 - Pure move (docs/refactor.md Phase B policy): the remaining
