@@ -6,6 +6,25 @@ tags: [log, changelog]
 timestamp: 2026-09-10T23:55:00Z
 ---
 
+## 2026-09-10 — Refactor B3: lobject.c remainder moved into lobject.zig (Phase B: 3/7, plan numbering)
+
+- Pure move (docs/refactor.md Phase B policy): the remaining
+  lobject.c material moved verbatim from `lua.zig` into
+  `src/lobject.zig` (4 chunks, ~310 lines): the tostring helpers
+  (`tostringbuffFloat`/`luaO_tostringbuff`), `toNumeric` (the P4
+  helper), `luaV_rawequalobj`, and the `luaG_*` message-builder
+  family (`luaG_runerror`, `tvEqual`, `luaG_varinfo`, `luaG_err`,
+  `luaG_errnnil`, `luaG_forerror`, `luaG_tointerror`,
+  `luaG_typeerror`/`typeerrorPtr`, `luaG_callerror`,
+  `luaG_opinterror`, `luaG_concaterror`, `luaG_ordererror`).
+  14 symbols re-exported; `snprintf` extern made pub in lua.zig
+  (visibility only; lobject.zig re-declares `strtod`/`strspn` C
+  externs for its own use). `lua.zig` 3122 -> 2839 lines.
+- Verification: 188/188 unit tests; upstream PASS 20 / FAIL 0;
+  `tests/pi-5.5.lua` byte-identical; perf gate 375.60B instructions
+  (P4 baseline 375.6B - invariant). §0.1: move + qualification, no
+  semantic edits.
+
 ## 2026-09-10 — Refactor B5: `lstate.zig` carved out of `lua.zig` (Phase B: 5/7)
 
 - Pure move (docs/refactor.md Phase B policy): the state-lifecycle

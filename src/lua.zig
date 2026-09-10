@@ -22,6 +22,22 @@ pub const lstate = @import("lstate.zig");
 // `lua_stringtonumber` (stringlib/iolib/baselib).
 pub const tonumberValue = lobject.tonumberValue;
 pub const lua_stringtonumber = lobject.lua_stringtonumber;
+// B3: the lobject.c remainder moved into lobject.zig (re-exported).
+pub const tostringbuffFloat = lobject.tostringbuffFloat;
+pub const luaO_tostringbuff = lobject.luaO_tostringbuff;
+pub const toNumeric = lobject.toNumeric;
+pub const luaV_rawequalobj = lobject.luaV_rawequalobj;
+pub const luaG_runerror = lobject.luaG_runerror;
+pub const luaG_errnnil = lobject.luaG_errnnil;
+pub const luaG_forerror = lobject.luaG_forerror;
+pub const luaG_tointerror = lobject.luaG_tointerror;
+pub const luaG_typeerror = lobject.luaG_typeerror;
+pub const luaG_typeerrorPtr = lobject.luaG_typeerrorPtr;
+pub const luaG_callerror = lobject.luaG_callerror;
+pub const luaG_opinterror = lobject.luaG_opinterror;
+pub const luaG_concaterror = lobject.luaG_concaterror;
+pub const luaG_ordererror = lobject.luaG_ordererror;
+
 
 // Re-exports of the debug-introspection module (ldebug.zig, Refactor B1):
 // callers keep the `lua.` qualification unchanged.
@@ -1158,47 +1174,10 @@ pub fn lua_toboolean(L: *lua_State, idx: i32) i32 {
     return if (v.toBoolean()) 1 else 0;
 }
 
-extern "c" fn snprintf(buf: [*]u8, size: usize, format: [*]const u8, ...) c_int;
+pub extern "c" fn snprintf(buf: [*]u8, size: usize, format: [*]const u8, ...) c_int;
 extern "c" fn strtod(nptr: [*:0]const u8, endptr: ?*?[*:0]const u8) f64;
 extern "c" fn strspn(str1: [*]const u8, str2: [*]const u8) usize;
 
-pub fn tostringbuffFloat(n: f64, buff: *[128]u8) usize {
-    var len = snprintf(buff, 128, "%.15g", n);
-    if (len < 0) return 0;
-    buff[@intCast(len)] = 0;
-    const check = strtod(@ptrCast(buff), null);
-    if (check != n) {
-        len = snprintf(buff, 128, "%.17g", n);
-        if (len < 0) return 0;
-        buff[@intCast(len)] = 0;
-    }
-    const idx = strspn(buff, "-0123456789");
-    if (buff[idx] == 0) {
-        const ulen: usize = @intCast(len);
-        buff[ulen] = '.';
-        buff[ulen + 1] = '0';
-        buff[ulen + 2] = 0;
-        return ulen + 2;
-    }
-    return @intCast(len);
-}
-
-pub fn luaO_tostringbuff(val: TValue, buff: *[128]u8) []const u8 {
-    return switch (val) {
-        .integer => |i| fmtMsg(buff, "", "{d}", .{i}),
-        .number => |n| {
-            if (std.math.isNan(n)) {
-                return "nan";
-            } else if (std.math.isInf(n)) {
-                return if (n < 0) "-inf" else "inf";
-            }
-            const len = tostringbuffFloat(n, buff);
-            return buff[0..len];
-        },
-        .string => |s| if (s) |str| str.s else "",
-        else => "",
-    };
-}
 
 /// D5 dedupe (docs/refactor.md): shared "format into a fixed buffer, fall
 /// back to `fallback` on overflow" helper. Replaces the
@@ -1306,18 +1285,6 @@ pub fn luaV_shift(x: i64, s: i64) i64 {
 
 /// Try to convert a TValue to a numeric TValue (integer or float).
 /// For strings, attempts number parsing. Returns null if not numeric.
-pub fn toNumeric(v: TValue) ?TValue {
-    return switch (v) {
-        .integer => v,
-        .number => v,
-        .string => |s| {
-            const str = s orelse return null;
-            // Locale-aware parse (mirrors lua_stringtonumber via tonumberValue).
-            return tonumberValue(str.s);
-        },
-        else => null,
-    };
-}
 
 pub fn lua_arith(L: *lua_State, op: i32) !void {
     if (op < 0 or op > 13) return;
@@ -1449,46 +1416,6 @@ pub fn lua_arith(L: *lua_State, op: i32) !void {
     }
 }
 
-pub fn luaV_rawequalobj(t1: TValue, t2: TValue) bool {
-    if (t1 == .number and t2 == .number) {
-        return t1.number == t2.number;
-    }
-    if (t1 == .integer and t2 == .integer) {
-        return t1.integer == t2.integer;
-    }
-    if (t1 == .integer and t2 == .number) {
-        const i = t1.integer;
-        const f = t2.number;
-        return f == @as(f64, @floatFromInt(i)) and i == @as(i64, @intFromFloat(f));
-    }
-    if (t1 == .number and t2 == .integer) {
-        const f = t1.number;
-        const i = t2.integer;
-        return f == @as(f64, @floatFromInt(i)) and i == @as(i64, @intFromFloat(f));
-    }
-    if (@as(std.meta.Tag(TValue), t1) != @as(std.meta.Tag(TValue), t2)) {
-        return false;
-    }
-    return switch (t1) {
-        .nil => true,
-        .boolean => |b| b == t2.boolean,
-        .number => |n| n == t2.number,
-        .integer => |n| n == t2.integer,
-        .lightud => |p| p == t2.lightud,
-        .string => |s| blk: {
-            const t2s = t2.string;
-            if (s == null and t2s == null) break :blk true;
-            if (s == null or t2s == null) break :blk false;
-            break :blk lstring.luaS_eqstr(s.?, t2s.?);
-        },
-        .function => |f| f == t2.function,
-        .table => |t| t == t2.table,
-        .userdata => |u| u == t2.userdata,
-        .thread => |t| t == t2.thread,
-        .upval => |u| u == t2.upval,
-        .proto => |p| p == t2.proto,
-    };
-}
 
 pub fn lua_rawequal(L: *lua_State, idx1: i32, idx2: i32) i32 {
     const a = stackAt(L, idx1);
@@ -2484,221 +2411,6 @@ pub inline fn lua_pcall(L: *lua_State, nargs: i32, nresults: i32, errfunc: i32) 
 /// so the surrounding protected call reports it. Mirrors PUC-Rio's
 /// `luaG_runerror`. Returns `!lua.TValue` so it can be used as a function's
 /// error return regardless of the function's success payload type.
-pub fn luaG_runerror(L: *lua_State, msg: []const u8) !void {
-    var full_msg: [512]u8 = undefined;
-    var final_msg = msg;
-    if (L.ci) |ci| {
-        if (isLua(ci, L)) {
-            const val = L.stack[ci.func];
-            if (val == .function and val.function != null and val.function.?.* == .lua) {
-                const proto = val.function.?.lua.p;
-                if (proto.source) |src| {
-                    var chunkid_buf: [LUA_IDSIZE]u8 = undefined;
-                    luaO_chunkid(&chunkid_buf, src.s);
-                    const chunkid = std.mem.sliceTo(&chunkid_buf, 0);
-                    const line = luaG_getfuncline(proto, currentpc(ci));
-                    if (std.fmt.bufPrint(&full_msg, "{s}:{d}: {s}", .{ chunkid, line, msg })) |formatted| {
-                        final_msg = formatted;
-                    } else |_| {}
-                } else {
-                    if (std.fmt.bufPrint(&full_msg, "?:?: {s}", .{msg})) |formatted| {
-                        final_msg = formatted;
-                    } else |_| {}
-                }
-            }
-        }
-    }
-    const ts = lstring.luaS_new(L, final_msg) catch null;
-    if (ts) |t| {
-        L.stack[L.top] = TValue{ .string = t };
-        L.top += 1;
-    } else {
-        L.stack[L.top] = TValue{ .nil = {} };
-        L.top += 1;
-    }
-    return lua_error(L);
-}
-
-/// Value-equality test used by `varinfo` to locate the operand register.
-fn tvEqual(a: TValue, b: TValue) bool {
-    if (a == .nil and b == .nil) return true;
-    if (a.isNumberValue() and b.isNumberValue()) {
-        return a.toFloat() == b.toFloat();
-    }
-    if (a == .boolean and b == .boolean) return a.boolean == b.boolean;
-    if (a == .integer and b == .integer) return a.integer == b.integer;
-    if (a == .string and b == .string) return a.string == b.string;
-    return false;
-}
-
-/// Mirror PUC-Rio `varinfo`: locate `o` in the current Lua frame and build a
-/// description such as ` (field 'huge')` or ` (global 'x')`, written into `buf`.
-/// Returns the slice of `buf` used, or `""` if unknown.
-fn luaG_varinfo(L: *lua_State, o_ptr: *const TValue, buf: []u8) []const u8 {
-    var ci = L.ci orelse return "";
-    if (!isLua(ci, L)) {
-        ci = ci.previous orelse return "";
-        if (!isLua(ci, L)) return "";
-    }
-    if (ci.func >= L.stack.len) return "";
-    const val = L.stack[ci.func];
-    if (val != .function or val.function == null) return "";
-    const cl = val.function.?;
-    if (cl.* != .lua) return "";
-    const lcl = cl.lua;
-
-    // 1. Check exact upvalue pointer match first
-    for (lcl.upvals, 0..) |opt_uv, uv_idx| {
-        if (opt_uv) |uv| {
-            if (uv.v == o_ptr) {
-                const uname = upvalname(lcl.p, uv_idx);
-                return fmtMsg(buf, "", " (upvalue '{s}')", .{uname});
-            }
-        }
-    }
-
-    const p = lcl.p;
-    const base = ci.base;
-    var reg: i32 = -1;
-
-    // 2. Check exact stack pointer match
-    const o_addr = @intFromPtr(o_ptr);
-    const stack_addr = @intFromPtr(L.stack.ptr);
-    const stack_end_addr = stack_addr + L.stack.len * @sizeOf(TValue);
-    if (o_addr >= stack_addr and o_addr < stack_end_addr) {
-        const idx = (o_addr - stack_addr) / @sizeOf(TValue);
-        if (idx >= base and idx < ci.top) {
-            reg = @intCast(idx - base);
-        }
-    }
-
-    // 3. Fall back to upvalue value match
-    if (reg < 0) {
-        for (lcl.upvals, 0..) |opt_uv, uv_idx| {
-            if (opt_uv) |uv| {
-                if (tvEqual(uv.v.*, o_ptr.*)) {
-                    const uname = upvalname(lcl.p, uv_idx);
-                    return fmtMsg(buf, "", " (upvalue '{s}')", .{uname});
-                }
-            }
-        }
-    }
-
-    // 4. Fall back to stack register value match
-    if (reg < 0) {
-        var idx: usize = base;
-        const limit = @min(ci.top, L.stack.len);
-        while (idx < limit) : (idx += 1) {
-            if (tvEqual(L.stack[idx], o_ptr.*)) {
-                reg = @intCast(idx - base);
-                break;
-            }
-        }
-    }
-
-    if (reg < 0) return "";
-    var name: ?[]const u8 = null;
-    const kind = getobjname(p, currentpc(ci), reg, &name) orelse return "";
-    if (name == null) return "";
-    return fmtMsg(buf, "", " ({s} '{s}')", .{ kind, name.? });
-}
-
-/// Error when a value cannot be converted to an integer (bitwise/shift operand
-/// or `floor`/integer coercion). Mirrors PUC-Rio `luaG_tointerror`: the message
-/// is `"number%s has no integer representation"`, where `%s` is the operand's
-/// `varinfo` (e.g. ` (field 'huge')`).
-/// A4 (docs/refactor.md): shared tail of the `luaG_*` error-message
-/// builders — the repeated
-/// `const mslice = fmtMsg(buf, fallback, fmt, args); return
-/// luaG_runerror(L, mslice);` two-step. Callers keep their own fixed
-/// buffer (each site's overflow behavior is preserved exactly) and pass
-/// pre-formatted fragments (e.g. `luaG_varinfo` results) as args.
-fn luaG_err(L: *lua_State, buf: []u8, fallback: []const u8, comptime fmt: []const u8, args: anytype) !void {
-    return luaG_runerror(L, fmtMsg(buf, fallback, fmt, args));
-}
-
-pub fn luaG_errnnil(L: *lua_State, proto: *const lua_Proto, k: i32) !void {
-    var globalname: []const u8 = "?";
-    if (k > 0 and @as(usize, @intCast(k - 1)) < proto.k.len) {
-        const kv = proto.k[@as(usize, @intCast(k - 1))];
-        if (kv == .string) {
-            if (kv.string) |ts| globalname = ts.s;
-        }
-    }
-    var buf: [256]u8 = undefined;
-    return luaG_err(L, &buf, "global already defined", "global '{s}' already defined", .{globalname});
-}
-
-pub fn luaG_forerror(L: *lua_State, o: TValue, what: []const u8) !void {
-    const t = ltm.luaT_objtypename(L, o);
-    var msg: [256]u8 = undefined;
-    return luaG_err(L, &msg, "bad 'for' value", "bad 'for' {s} (number expected, got {s})", .{ what, t });
-}
-
-pub fn luaG_tointerror(L: *lua_State, o: TValue) !void {
-    var buf: [256]u8 = undefined;
-    const info = luaG_varinfo(L, &o, &buf);
-    var msg: [320]u8 = undefined;
-    return luaG_err(L, &msg, "number has no integer representation", "number{s} has no integer representation", .{info});
-}
-
-pub fn luaG_typeerror(L: *lua_State, o: TValue, op: []const u8) !void {
-    return luaG_typeerrorPtr(L, &o, op);
-}
-
-pub fn luaG_typeerrorPtr(L: *lua_State, o: *const TValue, op: []const u8) !void {
-    var buf: [256]u8 = undefined;
-    const info = luaG_varinfo(L, o, &buf);
-    const t = ltm.luaT_objtypename(L, o.*);
-    var msg: [320]u8 = undefined;
-    return luaG_err(L, &msg, "attempt to perform operation on value", "attempt to {s} a {s} value{s}", .{ op, t, info });
-}
-
-pub fn luaG_callerror(L: *lua_State, o: TValue) !void {
-    var fname: ?[]const u8 = null;
-    var kind: ?[]const u8 = null;
-    if (L.ci) |ci| {
-        kind = funcnamefromcall(L, ci, &fname);
-    }
-    const t = ltm.luaT_objtypename(L, o);
-    var msg: [320]u8 = undefined;
-    if (kind) |k| {
-        if (fname) |fnm| {
-            return luaG_err(L, &msg, "attempt to call a non-function value", "attempt to call a {s} value ({s} '{s}')", .{ t, k, fnm });
-        }
-    }
-    return luaG_typeerror(L, o, "call");
-}
-
-pub fn luaG_opinterror(L: *lua_State, p1: *const TValue, p2: *const TValue, msg: []const u8) !void {
-    var err_obj = p1;
-    if (p1.isNumberValue()) {
-        err_obj = p2;
-    }
-    return luaG_typeerrorPtr(L, err_obj, msg);
-}
-
-pub fn luaG_concaterror(L: *lua_State, p1: *const TValue, p2: *const TValue) !void {
-    // Port of the reference: if the first operand is (or can be converted to)
-    // a string, blame the second operand. Without the string check, an already
-    // coerced operand (e.g. `1..{}`) would wrongly report "a string value".
-    var err_obj = p1;
-    if (p1.isNumberValue() or p1.isString()) {
-        err_obj = p2;
-    }
-    return luaG_typeerrorPtr(L, err_obj, "concatenate");
-}
-
-pub fn luaG_ordererror(L: *lua_State, p1: TValue, p2: TValue) !void {
-    const t1 = ltm.luaT_objtypename(L, p1);
-    const t2 = ltm.luaT_objtypename(L, p2);
-    var msg: [256]u8 = undefined;
-    const mslice = if (std.mem.eql(u8, t1, t2))
-        fmtMsg(&msg, "attempt to compare values", "attempt to compare two {s} values", .{t1})
-    else
-        fmtMsg(&msg, "attempt to compare values", "attempt to compare {s} with {s}", .{ t1, t2 });
-    return luaG_runerror(L, mslice);
-}
 
 pub fn lua_load(L: *lua_State, reader: lua_Reader, dt: ?*anyopaque, chunkname: []const u8, mode: []const u8) i32 {
     luaC_condGC(L);
