@@ -33,6 +33,17 @@ sources:
 - Duplication has accumulated in the monolith (verified 2026-09-10, see
   below). The repo has hit this failure mode before: `src/lstate.zig` was
   deleted once for carrying a stale duplicate.
+- **Design principle (binding for every Phase A/B commit):** the C
+  reference is the oracle for *semantics* only — which strings are
+  numbers, which errors fire, which bytes of bytecode. *Structure and
+  mechanism* are designed for Zig (AGENTS.md §0.2: "diff against `lua/`
+  for semantics, never for structure"). The Phase B filenames mirror the
+  C layout because that layout is *also* convenient for reference-
+  diffing; it is not a transcription mandate. Where C's mechanism is a
+  C artifact (global locale, `strtod`, NUL-terminated strings, one
+  all-purpose parser), the Zig port uses the better mechanism
+  (explicit locale-as-data, `[]const u8`, allocation-free specialized
+  entry points) — see the A1 design.
 - Performance work (BUG-174, `performance.md`) is at its P4 plateau
   (375B / ~12.7s); the remaining RC1 lever is a deeper structural pass and
   is explicitly out of scope — this refactor must **not** change
@@ -78,18 +89,51 @@ Order = cheap/safe wins first, riskiest last:
   embedded `base_ci`, set `L.ci = up_to`, clear `up_to.next`); replace
   all 7 copy-pasted sites (precover keeps its extra parent-sever line
   after the call).
-- **A1 → commit 6** *(highest risk, last)*: consolidate the two number
-  parsers. Target shape mirrors the C reference: the lobject-side parser
-  (`tonumberValue` + `parseLocaleNumber` + friends, staying in `lua.zig`
-  for now — it moves to `lobject.zig` in B3) becomes the **single**
-  implementation, and `llex.zig`'s `str2num`/`l_str2d`/`l_str2int`
-  delegate to it (C's `llex.c` calls `lobject.c`'s `luaO_str2d`).
-  Delete the llex copies. Behavior must stay byte-identical for:
-  integer literals, `0x`/hex-float literals, locale decimal point,
-  `string.tonumber` coercion, and the `toNumeric`/`lua_tonumber` fast
-  path (P4 depends on it). Extra tripwires beyond the standard battery:
-  the Phase-G "compile `return 42` → Proto identical to reference"
-  check and the string/number round-trip tests.
+- **A1 → commit 6** *(highest risk, last)*: one shared, allocation-free,
+  Zig-native number-parsing engine — **not** a mirror of C's
+  `luaO_str2num`. Design principle: the C reference is the oracle for
+  *semantics* (which strings are numbers, what they convert to); the
+  *mechanism* is designed for Zig (per AGENTS.md §0.2). Concretely:
+  - **One decimal-float engine** (manual digit scan + exponent correction
+    via `ldexp`-style rescaling — the technique `llex`'s
+    `lua_strx2number` already uses for hex). It replaces **two** current
+    decimal parsers: `llex.l_str2d` (which *allocates* —
+    `normalizeDecimal` + `std.fmt.parseFloat` over a gpa buffer) and
+    `lobject.parseLocaleNumber`. The lexer's OOM path disappears (the
+    lexer can no longer fail with `error.OutOfMemory` — strictly more
+    robust).
+  - **One hex-float parser**: `llex.lua_strx2number` is the mature one
+    (libm `ldexp`); it becomes the single hex implementation, replacing
+    the lobject-side hex handling.
+  - **Two specialized entry points** (deliberately *not* C's single
+    all-purpose `luaO_str2num`):
+    - `lexNumber(s) ?enum { int: i64, flt: f64 }` — lexer entry:
+      exact whole token, no whitespace, integer-vs-float classification
+      (replaces `l_str2int`/`l_str2d`/`str2num`'s parse core; `str2num`
+      becomes a thin `SemInfo` wrapper).
+    - `tonumberValue(s) ?TValue` — runtime-coercion entry (moved as-is):
+      whole-string, whitespace-tolerant, integer-preferred; feeds
+      `toNumeric`/`lua_stringtonumber` (the P4 fast path depends on it).
+  - **Locale as data, not global state**: the decimal-point character is
+    an explicit engine parameter. Coercion passes
+    `localeDecimalPoint()` (preserving `string.tonumber` semantics);
+    the lexer accepts both `.` and `,` — preserving this port's current
+    superset behavior (a documented divergence from C default-locale
+    lexing, which only accepts `,` when the C locale is set; we do NOT
+    regress to either extreme).
+  - **Placement**: the engine + moved parsers (`parseInteger`,
+    `hexValue`, `trailingAllSpace`, `localeDecimalPoint`,
+    `tonumberValue`, `lua_stringtonumber`) go into `lobject.zig`
+    (pulled forward from B3, which then only moves the `luaG_*`
+    message wrappers + tostring helpers); `lua.zig` re-exports.
+  - **Behavior pinning**: add focused parser edge-case tests *before*
+    the rewrite (`string.tonumber` round-trips; `"1."`, `"1.e2"`,
+    `"0x1.8p1"`, hex/decimal overflow → ±inf, `"inf"`/`"nan"`
+    rejection, comma decimal point, leading/trailing space, 19-digit
+    integers); after the rewrite every test must pass with
+    byte-identical outputs (pi + upstream suite + the Phase-G
+    bytecode-identity check). A commit that changes numeric behavior is
+    not a refactor commit — split it out and re-review.
 
 ## Phase B — Breakdown into C-file modules (seven commits, moves-only)
 
@@ -105,7 +149,7 @@ re-exports the new modules.
 | B2 | `src/lgc.zig` | GC engine: `registerGC`, `getGCObject`/`getGCObjectFromValue`/`isWhiteGCObject`/`isClearedGCValue`, `mark*`/`traverseGrayObject`/`freeGCObject`, weak modes, `luaS_clearcache`, `luaC_collectgarbage`, finalizers (`rawHasFinalizer`/`metatableOf`/`callFinalizer`), GC constants (`lgc.c`) | ~900 |
 | B4 | `src/ldo.zig` | call/continuation: `precall`/`poscall` + CallInfo pool (`allocCallInfo`/`freeCallInfo`/`freeAllCallInfos`/`recycleCallInfos`), `precover`/`unroll`/`do_resume`/`completePcallRecovery`, `lua_yield*`/`lua_resume`/`lua_status`/`lua_isyieldable`, `luaG_errormsg`/`lua_error`/`lua_next`?, `finishLoad`/`lua_load` glue, `closeupvals`/`close_one_slot`/`luaF_closeupval`/`findupval` (`ldo.c` + upvalue-close) | ~1400 |
 | B5 | `src/lstate.zig` | state lifecycle: `lua_State`/`global_State` **construction** (`luaL_newstate`/`luaL_newstate_io`/`lua_newthread`/`lua_closethread`/`lua_close`), stack growth (`growStack`/`shrinkStack`/`reallocStack`/`reserveErrorStack`/`lua_checkstack`/`lua_xmove`), hooks (`luaD_hook`/`luaG_traceexec`), warning API, `createargtable` (`lstate.c`). **Note:** this filename was deleted once (stale duplicate, AGENTS.md); this time it is a *real move* of the state-lifecycle block. | ~800 |
-| B3 | `src/lobject.zig` | lobject-side value utilities: the `luaG_*` message wrappers (post-A4), the consolidated number parsers (post-A1), `tostringbuffFloat`/`luaO_tostringbuff`, `toNumeric`, `tvEqual`/`luaV_rawequalobj` (`lobject.c`) | ~400 |
+| B3 | `src/lobject.zig` | the remaining lobject-side value utilities: `luaG_*` message wrappers (post-A4), `tostringbuffFloat`/`luaO_tostringbuff`, `tvEqual`/`luaV_rawequalobj` (`lobject.c`). Note: A1 **creates** `lobject.zig` with the shared number-parsing engine (design principle above); B3 only moves the leftovers into the existing file. | ~400 |
 | B6 | `src/lapi.zig` | the C API proper: index helpers (`idxPtr`/`toAbsoluteIndex`/`lua_absindex`/`stackAt`), get/set/top, type predicates + conversions, push family, upvalue API, table/metatable API, `lua_callk`/`lua_pcallk` entry points, `atpanic`/`version`/`getallocf`/`setallocf`, `checkclosemth`/`toclose`/`closeslot`, `luaV_concat`/`lua_len`/`luaV_shift`/`numMod` (`lapi.c`) | ~1800 |
 | B7 | hub cleanup | `src/lua.zig` left with: **core type definitions only** (`TValue`, `lua_Table`, closures, `UpVal`, `CallInfo`, `VMGCObject`, `global_State` *definition*, `lua_State` *definition*) + constants + the thin re-export tail (`pub const precall = ldo.precall; …`). The `global_State`/`lua_State` *constructors* live in B5. | ~800 |
 
