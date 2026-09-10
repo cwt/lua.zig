@@ -6,6 +6,25 @@ tags: [log, changelog]
 timestamp: 2026-09-10T23:55:00Z
 ---
 
+## 2026-09-10 — Refactor B1: `ldebug.zig` carved out of `lua.zig` (Phase B started)
+
+- Phase B (breakdown into C-file modules, `docs/refactor.md`) started with
+  B1: the debug-introspection block (`lua_getstack`, `lua_sethook`/
+  `gethook*`, the `getobjname`/`funcnamefrom*` name-resolution helpers,
+  `luaF_getlocalname`/`lua_getlocal`/`lua_setlocal`, `luaO_chunkid`,
+  `luaG_getfuncline`/`getbaseline`/`collectvalidlines`, `lua_getinfo` —
+  the `ldebug.c` port) moved verbatim from `lua.zig` into the new
+  `src/ldebug.zig` (687 lines). Pure move: the 14 pub symbols are
+  re-exported by `lua.zig` so every call site keeps the `lua.`
+  qualification; 4 helpers (`upvalname`, `funcnamefromcall`,
+  `getfuncname`, `getobjname`) are exposed pub because the
+  error-message builders (B4/B6 territory) still call them from
+  `lua.zig`. `lua.zig` 6077 → 5414 lines.
+- Verification: 188/188 unit tests; upstream suite PASS 20 / FAIL 0;
+  `tests/pi-5.5.lua` byte-identical vs the C reference; perf gate
+  375.65B instructions (P4 baseline 375.6B — invariant). §0.1: move
+  only, no semantic edits.
+
 ## 2026-09-10 — Refactor A1: shared number-parsing engine (`lobject.zig` created)
 
 - Consolidated the two duplicated number parsers (the C reference shares
