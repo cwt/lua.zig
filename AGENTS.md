@@ -322,7 +322,13 @@ and string interning in `global_State.strt` (`std.array_hash_map.String`) in
 |------|--------|-------------|
 | `build.zig` | ✅ exe+lib build OK; test step works | Expand when adding deps or test targets. |
 | `src/luazig.zig` | ✅ entry point, juicy-main, basic CLI (script + REPL), `arg` table | Phase H — add `-e`, `-l`, `-i`, `-v` flags, multi-line REPL. |
-| `src/lua.zig` | ✅ type model, stack, global_State, table API, binary loader, source compiler, error propagation, `luaL_dostring` (real impl), GC, all C API functions (6077 lines post-A1; the number-parsing family moved to `lobject.zig`) | Phase B (`docs/refactor.md`) — break into C-file modules. |
+| `src/lua.zig` | ✅ **hub** (Refactor B7, 886 lines): core type definitions only (`TValue`, `lua_Table`, closures, `UpVal`, `CallInfo`, `VMGCObject`, `global_State`, `lua_State`, ...) + constants + the re-export tail. Zero function definitions. | Keep as the thin hub; see `docs/refactor.md`. |
+| `src/lapi.zig` | ✅ (Refactor B6) the C API proper: index helpers, get/set/top, type predicates/conversions, push family, upvalue API, table/metatable API, `lua_callk`/`lua_pcallk`, `lua_load`/`lua_dump`/`lua_next`, `lua_gc` is in lgc, warning/state lifecycle in lstate | Keep as-is. |
+| `src/ldebug.zig` | ✅ (Refactor B1) debug introspection: hooks, `lua_getinfo` family, local-name resolution, `luaO_chunkid` | Keep as-is. |
+| `src/lgc.zig` | ✅ (Refactor B2) GC engine: `registerGC`, mark/sweep, weak modes, finalizers, `lua_gc` + `LUA_GC*` constants | Keep as-is. |
+| `src/ldo.zig` | ✅ (Refactor B4) call/continuation: CallInfo pool, upvalue-close, `precall`/`poscall`, resume/yield, `luaG_errormsg`/`lua_error`, `luaD_errerr` | Keep as-is. |
+| `src/lstate.zig` | ✅ (Refactor B5) state lifecycle: `luaL_newstate*`, `lua_close`, `lua_newthread`/`lua_closethread`, stack growth, warning API, `createargtable`, `l_alloc`, `G` | Keep as-is. |
+| `src/lobject.zig` | ✅ (Refactor A1 + B3) shared number-parsing engine (`parseInteger`/`parseNumericFloat`/`tonumberValue`/`lua_stringtonumber`/`hexFloatValue`, char-class helpers — single source; `llex.zig` re-exports the i32 set) + `luaG_*` message builders + `tostringbuffFloat`/`toNumeric`/`luaV_rawequalobj` + `fmtMsg` | Keep as-is; C-reference `lobject.c` remainder now fully placed. |
 | `src/lobject.zig` | ✅ (new, Refactor A1) shared number-parsing engine: `parseInteger`, `hexFloatValue` (C `lua_strx2number`), `parseNumericFloat` (`std.fmt.parseFloat` core, locale decimal point as data), `tonumberValue`, `lua_stringtonumber`, char-class helpers (single source; `llex.zig` re-exports the i32 set) | Keep as-is; B3 moves the `luaG_*` wrappers + tostring helpers in. |
 | `src/lundump.zig` | ✅ `loadBinaryChunk` bytecode loader, alignment, varint, string intern | Keep as-is; test coverage is complete. |
 | `src/llimits.zig` | ✅ constants only, no types | Keep as-is. |

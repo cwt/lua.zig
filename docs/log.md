@@ -6,6 +6,35 @@ tags: [log, changelog]
 timestamp: 2026-09-10T23:55:00Z
 ---
 
+## 2026-09-10 — Refactor B7: hub cleanup - `lua.zig` is now types + re-exports only (Phase B complete)
+
+- Pure move (final Phase B commit): the 7 residual functions left in
+  the hub relocated to their C-file homes and re-exported by `lua.zig`:
+  `l_alloc` + `G` -> `lstate.zig` (allocator thunk + the reference
+  `G(L)` accessor), `createProto`/`destroyProto` -> `lcode.zig`,
+  `findupval`/`closeCallFailed` -> `ldo.zig` (upvalue-close glue),
+  `fmtMsg` -> `lobject.zig` (its primary user is the `luaG_err`
+  family there). Mechanical qualification only; no signature or
+  behavior changes.
+- **`src/lua.zig` now has ZERO function definitions** (886 lines):
+  core type definitions (`TValue`, `lua_Table`, closures, `UpVal`,
+  `CallInfo`, `VMGCObject`, `global_State`, `lua_State`, ...),
+  constants, and the re-export tail. The 6253-line monolith at the
+  start of Phase A is fully decomposed:
+  `lapi` 1986 / `lvm` (existing) / `lparser` (existing) / `lcode`
+  / `llex` 845 / `lobject` ~640 / `ldebug` 695 / `lgc` 909 / `ldo`
+  ~1000 / `lstate` ~530 / `lauxlib` / `ltable` / `lstring` / `lundump`
+  / `ldump` / `ltm` / `libm`.
+- Verification: 188/188 unit tests; upstream PASS 20 / FAIL 0;
+  `tests/pi-5.5.lua` byte-identical; perf gate 375.59B instructions
+  (P4 baseline 375.6B - invariant across all seven B commits).
+  §0.1: move + qualification + re-exports, no semantic edits.
+
+**Phase B is complete (2026-09-10): all seven breakdown commits
+(B1 ldebug, B2 lgc, B4 ldo, B5 lstate, B3 lobject-remainder,
+B6 lapi, B7 hub) landed battery-green; the §6 file-by-file table in
+AGENTS.md is now accurate for every module.**
+
 ## 2026-09-10 — Refactor B6: `lapi.zig` carved out of `lua.zig` (Phase B: 6/7)
 
 - Pure move (docs/refactor.md Phase B policy): the C API proper

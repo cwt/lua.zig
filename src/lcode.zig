@@ -1329,3 +1329,37 @@ pub fn luaK_codeABC(fs: *FuncState, o: lvm.OpCode, a: i32, b: i32, c: i32) !i32 
 pub fn luaK_exp2const(fs: *FuncState, e: *const expdesc, v: *lua.TValue) bool {
     return exp2const(fs, e, v);
 }
+
+// B7: moved from lua.zig hub.
+pub fn createProto(allocator: std.mem.Allocator) !*lua.lua_Proto {
+    const f = try allocator.create(lua.lua_Proto);
+    f.* = .{
+        .source = null,
+        .lineDefined = 0,
+        .lastLineDefined = 0,
+        .numParams = 0,
+        .isVarArg = false,
+        .flag = 0,
+        .maxStackSize = 0,
+        .code = &.{},
+        .k = &.{},
+        .p = &.{},
+        .upvalues = &.{},
+        .lineinfo = &.{},
+        .abslineinfo = &.{},
+        .locvars = &.{},
+    };
+    return f;
+}
+
+// B7: moved from lua.zig hub.
+pub fn destroyProto(allocator: std.mem.Allocator, f: *lua.lua_Proto) void {
+    if (f.code.len > 0) allocator.free(f.code);
+    if (f.k.len > 0) allocator.free(f.k);
+    if (f.p.len > 0) allocator.free(f.p);
+    if (f.upvalues.len > 0) allocator.free(f.upvalues);
+    if (f.lineinfo.len > 0) allocator.free(f.lineinfo);
+    if (f.abslineinfo.len > 0) allocator.free(f.abslineinfo);
+    if (f.locvars.len > 0) allocator.free(f.locvars);
+    allocator.destroy(f);
+}

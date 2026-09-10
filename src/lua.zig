@@ -17,6 +17,15 @@ pub const lgc = @import("lgc.zig");
 pub const ldo = @import("ldo.zig");
 pub const lstate = @import("lstate.zig");
 pub const lapi = @import("lapi.zig");
+// B7: hub-residual functions relocated to their C-file homes (re-exported).
+pub const l_alloc = lstate.l_alloc;
+pub const G = lstate.G;
+pub const createProto = lcode.createProto;
+pub const destroyProto = lcode.destroyProto;
+pub const findupval = ldo.findupval;
+pub const closeCallFailed = ldo.closeCallFailed;
+pub const fmtMsg = lobject.fmtMsg;
+
 
 // Re-exports of the shared number-parsing engine (lobject.zig, Phase A.1):
 // lvm.zig's hot path calls `tonumberValue`; the standard libraries call
@@ -312,26 +321,7 @@ pub const AllocWrapper = struct {
     alloc: std.mem.Allocator,
 };
 
-// Default allocator thunk compatible with the C `lua_Alloc` typedef. Mirrors
-// the semantics of the reference `l_alloc`: (ud -> AllocWrapper*) wraps a
 // std.mem.Allocator; nsize==0 frees, osize==0 allocates, else reallocates.
-pub fn l_alloc(ud: ?*anyopaque, ptr: ?*anyopaque, osize: usize, nsize: usize) ?*anyopaque {
-    const w = @as(*AllocWrapper, @ptrCast(@alignCast(ud orelse return null)));
-    if (nsize == 0) {
-        if (ptr) |p| {
-            const old = @as([*]u8, @ptrCast(@alignCast(p)))[0..osize];
-            w.alloc.free(old);
-        }
-        return null;
-    } else if (osize == 0) {
-        const m = w.alloc.alloc(u8, nsize) catch return null;
-        return m.ptr;
-    } else {
-        const old = @as([*]u8, @ptrCast(@alignCast(ptr orelse return null)))[0..osize];
-        const m = w.alloc.realloc(old, nsize) catch return null;
-        return m.ptr;
-    }
-}
 
 // Forward declarations
 pub const lua_CFunction = *const fn (*lua_State) anyerror!i32;
@@ -629,69 +619,8 @@ pub const lua_Proto = struct {
     gc: ?*VMGCObject = null,
 };
 
-pub fn createProto(allocator: std.mem.Allocator) !*lua_Proto {
-    const f = try allocator.create(lua_Proto);
-    f.* = .{
-        .source = null,
-        .lineDefined = 0,
-        .lastLineDefined = 0,
-        .numParams = 0,
-        .isVarArg = false,
-        .flag = 0,
-        .maxStackSize = 0,
-        .code = &.{},
-        .k = &.{},
-        .p = &.{},
-        .upvalues = &.{},
-        .lineinfo = &.{},
-        .abslineinfo = &.{},
-        .locvars = &.{},
-    };
-    return f;
-}
 
-pub fn destroyProto(allocator: std.mem.Allocator, f: *lua_Proto) void {
-    if (f.code.len > 0) allocator.free(f.code);
-    if (f.k.len > 0) allocator.free(f.k);
-    if (f.p.len > 0) allocator.free(f.p);
-    if (f.upvalues.len > 0) allocator.free(f.upvalues);
-    if (f.lineinfo.len > 0) allocator.free(f.lineinfo);
-    if (f.abslineinfo.len > 0) allocator.free(f.abslineinfo);
-    if (f.locvars.len > 0) allocator.free(f.locvars);
-    allocator.destroy(f);
-}
 
-pub fn findupval(L: *lua_State, idx: usize) !*UpVal {
-    const target_ptr = &L.stack[idx];
-    const target_addr = @intFromPtr(target_ptr);
-    var prev: ?*UpVal = null;
-    var curr = L.openupval;
-    while (curr) |uv| {
-        const addr = @intFromPtr(uv.v);
-        if (addr == target_addr) {
-            return uv;
-        }
-        if (addr < target_addr) {
-            break;
-        }
-        prev = uv;
-        curr = uv.next;
-    }
-    const uv = try L.allocator.create(UpVal);
-    uv.* = .{
-        .value = .{ .nil = {} },
-        .v = target_ptr,
-        .next = curr,
-        .refcount = 0,
-    };
-    try registerGC(L, uv);
-    if (prev) |p| {
-        p.next = uv;
-    } else {
-        L.openupval = uv;
-    }
-    return uv;
-}
 
 /// A3 (docs/refactor.md): shared failure handling for `__close` metamethod
 /// calls. Previously two ~30-line catch blocks copy-pasted in
@@ -700,39 +629,6 @@ pub fn findupval(L: *lua_State, idx: usize) !*UpVal {
 /// BUG-168); a `NotAFunction` call produces the reference's "attempt to
 /// call a <type> value (metamethod 'close')" error object; any other
 /// failure reports the object the handler itself pushed (`saved_err`).
-pub fn closeCallFailed(L: *lua_State, e: anyerror, tm: TValue, old_top: usize) anyerror!?TValue {
-    if (e == error.Yield) return e;
-    if (e == error.ThreadClosed) {
-        // The `__close` handler closed the thread itself (a
-        // `coroutine.close` self-close). Propagate the signal so
-        // `closeupvals` can treat it as a clean self-close rather
-        // than a close error (BUG-168).
-        L.top = old_top;
-        return error.ThreadClosed;
-    }
-    const saved_err = if (L.top > old_top and L.top - 1 < L.stack.len) L.stack[L.top - 1] else TValue{ .nil = {} };
-    L.top = old_top;
-    if (e == error.NotAFunction) {
-        const tname = switch (tm) {
-            .nil => "nil",
-            .boolean => "boolean",
-            .integer, .number => "number",
-            .string => "string",
-            .table => "table",
-            .function => "function",
-            .userdata => "userdata",
-            .thread => "thread",
-            .lightud, .upval, .proto => "???",
-        };
-        var buf: [128]u8 = undefined;
-        const msg = fmtMsg(&buf, "attempt to call a bad value (metamethod 'close')", "attempt to call a {s} value (metamethod 'close')", .{tname});
-        const ts = lstring.luaS_new(L, msg) catch {
-            return saved_err;
-        };
-        return TValue{ .string = ts };
-    }
-    return saved_err;
-}
 
 
 pub const UpVal = struct {
@@ -882,9 +778,6 @@ pub const global_State = struct {
     gc_step_accum: usize = 0,
 };
 
-pub inline fn G(L: *lua_State) *global_State {
-    return L.l_G orelse @panic("global state not initialized");
-}
 
 
 pub const GCObject = struct {
@@ -965,9 +858,6 @@ extern "c" fn strspn(str1: [*]const u8, str2: [*]const u8) usize;
 /// copy-pasted across lua.zig / lauxlib.zig / lparser.zig. Behavior is
 /// identical: the formatted slice is returned when it fits, otherwise
 /// `fallback` verbatim.
-pub fn fmtMsg(buf: []u8, fallback: []const u8, comptime fmt: []const u8, args: anytype) []const u8 {
-    return std.fmt.bufPrint(buf, fmt, args) catch fallback;
-}
 
 pub const lauxlib = @import("lauxlib.zig");
 pub const luaL_openlibs = lauxlib.luaL_openlibs;

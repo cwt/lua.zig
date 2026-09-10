@@ -625,3 +625,14 @@ pub fn luaG_ordererror(L: *lua.lua_State, p1: lua.TValue, p2: lua.TValue) !void 
         lua.fmtMsg(&msg, "attempt to compare values", "attempt to compare {s} with {s}", .{ t1, t2 });
     return luaG_runerror(L, mslice);
 }
+
+// B7: moved from lua.zig hub.
+/// D5 dedupe (docs/refactor.md): shared "format into a fixed buffer, fall
+/// back to `fallback` on overflow" helper. Replaces the
+/// `std.fmt.bufPrint(&buf, fmt, args) catch "..."` idiom that was
+/// copy-pasted across lua.zig / lauxlib.zig / lparser.zig. Behavior is
+/// identical: the formatted slice is returned when it fits, otherwise
+/// `fallback` verbatim.
+pub fn fmtMsg(buf: []u8, fallback: []const u8, comptime fmt: []const u8, args: anytype) []const u8 {
+    return std.fmt.bufPrint(buf, fmt, args) catch fallback;
+}

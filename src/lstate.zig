@@ -514,3 +514,30 @@ pub fn lua_close(L: *lua.lua_State) void {
     L.tbclist.deinit(L.allocator);
     L.allocator.free(L.stack);
 }
+
+// B7: moved from lua.zig hub.
+// Default allocator thunk compatible with the C `lua_Alloc` typedef. Mirrors
+// the semantics of the reference `l_alloc`: (ud -> lua.AllocWrapper*) wraps a
+// std.mem.Allocator; nsize==0 frees, osize==0 allocates, else reallocates.
+pub fn l_alloc(ud: ?*anyopaque, ptr: ?*anyopaque, osize: usize, nsize: usize) ?*anyopaque {
+    const w = @as(*lua.AllocWrapper, @ptrCast(@alignCast(ud orelse return null)));
+    if (nsize == 0) {
+        if (ptr) |p| {
+            const old = @as([*]u8, @ptrCast(@alignCast(p)))[0..osize];
+            w.alloc.free(old);
+        }
+        return null;
+    } else if (osize == 0) {
+        const m = w.alloc.alloc(u8, nsize) catch return null;
+        return m.ptr;
+    } else {
+        const old = @as([*]u8, @ptrCast(@alignCast(ptr orelse return null)))[0..osize];
+        const m = w.alloc.realloc(old, nsize) catch return null;
+        return m.ptr;
+    }
+}
+
+// B7: moved from lua.zig hub.
+pub inline fn G(L: *lua.lua_State) *lua.global_State {
+    return L.l_G orelse @panic("global state not initialized");
+}
