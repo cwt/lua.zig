@@ -6,6 +6,26 @@ tags: [log, changelog]
 timestamp: 2026-09-10T23:55:00Z
 ---
 
+## 2026-09-10 — Refactor B2: `lgc.zig` carved out of `lua.zig` (Phase B: 2/7)
+
+- Pure move (docs/refactor.md Phase B policy): the GC engine (the
+  `lgc.c` port — `registerGC`, `getGCObject`/`getGCObjectFromValue`,
+  `mark*`/`traverseGrayObject`/`freeGCObject`, weak modes,
+  `luaS_clearcache`, `luaC_condGC`/`checkGC`/`collectgarbage`,
+  finalizers, `lua_gc` + the 17 `LUA_GC*` constants) moved verbatim
+  from `lua.zig` into the new `src/lgc.zig` (909 lines; the
+  `registerGC` helper at the top of the type region came along).
+  `lua.zig` 5414 -> 4513 lines.
+- Mechanical qualification only: lgc-side names get `lua.` prefixes;
+  visibility bumps for cross-module callers — `G`, `ltable`, `ltm`
+  made pub in `lua.zig`; `freeGCObject`/`freeAllCallInfos` made pub;
+  the 17 `LUA_GC*` constants + the 6 pub GC entry points re-exported
+  so every call site keeps its `lua.` qualification.
+- Verification: 188/188 unit tests; upstream PASS 20 / FAIL 0;
+  `tests/pi-5.5.lua` byte-identical; perf gate 375.54B instructions
+  (P4 baseline 375.6B — invariant). §0.1: move + qualification, no
+  semantic edits.
+
 ## 2026-09-10 — Refactor B1: `ldebug.zig` carved out of `lua.zig` (Phase B started)
 
 - Phase B (breakdown into C-file modules, `docs/refactor.md`) started with
