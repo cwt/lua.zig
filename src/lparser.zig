@@ -12,6 +12,7 @@ const lua = @import("lua.zig");
 const lvm = @import("lvm.zig");
 const lcode = @import("lcode.zig");
 const llex = @import("llex.zig");
+const llimits = @import("llimits.zig");
 const lstring = @import("lstring.zig");
 
 const ltable = @import("ltable.zig");
@@ -22,7 +23,6 @@ pub const NO_JUMP: i32 = -1;
 // maximum number of local variables per function (must be < 250)
 const MAXVARS: i32 = 200;
 const MAXUPVAL: i32 = 255;
-const LUAI_MAXCCALLS: i32 = 200;
 const MAX_CNST: i32 = @divFloor(std.math.maxInt(i32), 2);
 
 // Prototype flag bits (lua/lobject.h).
@@ -618,7 +618,7 @@ fn check_readonly(ls: *llex.LexState, e: *expdesc) !void {
 
 fn enterlevel(ls: *llex.LexState) !void {
     ls.level += 1;
-    if (ls.level > LUAI_MAXCCALLS) {
+    if (ls.level > @as(i32, llimits.LUAI_MAXCCALLS)) {
         // Mirrors the reference (enterlevel -> luaE_incCstack -> luaE_checkcstack),
         // which raises "C stack overflow" when parser recursion reaches the
         // C-call limit.
