@@ -33,7 +33,8 @@ stale_after: 2026-12-31T00:00:00Z
 | P1 (GC check sites) | ✅ DONE (2026-09-09) — 425B → 397B, suite 20/0/0 |
 | P2 (loop-local pc + hookmask) | ✅ DONE (2026-09-10) — 14.66s wall; instr count 403B (see P2 note) |
 | P3 (`getLibm` pointer) | ✅ DONE (2026-09-10) — 403B → 394B, 13.8s wall |
-| P4 (`luaL_checknumber`) | ⏳ PLANNED — re-measure after P1–P3 |
+| P4 (`luaL_checknumber` fast path) | ✅ DONE (2026-09-10) — 394B → 375B, 12.7s wall |
+| Remaining: RC1 frame/register-pinning | ⏳ DEEPER PASS — out of the minimal-change scope |
 | Tracking | [BUG-174](bugs/174.md) |
 
 ## Benchmark
@@ -244,12 +245,34 @@ its C-call plumbing.
   to the C reference; 182/182 unit tests, 0 leaks; upstream suite
   20 PASS / 0 FAIL / 0 CRASH.
 
-### P4 — `luaL_checknumber` (defer; re-measure after P1–P3)
+### P4 — `luaL_checknumber` non-error fast path in `mathlib` ✅ DONE (2026-09-10)
 
-- The 54B vs 20B gap is the `!lua_Number` call-boundary + frame-spill
-  cost; it shrinks automatically as P1/P2 cut the frame. If still hot,
-  follow-up: a non-error fast path used by `mathlib` (bigger API change —
-  out of scope for the minimal pass).
+- **Re-measure first (per the plan):** post-P1–P3, `luaL_checknumber` was
+  still the #2 hot leaf (~22% of samples, ~62–87B of the 394B total) — the
+  `!lua_Number` error-union ABI (a caller-reserved stack slot the callee
+  writes on *every* invocation: error-value + discriminant) plus a cold
+  cross-module index-resolution call. The C reference pays ~1/3 of that
+  because it throws via `longjmp`, not a value-carrying error return.
+- **Implemented** (`src/lib/mathlib.zig` only; `luaL_checknumber`'s public
+  API and semantics untouched): every numeric-argument read in the math
+  library now uses the tonumber-first pattern
+  `lua.lua_tonumber(L, N) orelse try lauxlib.luaL_checknumber(L, N)`
+  (22 sites). The hot path (a plain number/integer argument) goes through
+  the **non-error** `?lua_Number` read and never touches the error-union
+  ABI; a genuine type error falls through to the exact throwing call.
+  Provably behavior-identical: `luaL_checknumber` is itself
+  `lua_tonumber` + "throw if null", so value and error message are
+  unchanged in every case.
+- **Measured result:** pi 394B → **375B** instructions (−18B, inside the
+  plan's −15–30B estimate), wall 13.8s → **12.7s** (~1.55× C). `luaL_checknumber`
+  no longer appears as a frame in the profile (its inlined fast path now
+  shows up inside `math_log`/`math_floor`). Output byte-identical to the C
+  reference; 182/182 unit tests, 0 leaks; upstream suite
+  20 PASS / 0 FAIL / 0 CRASH.
+- **Remaining gap vs C (192B / 8.2s):** `lvm.run` is now the dominant
+  single frame (~60% of samples); its cost is the RC1 4.7KB interpreter
+  frame / register-pinning issue — the deeper second-pass work explicitly
+  out of scope for this minimal-change pass.
 
 ### Explicitly NOT doing this pass
 
@@ -265,8 +288,8 @@ its C-call plumbing.
    see the P1 tooling note) after each item.
 3. Benchmark: `time ./zig-out/bin/luazig tests/pi-5.5.lua` and
    `perf stat -e instructions` — record per step (history: 425B/15.5s
-   pre-P1 → **397B/15.2s post-P1** → 403B/14.6s post-P2 → **394B/13.8s
-   post-P3**; C reference: 192B / 8.2s).
+   pre-P1 → **397B/15.2s post-P1** → 403B/14.6s post-P2 → 394B/13.8s
+   post-P3 → **375B/12.7s post-P4**; C reference: 192B / 8.2s).
 4. After P1 + P2: full upstream `lua/testes` suite via `./run_testes.sh`
    (must stay 20 PASS / 0 FAIL / 0 CRASH; `cstack` needs CWD
    `lua/testes` for the pure-Lua `tracegc.lua` fallback — a standalone run
@@ -277,21 +300,26 @@ its C-call plumbing.
 6. Update this document (flip statuses), `log.md`, and close
    [BUG-174](bugs/174.md) when done.
 
-## Expected Outcome
+## Outcome (minimal-change pass complete)
 
-- P1 landed at 425B → **397B** (15.2s), confirming the −30B estimate for
-  RC2. P2 (loop-local `pc`/`hookmask`) improved wall time (14.6s) but
-  *raised* the instruction count to **403B** — the per-arm sync/reload
-  sites outweighed the back-edge saving in raw instructions, and the 4.7KB
-  `lvm.run` frame (RC1) is still the dominant term. P3 (`getLibm` pointer)
-  landed at 403B → **394B** (13.8s, ~1.69× C), confirming the −10B RC4
-  estimate.
-- Remaining levers, in order: P4 (`luaL_checknumber`, re-measure now that
-  P1–P3 have cut the frame), and a deeper register-pinning pass on the
-  interpreter frame to attack RC1 (out of the minimal-change scope). The
-  original "425B → ~310–330B / ~1.3–1.4× C" projection was optimistic; the
-  post-P3 state is **394B / 13.8s ≈ 1.69× C** (vs 192B / 8.2s for the C
-  reference). Full parity needs the RC1 frame-pinning follow-up.
+- All four parts P1–P4 have landed. Instruction count: 425B → **375B**
+  (−50B, −12%), wall time 15.5s → **12.7s** (~1.55× C; C reference 8.2s /
+  192B). Output stayed byte-identical to the C reference and the full
+  upstream suite stayed 20 PASS / 0 FAIL / 0 CRASH throughout.
+  - P1 (GC check sites): 425B → 397B, as estimated.
+  - P2 (loop-local `pc`/`hookmask`): improved wall time but *raised* the
+    instruction count to 403B (sync/reload sites offset the back-edge
+    saving); the 4.7KB `lvm.run` frame (RC1) never shrank.
+  - P3 (`getLibm` pointer): 403B → 394B, as estimated.
+  - P4 (`luaL_checknumber` fast path): 394B → 375B, inside the −15–30B
+    estimate; `luaL_checknumber` no longer appears as a hot frame.
+- The original "425B → ~310–330B / ~1.3–1.4× C" projection was optimistic;
+  the actual post-pass state is **375B / 12.7s ≈ 1.55× C**. The remaining
+  gap to C is dominated by RC1 — the ~4.7KB `lvm.run` interpreter frame
+  that the backend does not pin into callee-saved registers (C uses a 104B
+  frame with pinned `L`/`ci`/`base`/`G`/`proto`). Closing that gap needs a
+  deeper register-pinning / structure-rewrite pass, explicitly out of the
+  minimal-change scope of BUG-174. See "Explicitly NOT doing this pass".
 
 ## Related
 

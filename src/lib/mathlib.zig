@@ -6,6 +6,22 @@ const libm = @import("../libm.zig");
 // ===================================================================
 // Math library functions
 // ===================================================================
+//
+// P4 (BUG-174, RC3/RC5): every numeric argument is read with the
+// tonumber-first pattern
+//
+//     lua.lua_tonumber(L, N) orelse try lauxlib.luaL_checknumber(L, N)
+//
+// `luaL_checknumber` returns `!lua_Number`, so a plain `try`-call pays the
+// error-union ABI (a caller-reserved stack slot the callee writes on every
+// invocation, error-value + discriminant) even when the argument is a plain
+// number -- the overwhelmingly common case on this hot path. `lua.lua_tonumber`
+// is the NON-error `?lua_Number` read (no error-union ABI). Since
+// `luaL_checknumber` is itself `lua_tonumber` + "throw if null", routing the
+// happy path through `lua_tonumber` and only falling back to the throwing call
+// on a genuine type error is behavior-identical (same value, same error
+// message) and merely avoids the hot-path ABI cost. See docs/performance.md P4.
+//
 
 fn pushNumInt(L: *lua.lua_State, d: lua.lua_Number) void {
     const min_f64 = @as(f64, -9223372036854775808.0);
@@ -27,44 +43,44 @@ fn math_abs(L: *lua.lua_State) !i32 {
             lua.lua_pushinteger(L, n);
         }
     } else {
-        lua.lua_pushnumber(L, @abs(try lauxlib.luaL_checknumber(L, 1)));
+        lua.lua_pushnumber(L, @abs(lua.lua_tonumber(L, 1) orelse try lauxlib.luaL_checknumber(L, 1)));
     }
     return 1;
 }
 
 fn math_sin(L: *lua.lua_State) !i32 {
     const m = libm.getLibm();
-    lua.lua_pushnumber(L, m.sin(try lauxlib.luaL_checknumber(L, 1)));
+    lua.lua_pushnumber(L, m.sin(lua.lua_tonumber(L, 1) orelse try lauxlib.luaL_checknumber(L, 1)));
     return 1;
 }
 
 fn math_cos(L: *lua.lua_State) !i32 {
     const m = libm.getLibm();
-    lua.lua_pushnumber(L, m.cos(try lauxlib.luaL_checknumber(L, 1)));
+    lua.lua_pushnumber(L, m.cos(lua.lua_tonumber(L, 1) orelse try lauxlib.luaL_checknumber(L, 1)));
     return 1;
 }
 
 fn math_tan(L: *lua.lua_State) !i32 {
     const m = libm.getLibm();
-    lua.lua_pushnumber(L, m.tan(try lauxlib.luaL_checknumber(L, 1)));
+    lua.lua_pushnumber(L, m.tan(lua.lua_tonumber(L, 1) orelse try lauxlib.luaL_checknumber(L, 1)));
     return 1;
 }
 
 fn math_asin(L: *lua.lua_State) !i32 {
     const m = libm.getLibm();
-    lua.lua_pushnumber(L, m.asin(try lauxlib.luaL_checknumber(L, 1)));
+    lua.lua_pushnumber(L, m.asin(lua.lua_tonumber(L, 1) orelse try lauxlib.luaL_checknumber(L, 1)));
     return 1;
 }
 
 fn math_acos(L: *lua.lua_State) !i32 {
     const m = libm.getLibm();
-    lua.lua_pushnumber(L, m.acos(try lauxlib.luaL_checknumber(L, 1)));
+    lua.lua_pushnumber(L, m.acos(lua.lua_tonumber(L, 1) orelse try lauxlib.luaL_checknumber(L, 1)));
     return 1;
 }
 
 fn math_atan(L: *lua.lua_State) !i32 {
     const m = libm.getLibm();
-    const y = try lauxlib.luaL_checknumber(L, 1);
+    const y = lua.lua_tonumber(L, 1) orelse try lauxlib.luaL_checknumber(L, 1);
     const x = lauxlib.luaL_optnumber(L, 2, 1.0);
     lua.lua_pushnumber(L, m.atan2(y, x));
     return 1;
@@ -86,7 +102,7 @@ fn math_floor(L: *lua.lua_State) !i32 {
     if (lua.lua_isinteger(L, 1) != 0) {
         lua.lua_settop(L, 1);
     } else {
-        const d = @floor(try lauxlib.luaL_checknumber(L, 1));
+        const d = @floor(lua.lua_tonumber(L, 1) orelse try lauxlib.luaL_checknumber(L, 1));
         pushNumInt(L, d);
     }
     return 1;
@@ -96,7 +112,7 @@ fn math_ceil(L: *lua.lua_State) !i32 {
     if (lua.lua_isinteger(L, 1) != 0) {
         lua.lua_settop(L, 1);
     } else {
-        const d = @ceil(try lauxlib.luaL_checknumber(L, 1));
+        const d = @ceil(lua.lua_tonumber(L, 1) orelse try lauxlib.luaL_checknumber(L, 1));
         pushNumInt(L, d);
     }
     return 1;
@@ -113,7 +129,7 @@ fn math_fmod(L: *lua.lua_State) !i32 {
             lua.lua_pushinteger(L, @rem(try lauxlib.luaL_checkinteger(L, 1), d));
         }
     } else {
-        lua.lua_pushnumber(L, m.fmod(try lauxlib.luaL_checknumber(L, 1), try lauxlib.luaL_checknumber(L, 2)));
+        lua.lua_pushnumber(L, m.fmod(lua.lua_tonumber(L, 1) orelse try lauxlib.luaL_checknumber(L, 1), lua.lua_tonumber(L, 2) orelse try lauxlib.luaL_checknumber(L, 2)));
     }
     return 1;
 }
@@ -123,7 +139,7 @@ fn math_modf(L: *lua.lua_State) !i32 {
         lua.lua_settop(L, 1);
         lua.lua_pushnumber(L, 0.0);
     } else {
-        const n = try lauxlib.luaL_checknumber(L, 1);
+        const n = lua.lua_tonumber(L, 1) orelse try lauxlib.luaL_checknumber(L, 1);
         const ip = if (n < 0) @ceil(n) else @floor(n);
         pushNumInt(L, ip);
         lua.lua_pushnumber(L, if (n == ip) 0.0 else n - ip);
@@ -132,7 +148,7 @@ fn math_modf(L: *lua.lua_State) !i32 {
 }
 
 fn math_sqrt(L: *lua.lua_State) !i32 {
-    lua.lua_pushnumber(L, @sqrt(try lauxlib.luaL_checknumber(L, 1)));
+    lua.lua_pushnumber(L, @sqrt(lua.lua_tonumber(L, 1) orelse try lauxlib.luaL_checknumber(L, 1)));
     return 1;
 }
 
@@ -145,9 +161,9 @@ fn math_ult(L: *lua.lua_State) !i32 {
 
 fn math_log(L: *lua.lua_State) !i32 {
     const m = libm.getLibm();
-    const x = try lauxlib.luaL_checknumber(L, 1);
+    const x = lua.lua_tonumber(L, 1) orelse try lauxlib.luaL_checknumber(L, 1);
     const res: f64 = if (lua.lua_isnoneornil(L, 2)) m.log(x) else blk: {
-        const base = try lauxlib.luaL_checknumber(L, 2);
+        const base = lua.lua_tonumber(L, 2) orelse try lauxlib.luaL_checknumber(L, 2);
         break :blk if (base == 2.0) m.log2(x) else if (base == 10.0) m.log10(x) else m.log(x) / m.log(base);
     };
     lua.lua_pushnumber(L, res);
@@ -156,31 +172,31 @@ fn math_log(L: *lua.lua_State) !i32 {
 
 fn math_exp(L: *lua.lua_State) !i32 {
     const m = libm.getLibm();
-    lua.lua_pushnumber(L, m.exp(try lauxlib.luaL_checknumber(L, 1)));
+    lua.lua_pushnumber(L, m.exp(lua.lua_tonumber(L, 1) orelse try lauxlib.luaL_checknumber(L, 1)));
     return 1;
 }
 
 fn math_pow(L: *lua.lua_State) !i32 {
     const m = libm.getLibm();
-    const x = try lauxlib.luaL_checknumber(L, 1);
-    const y = try lauxlib.luaL_checknumber(L, 2);
+    const x = lua.lua_tonumber(L, 1) orelse try lauxlib.luaL_checknumber(L, 1);
+    const y = lua.lua_tonumber(L, 2) orelse try lauxlib.luaL_checknumber(L, 2);
     lua.lua_pushnumber(L, m.pow(x, y));
     return 1;
 }
 
 fn math_deg(L: *lua.lua_State) !i32 {
-    lua.lua_pushnumber(L, try lauxlib.luaL_checknumber(L, 1) * (180.0 / std.math.pi));
+    lua.lua_pushnumber(L, (lua.lua_tonumber(L, 1) orelse try lauxlib.luaL_checknumber(L, 1)) * (180.0 / std.math.pi));
     return 1;
 }
 
 fn math_rad(L: *lua.lua_State) !i32 {
-    lua.lua_pushnumber(L, try lauxlib.luaL_checknumber(L, 1) * (std.math.pi / 180.0));
+    lua.lua_pushnumber(L, (lua.lua_tonumber(L, 1) orelse try lauxlib.luaL_checknumber(L, 1)) * (std.math.pi / 180.0));
     return 1;
 }
 
 fn math_frexp(L: *lua.lua_State) !i32 {
     const m = libm.getLibm();
-    const x = try lauxlib.luaL_checknumber(L, 1);
+    const x = lua.lua_tonumber(L, 1) orelse try lauxlib.luaL_checknumber(L, 1);
     var exp: i32 = 0;
     const sig = m.frexp(x, &exp);
     lua.lua_pushnumber(L, sig);
@@ -190,7 +206,7 @@ fn math_frexp(L: *lua.lua_State) !i32 {
 
 fn math_ldexp(L: *lua.lua_State) !i32 {
     const m = libm.getLibm();
-    const x = try lauxlib.luaL_checknumber(L, 1);
+    const x = lua.lua_tonumber(L, 1) orelse try lauxlib.luaL_checknumber(L, 1);
     const ep = try lauxlib.luaL_checkinteger(L, 2);
     lua.lua_pushnumber(L, m.ldexp(x, @as(i32, @intCast(ep))));
     return 1;

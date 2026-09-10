@@ -6,6 +6,38 @@ tags: [log, changelog]
 timestamp: 2026-09-10T23:55:00Z
 ---
 
+## 2026-09-10 — P4 (BUG-174): non-error tonumber fast path in `mathlib`
+
+- **Re-measure first (per the plan):** after P1–P3, `luaL_checknumber`
+  was still the #2 hot leaf (~22% of samples, ~62–87B of the 394B
+  total). Its cost is the `!lua_Number` error-union ABI — a
+  caller-reserved stack slot the callee writes on *every* invocation
+  (error-value + discriminant) — plus a cold cross-module
+  index-resolution call. The C reference is ~3× cheaper here because it
+  throws via `longjmp`, not a value-carrying error return.
+- **Change** (`src/lib/mathlib.zig` only; `luaL_checknumber`'s public
+  API and semantics untouched): every numeric-argument read in the math
+  library (22 sites: log ×2, floor, ceil, sin/cos/tan/asin/acos/exp/
+  sqrt/deg/rad/frexp, pow ×2, fmod ×2, modf, abs, atan, ldexp) now uses
+  the tonumber-first pattern
+  `lua.lua_tonumber(L, N) orelse try lauxlib.luaL_checknumber(L, N)`.
+  The hot path (a plain number/integer) goes through the **non-error**
+  `?lua_Number` read and never touches the error-union ABI; a genuine
+  type error falls through to the exact throwing call. Provably
+  behavior-identical — `luaL_checknumber` is itself
+  `lua_tonumber` + "throw if null", so value and error message are
+  unchanged in every case.
+- **Measured:** pi-5.5 394B → **375B** instructions (−18B, inside the
+  plan's −15–30B estimate), wall 13.8s → **12.7s** (~1.55× C).
+  `luaL_checknumber` no longer appears as a frame in the profile (its
+  inlined fast path now shows up inside `math_log`/`math_floor`).
+  Output byte-identical to the C reference; 182/182 unit tests, 0
+  leaks; upstream suite 20 PASS / 0 FAIL / 0 CRASH.
+- **Pass complete:** P1–P4 (the minimal-change fix plan for BUG-174)
+  have all landed: 425B → 375B (−12%), 15.5s → 12.7s. The residual gap
+  to C is the RC1 4.7KB `lvm.run` frame (register-pinning), a deeper
+  second pass explicitly out of this defect's minimal-change scope.
+
 ## 2026-09-10 — P3 (BUG-174): `libm.getLibm()` returns a pointer, not a 112-byte value
 
 - **Change** (`src/libm.zig` only; all call sites unchanged — Zig
