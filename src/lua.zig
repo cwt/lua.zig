@@ -454,6 +454,47 @@ pub fn findupval(L: *lua_State, idx: usize) !*UpVal {
     return uv;
 }
 
+/// A3 (docs/refactor.md): shared failure handling for `__close` metamethod
+/// calls. Previously two ~30-line catch blocks copy-pasted in
+/// `close_one_slot` (one per callTM shape). Propagates `Yield`/
+/// `ThreadClosed` as Zig errors (restoring `L.top` on a self-close,
+/// BUG-168); a `NotAFunction` call produces the reference's "attempt to
+/// call a <type> value (metamethod 'close')" error object; any other
+/// failure reports the object the handler itself pushed (`saved_err`).
+fn closeCallFailed(L: *lua_State, e: anyerror, tm: TValue, old_top: usize) anyerror!?TValue {
+    if (e == error.Yield) return e;
+    if (e == error.ThreadClosed) {
+        // The `__close` handler closed the thread itself (a
+        // `coroutine.close` self-close). Propagate the signal so
+        // `closeupvals` can treat it as a clean self-close rather
+        // than a close error (BUG-168).
+        L.top = old_top;
+        return error.ThreadClosed;
+    }
+    const saved_err = if (L.top > old_top and L.top - 1 < L.stack.len) L.stack[L.top - 1] else TValue{ .nil = {} };
+    L.top = old_top;
+    if (e == error.NotAFunction) {
+        const tname = switch (tm) {
+            .nil => "nil",
+            .boolean => "boolean",
+            .integer, .number => "number",
+            .string => "string",
+            .table => "table",
+            .function => "function",
+            .userdata => "userdata",
+            .thread => "thread",
+            .lightud, .upval, .proto => "???",
+        };
+        var buf: [128]u8 = undefined;
+        const msg = fmtMsg(&buf, "attempt to call a bad value (metamethod 'close')", "attempt to call a {s} value (metamethod 'close')", .{tname});
+        const ts = lstring.luaS_new(L, msg) catch {
+            return saved_err;
+        };
+        return TValue{ .string = ts };
+    }
+    return saved_err;
+}
+
 fn close_one_slot(L: *lua_State, abs: usize, err_val: ?TValue) anyerror!?TValue {
     if (abs >= L.stack.len) return null;
     const v = L.stack[abs];
@@ -475,67 +516,11 @@ fn close_one_slot(L: *lua_State, abs: usize, err_val: ?TValue) anyerror!?TValue 
     const old_top = L.top;
     if (err_val) |err| {
         ltm.luaT_callTM2(L, tm.?, &v, &err) catch |e| {
-            if (e == error.Yield) return e;
-            if (e == error.ThreadClosed) {
-                // The `__close` handler closed the thread itself (a
-                // `coroutine.close` self-close). Propagate the signal so
-                // `closeupvals` can treat it as a clean self-close rather
-                // than a close error (BUG-168).
-                L.top = old_top;
-                return error.ThreadClosed;
-            }
-            const saved_err = if (L.top > old_top and L.top - 1 < L.stack.len) L.stack[L.top - 1] else TValue{ .nil = {} };
-            L.top = old_top;
-            if (e == error.NotAFunction) {
-                const tname = switch (tm.?) {
-                    .nil => "nil",
-                    .boolean => "boolean",
-                    .integer, .number => "number",
-                    .string => "string",
-                    .table => "table",
-                    .function => "function",
-                    .userdata => "userdata",
-                    .thread => "thread",
-                    .lightud, .upval, .proto => "???",
-                };
-                var buf: [128]u8 = undefined;
-                const msg = fmtMsg(&buf, "attempt to call a bad value (metamethod 'close')", "attempt to call a {s} value (metamethod 'close')", .{tname});
-                const ts = lstring.luaS_new(L, msg) catch {
-                    return saved_err;
-                };
-                return TValue{ .string = ts };
-            }
-            return saved_err;
+            return closeCallFailed(L, e, tm.?, old_top);
         };
     } else {
         ltm.luaT_callTM1(L, tm.?, &v) catch |e| {
-            if (e == error.Yield) return e;
-            if (e == error.ThreadClosed) {
-                L.top = old_top;
-                return error.ThreadClosed;
-            }
-            const saved_err = if (L.top > old_top and L.top - 1 < L.stack.len) L.stack[L.top - 1] else TValue{ .nil = {} };
-            L.top = old_top;
-            if (e == error.NotAFunction) {
-                const tname = switch (tm.?) {
-                    .nil => "nil",
-                    .boolean => "boolean",
-                    .integer, .number => "number",
-                    .string => "string",
-                    .table => "table",
-                    .function => "function",
-                    .userdata => "userdata",
-                    .thread => "thread",
-                    .lightud, .upval, .proto => "???",
-                };
-                var buf: [128]u8 = undefined;
-                const msg = fmtMsg(&buf, "attempt to call a bad value (metamethod 'close')", "attempt to call a {s} value (metamethod 'close')", .{tname});
-                const ts = lstring.luaS_new(L, msg) catch {
-                    return saved_err;
-                };
-                return TValue{ .string = ts };
-            }
-            return saved_err;
+            return closeCallFailed(L, e, tm.?, old_top);
         };
     }
     return null;
