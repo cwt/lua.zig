@@ -322,7 +322,8 @@ and string interning in `global_State.strt` (`std.array_hash_map.String`) in
 |------|--------|-------------|
 | `build.zig` | ✅ exe+lib build OK; test step works | Expand when adding deps or test targets. |
 | `src/luazig.zig` | ✅ entry point, juicy-main, basic CLI (script + REPL), `arg` table | Phase H — add `-e`, `-l`, `-i`, `-v` flags, multi-line REPL. |
-| `src/lua.zig` | ✅ type model, stack, global_State, table API, binary loader, source compiler, error propagation, `luaL_dostring` (real impl), GC, all C API functions | Phase H — missing C API functions, constants. |
+| `src/lua.zig` | ✅ type model, stack, global_State, table API, binary loader, source compiler, error propagation, `luaL_dostring` (real impl), GC, all C API functions (6077 lines post-A1; the number-parsing family moved to `lobject.zig`) | Phase B (`docs/refactor.md`) — break into C-file modules. |
+| `src/lobject.zig` | ✅ (new, Refactor A1) shared number-parsing engine: `parseInteger`, `hexFloatValue` (C `lua_strx2number`), `parseNumericFloat` (`std.fmt.parseFloat` core, locale decimal point as data), `tonumberValue`, `lua_stringtonumber`, char-class helpers (single source; `llex.zig` re-exports the i32 set) | Keep as-is; B3 moves the `luaG_*` wrappers + tostring helpers in. |
 | `src/lundump.zig` | ✅ `loadBinaryChunk` bytecode loader, alignment, varint, string intern | Keep as-is; test coverage is complete. |
 | `src/llimits.zig` | ✅ constants only, no types | Keep as-is. |
 | `src/luaconf.zig` | ✅ version/layout config | Fix `LUA_VDIR` if reference changes. |
@@ -368,7 +369,7 @@ Phases A–F are **complete**: the port runs precompiled Lua 5.5.0 bytecode thro
 
 **Scope (port of `lua/llex.c`, `lua/lparser.c`, `lua/lcode.c`, + `lua/ldo.c` parser glue):**
 
-17. **Lexer** (`src/llex.zig`) ✅ DONE: `LexState`, `luaX_init` (reserved words), `luaX_next`, `luaX_lookahead`, `luaX_newstring` (token → interned `lua_TString`), full number scanner (`str2num`/`l_str2int`/`lua_strx2number`/`l_str2d`), strings/long strings/escapes, comments, `luaX_syntaxerror`, `token2str`. Threads the allocator; no C globals. 5 unit tests in `tests/test_basic.zig` (73/73 pass).
+17. **Lexer** (`src/llex.zig`) ✅ DONE: `LexState`, `luaX_init` (reserved words), `luaX_next`, `luaX_lookahead`, `luaX_newstring` (token → interned `lua_TString`), full number scanner (`str2num` now a thin wrapper over the shared engine in `lobject.zig`; Refactor A1 deleted `l_str2int`/`lua_strx2number`/`normalizeDecimal`/`l_str2d` from this file), strings/long strings/escapes, comments, `luaX_syntaxerror`, `token2str`. Threads the allocator; no C globals. 5 unit tests in `tests/test_basic.zig` (73/73 pass).
 18. **Parser** (`src/lparser.zig`) ✅ DONE: `FuncState`, `expdesc`, `luaY_parser`, `luaD_protectedparser` (the `lua_load` text branch). Recursive descent for blocks, `if`/`while`/`repeat`/`for`, `local`/`global`, functions, varargs. Replaced `luaD_throw`/`longjmp` with `!T` error returns.
 19. **Code generator** (`src/lcode.zig`) ✅ DONE: `expdesc`→instruction emission, register allocation (`luaK_dischargevars`, `luaK_storevar`), jump/patch lists (`luaK_concat`, `luaK_patchtohere`) for `and`/`or`/`goto`, upvalue handling. Produces the same `lua_Proto` shapes `lundump.zig` already builds, so the VM is **untouched**.
 20. Wire `lua_load` ✅ DONE: when the first byte is not `\x1b`, call `luaD_protectedparser` instead of `lundump`.

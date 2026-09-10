@@ -89,51 +89,61 @@ Order = cheap/safe wins first, riskiest last:
   embedded `base_ci`, set `L.ci = up_to`, clear `up_to.next`); replace
   all 7 copy-pasted sites (precover keeps its extra parent-sever line
   after the call).
-- **A1 → commit 6** *(highest risk, last)*: one shared, allocation-free,
-  Zig-native number-parsing engine — **not** a mirror of C's
-  `luaO_str2num`. Design principle: the C reference is the oracle for
-  *semantics* (which strings are numbers, what they convert to); the
-  *mechanism* is designed for Zig (per AGENTS.md §0.2). Concretely:
-  - **One decimal-float engine** (manual digit scan + exponent correction
-    via `ldexp`-style rescaling — the technique `llex`'s
-    `lua_strx2number` already uses for hex). It replaces **two** current
-    decimal parsers: `llex.l_str2d` (which *allocates* —
-    `normalizeDecimal` + `std.fmt.parseFloat` over a gpa buffer) and
-    `lobject.parseLocaleNumber`. The lexer's OOM path disappears (the
-    lexer can no longer fail with `error.OutOfMemory` — strictly more
-    robust).
-  - **One hex-float parser**: `llex.lua_strx2number` is the mature one
-    (libm `ldexp`); it becomes the single hex implementation, replacing
-    the lobject-side hex handling.
-  - **Two specialized entry points** (deliberately *not* C's single
-    all-purpose `luaO_str2num`):
-    - `lexNumber(s) ?enum { int: i64, flt: f64 }` — lexer entry:
-      exact whole token, no whitespace, integer-vs-float classification
-      (replaces `l_str2int`/`l_str2d`/`str2num`'s parse core; `str2num`
-      becomes a thin `SemInfo` wrapper).
-    - `tonumberValue(s) ?TValue` — runtime-coercion entry (moved as-is):
-      whole-string, whitespace-tolerant, integer-preferred; feeds
-      `toNumeric`/`lua_stringtonumber` (the P4 fast path depends on it).
-  - **Locale as data, not global state**: the decimal-point character is
-    an explicit engine parameter. Coercion passes
-    `localeDecimalPoint()` (preserving `string.tonumber` semantics);
-    the lexer accepts both `.` and `,` — preserving this port's current
-    superset behavior (a documented divergence from C default-locale
-    lexing, which only accepts `,` when the C locale is set; we do NOT
-    regress to either extreme).
-  - **Placement**: the engine + moved parsers (`parseInteger`,
-    `hexValue`, `trailingAllSpace`, `localeDecimalPoint`,
-    `tonumberValue`, `lua_stringtonumber`) go into `lobject.zig`
-    (pulled forward from B3, which then only moves the `luaG_*`
-    message wrappers + tostring helpers); `lua.zig` re-exports.
-  - **Behavior pinning**: add focused parser edge-case tests *before*
-    the rewrite (`string.tonumber` round-trips; `"1."`, `"1.e2"`,
-    `"0x1.8p1"`, hex/decimal overflow → ±inf, `"inf"`/`"nan"`
-    rejection, comma decimal point, leading/trailing space, 19-digit
-    integers); after the rewrite every test must pass with
-    byte-identical outputs (pi + upstream suite + the Phase-G
-    bytecode-identity check). A commit that changes numeric behavior is
-    not a refactor commit — split it out and re-review.
+- **A1 → commit 6** ✅ **DONE (2026-09-10)** — one shared,
+  allocation-free number-parsing engine in `src/lobject.zig` (pulled
+  forward from B3, which now only moves the `luaG_*` message wrappers
+  + tostring helpers into the existing file). **Not** a mirror of C's
+  `luaO_str2num`; design principle: C reference = *semantics* oracle,
+  *mechanism* designed for Zig. Final shape (refined by C-vs-port
+  behavior probes before implementation):
+  - **One decimal-float core: `std.fmt.parseFloat`** — allocation-free,
+    correctly rounded, overflow → ±inf / underflow → 0 (C `strtod`
+    semantics), whole-string (trailing junk rejected). Probes showed
+    it accepts **every** decimal form C accepts (`"1."`, `"5."`, `".5"`,
+    `"1.e2"`, `"0x.8"`, `"0x8."`) and rejects exactly what C rejects
+    (`"1e"`, `"0x"`, `"0x12p"`). It replaced **two** parsers:
+    `llex.l_str2d` (which *allocated* via `normalizeDecimal` + parseFloat
+    over a gpa buffer — the lexer's OOM path is gone, strictly more
+    robust) and `lobject.parseLocaleNumber` (C `strtod` interop).
+  - **Hex floats: the C reference `lua_strx2number` algorithm**
+    (restored into `lobject.zig` as `hexFloatValue`, 30-significant-
+    digit + `ldexp` exponent correction). A probe caught that
+    `std.fmt.parseFloat` is **not** correctly rounded for long hex
+    significands (150-digit case lands 1 ULP low vs C — upstream
+    `math.lua`'s long-numerals asserts), so hex routes through the
+    C-verified algorithm, decimal through `parseFloat`.
+  - **Two specialized entry points** (deliberately not C's one
+    all-purpose parser):
+    - `lobject.parseInteger` (moved verbatim; C's u64-wrap hex-int
+      overflow — `0x10000000000000000` → int 0, verified identical to
+      the C reference) → `llex.str2num`'s TK_INT/TK_FLT wrapper.
+      `str2num` is now allocation-free (its `alloc` parameter removed).
+    - `lobject.tonumberValue(s) ?TValue` (allocation-free specialization
+      of the coercion core; lvm's P4 hot path keeps its exact
+      signature via `lua.zig`'s re-export) and
+      `lobject.lua_stringtonumber(L, s)` (full fidelity, threads
+      `L.allocator`).
+  - **Locale as data**: `parseNumericFloat(gpa, s, dp)` takes the
+    decimal-point char; coercion passes `localeDecimalPoint()` (both
+    `'.'` and the locale point accepted — matching C's strtod +
+    replace-first-'.' fallback); the lexer passes `'.'` (the reference
+    lexer is locale-independent; the old `normalizeDecimal` comma
+    mapping was **dead** — numeral tokens never contain `','`).
+  - **C-oracle fixes pinned by the `"A1 …"` tests** (a numeric-behavior
+    change is documented in the commit, not smuggled):
+    1. `tonumber("3,14")` (C locale): 3.14 → **nil** (matches C; comma
+       only counts as decimal point when it *is* the locale point).
+    2. `tonumber("-inf")` / `"Infinity"` spellings: **nil** (the old
+       guard checked the first char only; now sign-aware, case-
+       insensitive prefix — C rejects all inf/nan spellings).
+    3. 4000-digit strings: **±inf** instead of nil (the old 2048-byte
+       cap is gone — the fast path never copies; the rare locale
+       remap uses a 1024 stack buffer, gpa beyond).
+    4. Lexer OOM path eliminated (no observable change; robustness).
+  - **Verification**: 188/188 unit tests (6 new `"A1 …"` blocks pin the
+    whole probed table), upstream suite **PASS 20 / FAIL 0**,
+    `tests/pi-5.5.lua` byte-identical vs the C reference, perf gate
+    **375.58B** instructions (P4 baseline 375.6B — invariant).
 
 ## Phase B — Breakdown into C-file modules (seven commits, moves-only)
 
@@ -198,10 +208,12 @@ decide at commit time by which imports they need.
 
 ## Risks
 
-- **A1** (parser consolidation) is the riskiest commit: it touches the
-  lexer and the runtime coercion fast path (P4's `tonumber`-first
-  pattern). Mitigation: last of Phase A, extra tripwires (bytecode
-  identity + round-trip tests), and revert-able as a single commit.
+- **A1** (parser consolidation) ✅ done — it was the riskiest commit and
+  the risk was real: `std.fmt.parseFloat` turned out to be 1 ULP low on
+  long hex significands (caught by upstream `math.lua`), fixed by
+  routing hex through the C-verified `lua_strx2number` algorithm.
+  Mitigations that worked: last of Phase A, C-vs-port behavior probes
+  *before* coding, pinned edge-case tests, byte-identity + perf gate.
 - **B6** (`lapi`, ~1800 lines) is the biggest move; do it second-to-last
   so only the hub cleanup remains behind it.
 - Moving a hot function out of the module can change inlining

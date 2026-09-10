@@ -17,8 +17,8 @@
 // the LexState's needs and avoids a fragile hand transcription.
 
 const std = @import("std");
-const libm = @import("libm.zig");
 const lua = @import("lua.zig");
+const lobject = @import("lobject.zig");
 const lstring = @import("lstring.zig");
 const lparser = @import("lparser.zig");
 const luaconf = @import("luaconf.zig");
@@ -67,9 +67,6 @@ const EOZ: i32 = -1;
 // Maximum length of a single scanned lexical element. Past this we reject the
 // input as "too long" instead of letting the buffer grow without bound.
 const MAX_SIZE: usize = 1 << 26;
-
-// Maximum number of significant hex digits the reference reads per hex float.
-const MAXSIGDIG: usize = 30;
 
 // ---------------------------------------------------------------------------
 // Token identifiers
@@ -226,33 +223,23 @@ pub const LexState = struct {
 
 // ---------------------------------------------------------------------------
 // Character-class predicates (Lua's "lctype" semantics, ASCII)
+//
+// The i32 scanner set (ldigit/lisxdigit/lisspace/hexval) is the single
+// source in lobject.zig (Phase A.1 consolidation); re-exported here.
 // ---------------------------------------------------------------------------
-fn lisdigit(c: i32) bool {
-    return c >= '0' and c <= '9';
-}
-fn lisxdigit(c: i32) bool {
-    return (c >= '0' and c <= '9') or
-        (c >= 'a' and c <= 'f') or
-        (c >= 'A' and c <= 'F');
-}
+const lisdigit = lobject.ldigit;
+const lisxdigit = lobject.lisxdigit;
+const lisspace = lobject.lisspace;
+const hexval = lobject.hexval;
+
 fn lislalpha(c: i32) bool {
     return c == '_' or (c >= 'a' and c <= 'z') or (c >= 'A' and c <= 'Z');
 }
 fn lislalnum(c: i32) bool {
     return lislalpha(c) or lisdigit(c);
 }
-fn lisspace(c: i32) bool {
-    return c == ' ' or c == '\t' or c == '\n' or c == '\r' or c == '\x0c' or c == '\x0b';
-}
 fn lisprint(c: i32) bool {
     return c >= 0x20 and c < 0x7f;
-}
-
-fn hexval(c: i32) u64 {
-    if (c >= '0' and c <= '9') return @intCast(c - '0');
-    if (c >= 'a' and c <= 'f') return @intCast(c - 'a' + 10);
-    if (c >= 'A' and c <= 'F') return @intCast(c - 'A' + 10);
-    return 0;
 }
 
 // ---------------------------------------------------------------------------
@@ -320,167 +307,21 @@ fn check_next2(ls: *LexState, set: []const u8) !bool {
 }
 
 // ---------------------------------------------------------------------------
-// Number parsing (mirrors luaO_str2num / l_str2int / lua_strx2number / l_str2d)
+// Number parsing — shared engine lives in lobject.zig (Phase A.1).
 // ---------------------------------------------------------------------------
 
-fn l_str2int(s: []const u8, result: *i64) ?usize {
-    var i: usize = 0;
-    while (i < s.len and lisspace(s[i])) : (i += 1) {}
-    const neg = (i < s.len and s[i] == '-');
-    if (neg or (i < s.len and s[i] == '+')) i += 1;
-    var a: u64 = 0;
-    var empty = true;
-    var is_hex = false;
-    if (i + 1 < s.len and s[i] == '0' and (s[i + 1] == 'x' or s[i + 1] == 'X')) {
-        i += 2;
-        is_hex = true;
-        while (i < s.len and lisxdigit(s[i])) : (i += 1) {
-            const d = hexval(s[i]);
-            a = (a << 4) +% d;
-            empty = false;
-        }
-    } else {
-        const maxdiv10: u64 = 922337203685477580; // LUA_MAXINTEGER / 10
-        const maxlastd: u64 = 7; // LUA_MAXINTEGER % 10
-        while (i < s.len and lisdigit(s[i])) : (i += 1) {
-            const d: u64 = @intCast(s[i] - '0');
-            if (a > maxdiv10 or (a == maxdiv10 and d > maxlastd + (if (neg) @as(u64, 1) else 0))) {
-                return null;
-            }
-            a = a * 10 + d;
-            empty = false;
-        }
-    }
-    while (i < s.len and lisspace(s[i])) : (i += 1) {}
-    if (empty or i != s.len) return null;
-    if (!is_hex) {
-        const maxu: u64 = @bitCast(@as(i64, std.math.maxInt(i64)));
-        const limit: u64 = if (neg) maxu + 1 else maxu;
-        if (a > limit) return null;
-    }
-    if (neg) {
-        const na: u64 = 0 -% a;
-        result.* = @bitCast(na);
-    } else {
-        result.* = @bitCast(a);
-    }
-    return i;
-}
-
-// Parse a hexadecimal floating-point numeral ("0x...") following C99 strtod.
-// Returns the value; `end_out` receives the index just past the last consumed
-// character (so the caller can reject trailing garbage).
-fn lua_strx2number(s: []const u8, end_out: *usize) f64 {
-    var i: usize = 0;
-    while (i < s.len and lisspace(s[i])) : (i += 1) {}
-    const neg = (i < s.len and s[i] == '-');
-    if (neg or (i < s.len and s[i] == '+')) i += 1;
-    if (!(i + 1 < s.len and s[i] == '0' and (s[i + 1] == 'x' or s[i + 1] == 'X'))) {
-        return 0;
-    }
-    i += 2;
-    var r: f64 = 0;
-    var sigdig: usize = 0;
-    var nosigdig: usize = 0;
-    var e: i32 = 0;
-    var hasdot = false;
-    while (i < s.len) : (i += 1) {
-        if (s[i] == '.') {
-            if (hasdot) break;
-            hasdot = true;
-        } else if (lisxdigit(s[i])) {
-            const d: f64 = @floatFromInt(hexval(s[i]));
-            if (sigdig == 0 and hexval(s[i]) == 0) {
-                nosigdig += 1;
-            } else if (sigdig < MAXSIGDIG) {
-                sigdig += 1;
-                r = r * 16 + d;
-            } else {
-                e += 1;
-            }
-            if (hasdot) e -= 1;
-        } else break;
-    }
-    if (nosigdig + sigdig == 0) return 0;
-    end_out.* = i;
-    e *= 4;
-    if (i < s.len and (s[i] == 'p' or s[i] == 'P')) {
-        i += 1;
-        const neg1 = (i < s.len and s[i] == '-');
-        if (neg1 or (i < s.len and s[i] == '+')) i += 1;
-        if (i >= s.len or !lisdigit(s[i])) return 0;
-        var exp1: i32 = 0;
-        while (i < s.len and lisdigit(s[i])) : (i += 1) {
-            exp1 = exp1 * 10 + (s[i] - '0');
-        }
-        if (neg1) exp1 = -exp1;
-        e += exp1;
-        end_out.* = i;
-    }
-    if (neg) r = -r;
-    return libm.getLibm().ldexp(r, e);
-}
-
-// Normalize a decimal numeral so Zig's `std.fmt.parseFloat` accepts the valid
-// Lua forms that end in a lone '.' or a '.' immediately before the exponent
-// (e.g. "1.", "1.e2"), which C strtod accepts but a strict parser rejects.
-fn normalizeDecimal(gpa: Allocator, s: []const u8, out: *std.ArrayList(u8)) !void {
-    var i: usize = 0;
-    while (i < s.len and lisspace(s[i])) : (i += 1) {}
-    while (i < s.len) : (i += 1) {
-        var c = s[i];
-        if (c == ',') c = '.';
-        try out.append(gpa, c);
-        if (c == '.') {
-            const nxt = if (i + 1 < s.len) s[i + 1] else 0;
-            if (nxt == 0 or nxt == 'e' or nxt == 'E') {
-                try out.append(gpa, '0');
-            }
-        }
-    }
-}
-
-fn l_str2d(alloc: Allocator, s: []const u8, result: *f64) !bool {
-    // Reject "inf" / "nan" (the reference's `mode == 'n'` check).
-    for (s) |c| {
-        if (c == 'n' or c == 'N') return false;
-    }
-    var has_x = false;
-    for (s) |c| {
-        if (c == 'x' or c == 'X') {
-            has_x = true;
-            break;
-        }
-    }
-    if (has_x) {
-        var end: usize = 0;
-        const v = lua_strx2number(s, &end);
-        var j = end;
-        while (j < s.len and lisspace(s[j])) : (j += 1) {}
-        if (j != s.len) return false;
-        result.* = v;
-        return true;
-    }
-    var tmp = std.ArrayList(u8).empty;
-    defer tmp.deinit(alloc);
-    try normalizeDecimal(alloc, s, &tmp);
-    const v = std.fmt.parseFloat(f64, tmp.items) catch return false;
-    result.* = v;
-    return true;
-}
-
 // Convert the scanned numeral text (NUL-terminated in the buffer) to a Lua
-// number, filling `seminfo`. Returns TK_INT or TK_FLT, or SyntaxError.
-fn str2num(alloc: Allocator, buf: []const u8, seminfo: *SemInfo) !i32 {
+// number, filling `seminfo`. Returns TK_INT or TK_FLT, or SyntaxError for a
+// malformed numeral. The shared engine never allocates (the lexer path is
+// locale-independent and needs no remapping), so no allocator is threaded.
+fn str2num(buf: []const u8, seminfo: *SemInfo) !i32 {
     // buf ends with a NUL we appended; parse the text without it.
     const s = buf[0 .. buf.len - 1];
-    var i: i64 = 0;
-    if (l_str2int(s, &i) != null) {
+    if (lobject.parseInteger(s)) |i| {
         seminfo.i = i;
         return TK_INT;
     }
-    var n: f64 = 0;
-    if (try l_str2d(alloc, s, &n)) {
+    if (lobject.parseNumericFloat(null, s, '.')) |n| {
         seminfo.r = n;
         return TK_FLT;
     }
@@ -848,7 +689,7 @@ fn read_numeral(ls: *LexState, seminfo: *SemInfo) !i32 {
         try save_and_next(ls); // force an error
     }
     try save(ls, 0);
-    const kind = str2num(ls.allocator, ls.buff.items, seminfo) catch {
+    const kind = str2num(ls.buff.items, seminfo) catch {
         return lexerror(ls, "malformed number", TK_INT);
     };
     return kind;

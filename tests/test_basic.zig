@@ -6130,3 +6130,190 @@ test "P1: a VM table-allocation loop still gets collected mid-execution" {
     const final = countAllgc(g);
     try std.testing.expect(final <= after);
 }
+
+// ---------------------------------------------------------------------------
+// A1: shared number-parsing engine (lobject) — behavior pinning.
+// Target semantics = C reference (verified 2026-09-10 against ./lua/lua):
+//   - integer-preferred classification; C's u64-wrap hex-integer overflow
+//   - overflow -> +-inf, underflow -> 0, trailing junk rejected whole-string
+//   - inf/nan rejected case-insensitively AFTER the sign ("-inf" -> nil)
+//   - 4000-digit string -> +inf (no length cap)
+//   - locale decimal point is data: coercion accepts '.' and localeDecimalPoint()
+// ---------------------------------------------------------------------------
+
+test "A1 parseInteger: integer-first with C wrap/overflow semantics" {
+    const lobject = lua.lobject;
+    try std.testing.expectEqual(@as(i64, 42), lobject.parseInteger("42"));
+    try std.testing.expectEqual(@as(i64, 42), lobject.parseInteger("  42  "));
+    try std.testing.expectEqual(@as(i64, -7), lobject.parseInteger("-7"));
+    try std.testing.expectEqual(@as(i64, 0), lobject.parseInteger("-0"));
+    try std.testing.expectEqual(@as(i64, 42), lobject.parseInteger("000042"));
+    try std.testing.expectEqual(@as(i64, 0), lobject.parseInteger("00"));
+    try std.testing.expectEqual(@as(i64, 16), lobject.parseInteger("0x10"));
+    try std.testing.expectEqual(@as(i64, 15), lobject.parseInteger("0xF"));
+    try std.testing.expectEqual(@as(i64, 15), lobject.parseInteger("0Xf"));
+    try std.testing.expectEqual(@as(i64, 9223372036854775807), lobject.parseInteger("9223372036854775807"));
+    // C reference (verified): hex literals past 64 bits wrap the u64 -> 0.
+    try std.testing.expectEqual(@as(i64, 0), lobject.parseInteger("0x10000000000000000"));
+    // i64 overflow -> not an integer.
+    try std.testing.expect(lobject.parseInteger("9223372036854775808") == null);
+    try std.testing.expect(lobject.parseInteger("-9223372036854775809") == null);
+    // Not whole-string-integer -> null.
+    try std.testing.expect(lobject.parseInteger("1.5") == null);
+    try std.testing.expect(lobject.parseInteger("1e") == null);
+    try std.testing.expect(lobject.parseInteger("1n") == null);
+    try std.testing.expect(lobject.parseInteger("12x") == null);
+    try std.testing.expect(lobject.parseInteger("0x") == null);
+    try std.testing.expect(lobject.parseInteger("+") == null);
+    try std.testing.expect(lobject.parseInteger("") == null);
+    try std.testing.expect(lobject.parseInteger("   ") == null);
+}
+
+test "A1 parseNumericFloat: shared float engine (decimal + hex, locale dp as data)" {
+    const lobject = lua.lobject;
+    const inf = std.math.inf(f64);
+    // Decimal forms (whole-string parse: trailing junk rejected).
+    try std.testing.expectEqual(@as(f64, 0.5), lobject.parseNumericFloat(null, ".5", '.'));
+    try std.testing.expectEqual(@as(f64, 5.0), lobject.parseNumericFloat(null, "5.", '.'));
+    try std.testing.expectEqual(@as(f64, 100.0), lobject.parseNumericFloat(null, "1.e2", '.'));
+    try std.testing.expectEqual(@as(f64, 100000.0), lobject.parseNumericFloat(null, "1e5", '.'));
+    try std.testing.expectEqual(@as(f64, 0.5), lobject.parseNumericFloat(null, "+.5", '.'));
+    try std.testing.expectEqual(@as(f64, 0.0), lobject.parseNumericFloat(null, "-0", '.'));
+    // Overflow -> +inf, underflow -> 0 (no error; mirrors C strtod).
+    try std.testing.expectEqual(inf, lobject.parseNumericFloat(null, "1e999", '.'));
+    try std.testing.expectEqual(-inf, lobject.parseNumericFloat(null, "-1e999", '.'));
+    try std.testing.expectEqual(@as(f64, 0.0), lobject.parseNumericFloat(null, "1e-999", '.'));
+    // Hex floats (C99 grammar, including '.'/'p' edges).
+    try std.testing.expectEqual(@as(f64, 3.0), lobject.parseNumericFloat(null, "0x1.8p1", '.'));
+    try std.testing.expectEqual(@as(f64, 3.0), lobject.parseNumericFloat(null, "0x1.8P+1", '.'));
+    try std.testing.expectEqual(@as(f64, 0.5), lobject.parseNumericFloat(null, "0x.8", '.'));
+    try std.testing.expectEqual(@as(f64, 8.0), lobject.parseNumericFloat(null, "0x8.", '.'));
+    try std.testing.expectEqual(@as(f64, 16.0), lobject.parseNumericFloat(null, "0x10", '.'));
+    // Rejects (whole-string parse fails).
+    try std.testing.expect(lobject.parseNumericFloat(null, "0x12p", '.') == null);
+    try std.testing.expect(lobject.parseNumericFloat(null, "0x", '.') == null);
+    try std.testing.expect(lobject.parseNumericFloat(null, "1p", '.') == null);
+    try std.testing.expect(lobject.parseNumericFloat(null, "1e", '.') == null);
+    try std.testing.expect(lobject.parseNumericFloat(null, "1n", '.') == null);
+    try std.testing.expect(lobject.parseNumericFloat(null, "123abc", '.') == null);
+    // The engine itself accepts inf/nan (like C strtod); the inf/nan
+    // rejection guard lives in tonumberValue (the coercion entry point).
+    try std.testing.expectEqual(std.math.inf(f64), lobject.parseNumericFloat(null, "inf", '.'));
+}
+
+test "A1 parseNumericFloat locale decimal point is data" {
+    const lobject = lua.lobject;
+    // C locale ('.' only): comma is not a decimal point -> reject (C reference).
+    try std.testing.expect(lobject.parseNumericFloat(null, "3,14", '.') == null);
+    // Locale with dp = ',': both '.' and ',' are accepted.
+    try std.testing.expectEqual(@as(f64, 3.14), lobject.parseNumericFloat(null, "3,14", ','));
+    try std.testing.expectEqual(@as(f64, 3.14), lobject.parseNumericFloat(null, "3.14", ','));
+}
+
+test "A1 tonumberValue: C-oracle coercion semantics" {
+    const lobject = lua.lobject;
+    const gpa = std.testing.allocator;
+    // Integer-preferred.
+    {
+        const v = lobject.tonumberValue("42") orelse return error.TestFailed;
+        try std.testing.expectEqual(@as(i64, 42), v.integer);
+    }
+    {
+        const v = lobject.tonumberValue(" 3.5 ") orelse return error.TestFailed;
+        try std.testing.expectEqual(@as(f64, 3.5), v.number);
+    }
+    // C-oracle fixes (old port diverged): comma rejected in C locale,
+    // signed inf/nan rejected, no length cap (4000 digits -> +inf).
+    try std.testing.expect(lobject.tonumberValue("3,14") == null);
+    try std.testing.expect(lobject.tonumberValue("-inf") == null);
+    try std.testing.expect(lobject.tonumberValue("-Infinity") == null);
+    try std.testing.expect(lobject.tonumberValue("inf") == null);
+    try std.testing.expect(lobject.tonumberValue("NAN") == null);
+    try std.testing.expect(lobject.tonumberValue("inf123") == null);
+    {
+        const buf = try gpa.alloc(u8, 4000);
+        defer gpa.free(buf);
+        @memset(buf, '9');
+        const v = lobject.tonumberValue(buf) orelse return error.TestFailed;
+        try std.testing.expectEqual(std.math.inf(f64), v.number);
+    }
+    // Stable behaviors.
+    {
+        const v = lobject.tonumberValue("99999999999999999999999999") orelse return error.TestFailed;
+        try std.testing.expectEqual(@as(f64, 1e26), v.number);
+    }
+    try std.testing.expect(lobject.tonumberValue("1e") == null);
+    try std.testing.expect(lobject.tonumberValue("1e-") == null);
+    try std.testing.expect(lobject.tonumberValue("12x") == null);
+    try std.testing.expect(lobject.tonumberValue("") == null);
+    try std.testing.expect(lobject.tonumberValue("   ") == null);
+}
+
+test "A1 lua_stringtonumber (full-fidelity C API)" {
+    const gpa = std.testing.allocator;
+    var L: lua.lua_State = undefined;
+    try lua.luaL_newstate(&L, gpa);
+    defer lua.lua_close(&L);
+
+    const n1 = lua.lua_stringtonumber(&L, "42");
+    try std.testing.expectEqual(@as(usize, 3), n1); // len + 1
+    try std.testing.expectEqual(@as(i64, 42), lua.lua_tointeger(&L, -1) orelse return error.TestFailed);
+    lua.lua_pop(&L, 1);
+
+    const n2 = lua.lua_stringtonumber(&L, "junk");
+    try std.testing.expectEqual(@as(usize, 0), n2);
+
+    const n3 = lua.lua_stringtonumber(&L, "1e999");
+    try std.testing.expectEqual(@as(usize, 6), n3);
+    try std.testing.expectEqual(std.math.inf(f64), lua.lua_tonumber(&L, -1) orelse return error.TestFailed);
+    lua.lua_pop(&L, 1);
+}
+
+test "A1 lexer: source number literals via shared engine" {
+    const gpa = std.testing.allocator;
+    var L: lua.lua_State = undefined;
+    try lua.luaL_newstate(&L, gpa);
+    defer lua.lua_close(&L);
+
+    // "1.e2" -> 100.0, "5." -> 5.0, "0x1.8p1" -> 3.0 (source literals).
+    const s1 = try lua.luaL_dostring(&L, "return 1.e2", "=(a1)");
+    try std.testing.expectEqual(@as(i32, 0), s1);
+    try std.testing.expectEqual(@as(f64, 100.0), lua.lua_tonumber(&L, -1) orelse return error.TestFailed);
+    lua.lua_pop(&L, 1);
+
+    const s2 = try lua.luaL_dostring(&L, "return 5.", "=(a1)");
+    try std.testing.expectEqual(@as(i32, 0), s2);
+    try std.testing.expectEqual(@as(f64, 5.0), lua.lua_tonumber(&L, -1) orelse return error.TestFailed);
+    lua.lua_pop(&L, 1);
+
+    const s3 = try lua.luaL_dostring(&L, "return 0x1.8p1", "=(a1)");
+    try std.testing.expectEqual(@as(i32, 0), s3);
+    try std.testing.expectEqual(@as(f64, 3.0), lua.lua_tonumber(&L, -1) orelse return error.TestFailed);
+    lua.lua_pop(&L, 1);
+
+    // 65-bit hex literal: the C reference wraps the u64 int parse to 0
+    // (verified against ./lua/lua; Lua 5.5.1's type() reports "number"
+    // for all numerics, so pin the value, not the type tag).
+    const s4 = try lua.luaL_dostring(&L, "return 0x10000000000000000", "=(a1)");
+    try std.testing.expectEqual(@as(i32, 0), s4);
+    try std.testing.expectEqual(@as(f64, 0.0), lua.lua_tonumber(&L, -1) orelse return error.TestFailed);
+    lua.lua_pop(&L, 1);
+
+    // 61-bit hex literal that fits in i64: value preserved exactly.
+    const s4b = try lua.luaL_dostring(&L, "return 0x1000000000000000", "=(a1)");
+    try std.testing.expectEqual(@as(i32, 0), s4b);
+    try std.testing.expectEqual(@as(f64, 1152921504606846976.0), lua.lua_tonumber(&L, -1) orelse return error.TestFailed);
+    lua.lua_pop(&L, 1);
+
+    // 26-digit decimal literal -> float 1e26 (exact).
+    const s5 = try lua.luaL_dostring(&L, "return 99999999999999999999999999", "=(a1)");
+    try std.testing.expectEqual(@as(i32, 0), s5);
+    try std.testing.expectEqual(@as(f64, 1e26), lua.lua_tonumber(&L, -1) orelse return error.TestFailed);
+    lua.lua_pop(&L, 1);
+
+    // Malformed numerals: same "malformed number" syntax error as the C reference.
+    const s6 = try lua.luaL_dostring(&L, "return 1e", "=(a1)");
+    try std.testing.expectEqual(@as(i32, lua.LUA_ERRSYNTAX), s6);
+    const s7 = try lua.luaL_dostring(&L, "return 0x", "=(a1)");
+    try std.testing.expectEqual(@as(i32, lua.LUA_ERRSYNTAX), s7);
+}

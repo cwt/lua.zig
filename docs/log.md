@@ -6,6 +6,54 @@ tags: [log, changelog]
 timestamp: 2026-09-10T23:55:00Z
 ---
 
+## 2026-09-10 — Refactor A1: shared number-parsing engine (`lobject.zig` created)
+
+- Consolidated the two duplicated number parsers (the C reference shares
+  one `lobject.c` parser; we had two: `llex.zig`'s `l_str2int`/
+  `lua_strx2number`/`normalizeDecimal`/`l_str2d` and `lua.zig`'s
+  `parseInteger`/`parseLocaleNumber`/`tonumberValue`) into a single
+  allocation-free engine in the new `src/lobject.zig` (Phase A commit 6
+  of 6 — Phase A complete). Final design (probed against the C
+  reference before coding; docs/refactor.md §A1):
+  - **Decimal floats → `std.fmt.parseFloat` in place** (correctly
+    rounded, overflow → ±inf, whole-string). It accepts/rejects
+    exactly the C decimal grammar. Replaces `l_str2d`'s gpa-allocating
+    `normalizeDecimal` (lexer OOM path gone) and `parseLocaleNumber`'s
+    C `strtod` interop.
+  - **Hex floats → the C `lua_strx2number` algorithm**
+    (`lobject.hexFloatValue`, 30-significant-digit + `ldexp`). A probe
+    caught `std.fmt.parseFloat` landing 1 ULP low on 150-digit hex
+    floats (upstream `math.lua` long-numerals asserts would fail).
+  - **Locale decimal point is data**: `parseNumericFloat(gpa, s, dp)`;
+    coercion passes `localeDecimalPoint()` (accepts `'.'` + locale
+    point, matching C's strtod + replace-first-`.` fallback); the
+    lexer passes `'.'` (the old `normalizeDecimal` comma mapping was
+    dead — numeral tokens never contain `','`).
+  - **Entry points**: `parseInteger` (moved verbatim — C's u64-wrap
+    hex-int overflow, verified identical to the C reference),
+    `tonumberValue` (allocation-free coercion specialization; lvm's P4
+    hot path signature unchanged via `lua.zig` re-export),
+    `lua_stringtonumber` (threads `L.allocator`). `llex.str2num` lost
+    its `alloc` parameter.
+  - **Three C-oracle fixes** (pinned by the new `"A1 …"` tests,
+    verified against `./lua/lua`): `tonumber("3,14")` → nil under the
+    C locale (was 3.14 — the superset was a coercion artifact, not a
+    lexer feature); all signed inf/nan spellings rejected
+    (`"-Infinity"` was −inf, now nil — the old guard checked char 0
+    only); 4000-digit strings → ±inf (the old 2048-byte cap is gone).
+- Character-class helpers (`ldigit`/`lisxdigit`/`lisspace`/`hexval`
+  i32 + `isDigit`/`isHexDigit`/`isspace`/`hexValue` u8) now have a
+  single home in `lobject.zig`; `llex.zig` re-exports the i32 set.
+- `lua.zig` 6253 → 6077 lines; `llex.zig` 1004 → 845; new
+  `lobject.zig` 308 (engine) + `luaG_*` wrappers still to move (B3).
+- **Verification**: 188/188 unit tests (6 new A1 blocks); upstream
+  suite PASS 20 / FAIL 0 / CRASH 0; `tests/pi-5.5.lua` byte-identical
+  vs the C reference; perf gate 375.58B instructions (P4 baseline
+  375.6B — invariant, parse work is compile-time and negligible vs the
+  VM run). §0.1: allocator threaded (`?Allocator`, nullable for the
+  allocation-free specialization); no swallowed errors; `str2num`'s
+  remaining `error.SyntaxError` is the genuine malformed-numeral case.
+
 ## 2026-09-10 — Refactor plan recorded: `lua.zig` breakdown + deduplication (`docs/refactor.md`)
 
 - `src/lua.zig` (6253 lines, ~21% of project LOC) is the one module that

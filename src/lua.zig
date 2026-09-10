@@ -11,6 +11,13 @@ const libm = @import("libm.zig");
 pub const llex = @import("llex.zig");
 pub const lcode = @import("lcode.zig");
 pub const lparser = @import("lparser.zig");
+pub const lobject = @import("lobject.zig");
+
+// Re-exports of the shared number-parsing engine (lobject.zig, Phase A.1):
+// lvm.zig's hot path calls `tonumberValue`; the standard libraries call
+// `lua_stringtonumber` (stringlib/iolib/baselib).
+pub const tonumberValue = lobject.tonumberValue;
+pub const lua_stringtonumber = lobject.lua_stringtonumber;
 
 pub const lua_Number = llimits.lua_Number;
 pub const lua_Integer = llimits.lua_Integer;
@@ -5730,178 +5737,6 @@ pub fn lua_len(L: *lua_State, idx: i32) !void {
     }
 }
 
-fn isDigit(c: u8) bool {
-    return c >= '0' and c <= '9';
-}
-
-fn isHexDigit(c: u8) bool {
-    return isDigit(c) or (c >= 'a' and c <= 'f') or (c >= 'A' and c <= 'F');
-}
-
-fn skipDigits(s: []const u8, i: usize) usize {
-    var j = i;
-    while (j < s.len and isDigit(s[j])) : (j += 1) {}
-    return j;
-}
-
-fn isspace(c: u8) bool {
-    return c == ' ' or c == '\t' or c == '\n' or c == '\r' or c == 0x0B or c == 0x0C;
-}
-
-fn hexValue(c: u8) u64 {
-    if (c >= '0' and c <= '9') return c - '0';
-    if (c >= 'a' and c <= 'f') return c - 'a' + 10;
-    return c - 'A' + 10;
-}
-
-/// Parse a whole-string integer (leading/trailing spaces ignored, requires
-/// the trimmed string to be an integer); returns null otherwise. Mirrors the
-/// C reference `l_str2int`.
-fn parseInteger(s: []const u8) ?i64 {
-    var i: usize = 0;
-    while (i < s.len and isspace(s[i])) : (i += 1) {}
-    if (i >= s.len) return null;
-    var neg = false;
-    if (s[i] == '+' or s[i] == '-') {
-        neg = s[i] == '-';
-        i += 1;
-        if (i >= s.len) return null;
-    }
-    const is_neg_val: u32 = if (neg) 1 else 0;
-    var a: u64 = 0;
-    var digits: usize = 0;
-    if (s[i] == '0' and i + 1 < s.len and (s[i + 1] == 'x' or s[i + 1] == 'X')) {
-        i += 2;
-        while (i < s.len and isHexDigit(s[i])) : (i += 1) {
-            const d = hexValue(s[i]);
-            a = a *% 16 +% d;
-            digits += 1;
-        }
-    } else {
-        const max_by_10 = @as(u64, 9223372036854775807) / 10;
-        const max_last_d = @as(u32, 9223372036854775807 % 10);
-        while (i < s.len and isDigit(s[i])) : (i += 1) {
-            const d = @as(u32, s[i] - '0');
-            if (a >= max_by_10 and (a > max_by_10 or d > max_last_d + is_neg_val)) {
-                return null; // overflow
-            }
-            a = a * 10 + d;
-            digits += 1;
-        }
-    }
-    if (digits == 0) return null;
-    var k = i;
-    while (k < s.len and isspace(s[k])) : (k += 1) {}
-    if (k != s.len) return null; // trailing non-space
-    const unsigned_res = if (neg) (0 -% a) else a;
-    return @bitCast(unsigned_res);
-}
-
-/// True iff every byte of `s[off..]` is whitespace.
-fn trailingAllSpace(s: []const u8, off: usize) bool {
-    var k = off;
-    while (k < s.len and isspace(s[k])) : (k += 1) {}
-    return k == s.len;
-}
-
-extern "c" fn localeconv() *Lconv;
-const Lconv = extern struct {
-    decimal_point: [*:0]const u8,
-    thousands_sep: [*:0]const u8,
-    grouping: [*:0]const u8,
-};
-
-/// Return the current locale's decimal-point character ('.' if unknown).
-fn localeDecimalPoint() u8 {
-    const lc = localeconv();
-    const dp = lc.decimal_point;
-    if (dp[0] == 0) return '.';
-    return dp[0];
-}
-
-/// Locale-aware float parse mirroring the C reference `l_str2d`: try the C
-/// library `strtod` (which respects the current locale's decimal point),
-/// and if that does not consume the whole (space-trimmed) string, retry after
-/// replacing a '.' with the locale decimal point. Leading/trailing spaces are
-/// tolerated (strtod skips leading; trailing is checked by the caller).
-fn parseLocaleNumber(s: []const u8) ?f64 {
-    if (s.len == 0) return null;
-    var buf: [2048]u8 = undefined;
-    if (s.len >= buf.len) return null; // too long for locale fallback
-    @memcpy(buf[0..s.len], s);
-    buf[s.len] = 0;
-    var endptr: ?[*:0]const u8 = undefined;
-    const cstr: [*:0]const u8 = @ptrCast(@constCast(&buf));
-    const n = strtod(cstr, &endptr);
-    if (endptr != null and endptr.? != cstr) {
-        const off = @intFromPtr(endptr.?) - @intFromPtr(&buf);
-        if (trailingAllSpace(s, off)) return n;
-    }
-    // Fallback: replace '.' or ',' with the locale decimal point and retry.
-    const dp = localeDecimalPoint();
-    var k: usize = 0;
-    while (k < s.len) : (k += 1) {
-        if (buf[k] == '.' or buf[k] == ',') {
-            buf[k] = dp;
-            break;
-        }
-    }
-    const n2 = strtod(cstr, &endptr);
-    if (endptr != null and endptr.? != cstr) {
-        const off = @intFromPtr(endptr.?) - @intFromPtr(&buf);
-        if (trailingAllSpace(s, off)) return n2;
-    }
-    return null;
-}
-
-/// Locale-aware parse of a string to a numeric TValue (integer or float).
-/// Mirrors lua_stringtonumber's parsing (leading/trailing spaces ignored,
-/// "inf"/"nan" rejected) but returns the value instead of pushing it.
-pub fn tonumberValue(s: []const u8) ?TValue {
-    if (s.len == 0) return null;
-    // Trim leading and trailing whitespace (mirrors luaO_str2num: only
-    // surrounding spaces are ignored; nothing else may trail the number).
-    var start: usize = 0;
-    while (start < s.len and isspace(s[start])) : (start += 1) {}
-    if (start >= s.len) return null;
-    var end = s.len;
-    while (end > start and isspace(s[end - 1])) : (end -= 1) {}
-    const trimmed = s[start..end];
-    if (trimmed.len == 0) return null;
-    // reject "inf"/"nan" tokens (reference: l_str2d rejects 'n'/'N')
-    {
-        var lower_i = trimmed[0];
-        if (lower_i >= 'A' and lower_i <= 'Z') lower_i += 32;
-        if (lower_i == 'i' or lower_i == 'n') {
-            var rest_lower: [10]u8 = undefined;
-            const copy_len = @min(trimmed.len, rest_lower.len);
-            _ = std.ascii.lowerString(rest_lower[0..copy_len], trimmed[0..copy_len]);
-            if (std.mem.eql(u8, rest_lower[0..3], "inf") or
-                std.mem.eql(u8, rest_lower[0..3], "nan"))
-            {
-                return null;
-            }
-        }
-    }
-    if (parseInteger(trimmed)) |iv| return TValue{ .integer = iv };
-    if (parseLocaleNumber(trimmed)) |n| return TValue{ .number = n };
-    return null;
-}
-
-pub fn lua_stringtonumber(L: *lua_State, s: []const u8) usize {
-    // Mirrors luaO_str2num: leading/trailing spaces ignored, but nothing else
-    // may trail the number. Returns consumed-length + 1 on success, 0 on
-    // failure. The reference rejects "inf"/"nan" tokens.
-    if (tonumberValue(s)) |v| {
-        if (v == .integer) {
-            lua_pushinteger(L, v.integer);
-        } else {
-            lua_pushnumber(L, v.number);
-        }
-        return s.len + 1;
-    }
-    return 0;
-}
 
 pub fn lua_atpanic(L: *lua_State, panicf: ?lua_CFunction) ?lua_CFunction {
     const g = G(L);
