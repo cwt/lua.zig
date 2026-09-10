@@ -946,3 +946,20 @@ pub fn lua_error(L: *lua.lua_State) anyerror {
     }
     return luaG_errormsg(L);
 }
+
+
+/// Raise "error in error handling" WITHOUT invoking the error handler
+/// (mirrors luaD_errerr -> LUA_ERRERR). Used to terminate the error-handler
+/// recursion when the C-call stack is exhausted: calling luaG_runerror here
+/// would re-invoke the handler and recurse forever.
+pub fn luaD_errerr(L: *lua.lua_State) anyerror {
+    const ts = lstring.luaS_new(L, "error in error handling") catch null;
+    if (ts) |t| {
+        L.err_obj = lua.TValue{ .string = t };
+        if (L.top < L.stack.len) {
+            L.stack[L.top] = L.err_obj;
+            L.top += 1;
+        }
+    }
+    return error.RuntimeError;
+}

@@ -6,6 +6,27 @@ tags: [log, changelog]
 timestamp: 2026-09-10T23:55:00Z
 ---
 
+## 2026-09-10 — Refactor B5: `lstate.zig` carved out of `lua.zig` (Phase B: 5/7)
+
+- Pure move (docs/refactor.md Phase B policy): the state-lifecycle
+  block (the `lstate.c` port) moved verbatim from `lua.zig` into the
+  new `src/lstate.zig` (~510 lines, 5 scattered chunks): stack
+  growth (`growStack`/`reserveErrorStack`/`shrinkStack`/`reallocStack`/
+  `lua_checkstack`/`lua_xmove`), `lua_newthread`/`lua_closethread`,
+  the warning API (`luaE_warning`/`luaE_warnerror`/`lua_setwarnf`/
+  `lua_warning`), construction + args (`luaL_newstate_io`/`luaL_newstate`/
+  `createargtable`), and `lua_close`. Additionally `luaD_errerr`
+  (lodged in the stack-growth region) moved to `ldo.zig`, its C home.
+  `lua.zig` 3633 -> 3122 lines; 17 symbols re-exported so call sites
+  keep the `lua.` qualification; visibility bumps only
+  (`shrinkStack`/`reallocStack`/`l_alloc` made pub).
+  This `lstate.zig` is the *real* state-lifecycle module — the file
+  was deleted once before for carrying a stale duplicate (AGENTS.md).
+- Verification: 188/188 unit tests; upstream PASS 20 / FAIL 0;
+  `tests/pi-5.5.lua` byte-identical; perf gate 375.64B instructions
+  (P4 baseline 375.6B - invariant). §0.1: move + qualification, no
+  semantic edits.
+
 ## 2026-09-10 — Refactor B4: `ldo.zig` carved out of `lua.zig` (Phase B: 4/7)
 
 - Pure move (docs/refactor.md Phase B policy): the call/continuation
