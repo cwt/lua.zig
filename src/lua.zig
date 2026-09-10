@@ -4054,6 +4054,16 @@ fn luaG_varinfo(L: *lua_State, o_ptr: *const TValue, buf: []u8) []const u8 {
 /// or `floor`/integer coercion). Mirrors PUC-Rio `luaG_tointerror`: the message
 /// is `"number%s has no integer representation"`, where `%s` is the operand's
 /// `varinfo` (e.g. ` (field 'huge')`).
+/// A4 (docs/refactor.md): shared tail of the `luaG_*` error-message
+/// builders — the repeated
+/// `const mslice = fmtMsg(buf, fallback, fmt, args); return
+/// luaG_runerror(L, mslice);` two-step. Callers keep their own fixed
+/// buffer (each site's overflow behavior is preserved exactly) and pass
+/// pre-formatted fragments (e.g. `luaG_varinfo` results) as args.
+fn luaG_err(L: *lua_State, buf: []u8, fallback: []const u8, comptime fmt: []const u8, args: anytype) !void {
+    return luaG_runerror(L, fmtMsg(buf, fallback, fmt, args));
+}
+
 pub fn luaG_errnnil(L: *lua_State, proto: *const lua_Proto, k: i32) !void {
     var globalname: []const u8 = "?";
     if (k > 0 and @as(usize, @intCast(k - 1)) < proto.k.len) {
@@ -4063,23 +4073,20 @@ pub fn luaG_errnnil(L: *lua_State, proto: *const lua_Proto, k: i32) !void {
         }
     }
     var buf: [256]u8 = undefined;
-    const msg = fmtMsg(&buf, "global already defined", "global '{s}' already defined", .{globalname});
-    return luaG_runerror(L, msg);
+    return luaG_err(L, &buf, "global already defined", "global '{s}' already defined", .{globalname});
 }
 
 pub fn luaG_forerror(L: *lua_State, o: TValue, what: []const u8) !void {
     const t = ltm.luaT_objtypename(L, o);
     var msg: [256]u8 = undefined;
-    const mslice = fmtMsg(&msg, "bad 'for' value", "bad 'for' {s} (number expected, got {s})", .{ what, t });
-    return luaG_runerror(L, mslice);
+    return luaG_err(L, &msg, "bad 'for' value", "bad 'for' {s} (number expected, got {s})", .{ what, t });
 }
 
 pub fn luaG_tointerror(L: *lua_State, o: TValue) !void {
     var buf: [256]u8 = undefined;
     const info = luaG_varinfo(L, &o, &buf);
     var msg: [320]u8 = undefined;
-    const mslice = fmtMsg(&msg, "number has no integer representation", "number{s} has no integer representation", .{info});
-    return luaG_runerror(L, mslice);
+    return luaG_err(L, &msg, "number has no integer representation", "number{s} has no integer representation", .{info});
 }
 
 pub fn luaG_typeerror(L: *lua_State, o: TValue, op: []const u8) !void {
@@ -4091,8 +4098,7 @@ pub fn luaG_typeerrorPtr(L: *lua_State, o: *const TValue, op: []const u8) !void 
     const info = luaG_varinfo(L, o, &buf);
     const t = ltm.luaT_objtypename(L, o.*);
     var msg: [320]u8 = undefined;
-    const mslice = fmtMsg(&msg, "attempt to perform operation on value", "attempt to {s} a {s} value{s}", .{ op, t, info });
-    return luaG_runerror(L, mslice);
+    return luaG_err(L, &msg, "attempt to perform operation on value", "attempt to {s} a {s} value{s}", .{ op, t, info });
 }
 
 pub fn luaG_callerror(L: *lua_State, o: TValue) !void {
@@ -4105,8 +4111,7 @@ pub fn luaG_callerror(L: *lua_State, o: TValue) !void {
     var msg: [320]u8 = undefined;
     if (kind) |k| {
         if (fname) |fnm| {
-            const mslice = fmtMsg(&msg, "attempt to call a non-function value", "attempt to call a {s} value ({s} '{s}')", .{ t, k, fnm });
-            return luaG_runerror(L, mslice);
+            return luaG_err(L, &msg, "attempt to call a non-function value", "attempt to call a {s} value ({s} '{s}')", .{ t, k, fnm });
         }
     }
     return luaG_typeerror(L, o, "call");
