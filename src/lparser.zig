@@ -274,7 +274,7 @@ fn check_condition(ls: *llex.LexState, c: bool, msg: []const u8) !void {
 
 fn error_expected(ls: *llex.LexState, token: i32) !void {
     var buf: [64]u8 = undefined;
-    const msg = std.fmt.bufPrint(&buf, "{s} expected", .{llex.token2str(token)}) catch "syntax error";
+    const msg = lua.fmtMsg(&buf, "syntax error", "{s} expected", .{llex.token2str(token)});
     return llex.luaX_syntaxerror(ls, msg);
 }
 
@@ -301,10 +301,10 @@ fn check_match(ls: *llex.LexState, what: i32, who: i32, where: i32) !void {
             try error_expected(ls, what);
         } else {
             var buf: [128]u8 = undefined;
-            const msg = std.fmt.bufPrint(&buf, "{s} expected (to close {s})", .{
+            const msg = lua.fmtMsg(&buf, "syntax error", "{s} expected (to close {s})", .{
                 llex.token2str(what),
                 llex.token2str(who),
-            }) catch "syntax error";
+            });
             return llex.luaX_syntaxerror(ls, msg);
         }
     }
@@ -340,9 +340,9 @@ pub fn luaY_checklimit(fs: *FuncState, v: i32, l: i32, what: []const u8) !void {
         const line = fs.f.lineDefined;
         var buf: [160]u8 = undefined;
         const msg = if (line == 0)
-            std.fmt.bufPrint(&buf, "too many {s} (limit is {d}) in main function", .{ what, l }) catch "limit exceeded"
+            lua.fmtMsg(&buf, "limit exceeded", "too many {s} (limit is {d}) in main function", .{ what, l })
         else
-            std.fmt.bufPrint(&buf, "too many {s} (limit is {d}) in function at line {d}", .{ what, l, line }) catch "limit exceeded";
+            lua.fmtMsg(&buf, "limit exceeded", "too many {s} (limit is {d}) in function at line {d}", .{ what, l, line });
         return llex.luaX_syntaxerror(fs.ls, msg);
     }
 }
@@ -538,7 +538,7 @@ fn buildglobal(ls: *llex.LexState, varname: *lua.lua_TString, vp: *expdesc) !voi
     try singlevaraux(fs, envn(ls), vp, true);
     if (vp.k == .VGLOBAL) {
         var buf: [256]u8 = undefined;
-        const msg = std.fmt.bufPrint(&buf, "_ENV is global when accessing variable '{s}'", .{varname.s}) catch "_ENV is global";
+        const msg = lua.fmtMsg(&buf, "_ENV is global", "_ENV is global when accessing variable '{s}'", .{varname.s});
         try lcode.luaK_semerror(ls, msg);
     }
     try lcode.luaK_exp2anyregup(fs, vp);
@@ -562,7 +562,7 @@ fn buildvar(ls: *llex.LexState, varname: *lua.lua_TString, vp: *expdesc) !void {
         const info = vp.u.info;
         if (info == -2) {
             var buf: [256]u8 = undefined;
-            const msg = std.fmt.bufPrint(&buf, "variable '{s}' not declared", .{varname.s}) catch "variable not declared";
+            const msg = lua.fmtMsg(&buf, "variable not declared", "variable '{s}' not declared", .{varname.s});
             try lcode.luaK_semerror(ls, msg);
         }
         try buildglobal(ls, varname, vp);
@@ -726,7 +726,7 @@ fn jumpscopeerror(ls: *llex.LexState, gt: *llex.Labeldesc) !void {
     const varname = if (tsname) |ts| ts.s else "*";
     const gtname = if (gt.name) |gn| gn.s else "";
     var buf: [256]u8 = undefined;
-    const msg = std.fmt.bufPrint(&buf, "<goto {s}> at line {d} jumps into the scope of '{s}'", .{ gtname, gt.line, varname }) catch "<goto> jumps into the scope of a local variable";
+    const msg = lua.fmtMsg(&buf, "<goto> jumps into the scope of a local variable", "<goto {s}> at line {d} jumps into the scope of '{s}'", .{ gtname, gt.line, varname });
     try lcode.luaK_semerror(ls, msg);
 }
 
@@ -780,7 +780,7 @@ fn undefgoto(ls: *llex.LexState, gt: *llex.Labeldesc) !void {
     std.debug.assert(!eqstr(gt.name, ls.brkn));
     const gtname = if (gt.name) |gn| gn.s else "";
     var buf: [256]u8 = undefined;
-    const msg = std.fmt.bufPrint(&buf, "no visible label '{s}' for <goto> at line {d}", .{ gtname, gt.line }) catch "no visible label for <goto>";
+    const msg = lua.fmtMsg(&buf, "no visible label for <goto>", "no visible label '{s}' for <goto> at line {d}", .{ gtname, gt.line });
     try lcode.luaK_semerror(ls, msg);
 }
 
@@ -788,7 +788,7 @@ fn checkrepeated(ls: *llex.LexState, name: *lua.lua_TString) !void {
     const lb = findlabel(ls, name, ls.fs.?.firstlabel);
     if (lb) |l| {
         var buf: [256]u8 = undefined;
-        const msg = std.fmt.bufPrint(&buf, "label '{s}' already defined on line {d}", .{ name.s, l.line }) catch "label already defined";
+        const msg = lua.fmtMsg(&buf, "label already defined", "label '{s}' already defined on line {d}", .{ name.s, l.line });
         try lcode.luaK_semerror(ls, msg);
     }
 }
@@ -1936,7 +1936,7 @@ pub fn luaD_protectedparser(
             const len = std.mem.indexOfScalar(u8, &short_src, 0) orelse short_src.len;
             const src_str = short_src[0..len];
             var buf: [512]u8 = undefined;
-            const formatted = std.fmt.bufPrint(&buf, "{s}:{d}: {s}", .{ src_str, ls.linenumber, msg }) catch msg;
+            const formatted = lua.fmtMsg(&buf, msg, "{s}:{d}: {s}", .{ src_str, ls.linenumber, msg });
             _ = lua.lua_pushstring(L, formatted);
         } else {
             _ = lua.lua_pushstring(L, "syntax error");

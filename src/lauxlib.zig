@@ -36,7 +36,7 @@ pub fn luaL_argexpected(L: *lua.lua_State, cond: bool, arg: i32, tname: []const 
         const actual_type = lua.lua_type(L, arg);
         const actual_name = lua.lua_typename(actual_type);
         var buf: [256]u8 = undefined;
-        const msg = std.fmt.bufPrint(&buf, "{s} expected, got {s}", .{ tname, actual_name }) catch "type mismatch";
+        const msg = lua.fmtMsg(&buf, "type mismatch", "{s} expected, got {s}", .{ tname, actual_name });
         return luaL_argerror(L, arg, msg);
     }
 }
@@ -255,7 +255,7 @@ pub fn luaL_argerror(L: *lua.lua_State, arg: i32, extramsg: []const u8) anyerror
     var ar: lua.lua_Debug = undefined;
     if (lua.lua_getstack(L, 0, &ar) == 0) {
         var buf: [256]u8 = undefined;
-        const s = std.fmt.bufPrint(&buf, "bad argument #{d} ({s})", .{ arg, extramsg }) catch extramsg;
+        const s = lua.fmtMsg(&buf, extramsg, "bad argument #{d} ({s})", .{ arg, extramsg });
         return luaL_error(L, s);
     }
     _ = lua.lua_getinfo(L, "nt", &ar) catch 0;
@@ -271,7 +271,7 @@ pub fn luaL_argerror(L: *lua.lua_State, arg: i32, extramsg: []const u8) anyerror
                 if (actual_arg == 0) {
                     const fn_name = if (ar.name) |n| n else "?";
                     var buf: [256]u8 = undefined;
-                    const s = std.fmt.bufPrint(&buf, "calling '{s}' on bad self ({s})", .{ fn_name, extramsg }) catch extramsg;
+                    const s = lua.fmtMsg(&buf, extramsg, "calling '{s}' on bad self ({s})", .{ fn_name, extramsg });
                     return luaL_error(L, s);
                 }
             }
@@ -288,7 +288,7 @@ pub fn luaL_argerror(L: *lua.lua_State, arg: i32, extramsg: []const u8) anyerror
         }
     }
     var buf: [320]u8 = undefined;
-    const s = std.fmt.bufPrint(&buf, "bad {s} #{d} to '{s}' ({s})", .{ argword, actual_arg, fname, extramsg }) catch extramsg;
+    const s = lua.fmtMsg(&buf, extramsg, "bad {s} #{d} to '{s}' ({s})", .{ argword, actual_arg, fname, extramsg });
     if (name_pushed) {
         lua.lua_pop(L, 1);
     }
@@ -310,7 +310,7 @@ pub fn luaL_typeerror(L: *lua.lua_State, idx: i32, tname: []const u8) anyerror {
         typearg = lua.lua_typename(lua.lua_type(L, idx));
     }
     var buf: [256]u8 = undefined;
-    const s = std.fmt.bufPrint(&buf, "{s} expected, got {s}", .{ tname, typearg }) catch tname;
+    const s = lua.fmtMsg(&buf, tname, "{s} expected, got {s}", .{ tname, typearg });
     return luaL_argerror(L, idx, s);
 }
 
@@ -380,7 +380,7 @@ pub fn luaL_where(L: *lua.lua_State, level: i32) void {
         if (ar.currentline > 0) {
             const src = std.mem.sliceTo(&ar.short_src, 0);
             var buf: [256]u8 = undefined;
-            const s = std.fmt.bufPrint(&buf, "{s}:{d}: ", .{ src, ar.currentline }) catch "? ";
+            const s = lua.fmtMsg(&buf, "? ", "{s}:{d}: ", .{ src, ar.currentline });
             _ = lua.lua_pushstring(L, s);
             return;
         }
@@ -659,7 +659,7 @@ pub fn luaL_loadfilex(L: *lua.lua_State, filename: ?[]const u8, mode: []const u8
 
     const chunkname = if (filename) |fn_| blk: {
         var buf: [512]u8 = undefined;
-        const s = std.fmt.bufPrint(&buf, "@{s}", .{fn_}) catch "=stdin";
+        const s = lua.fmtMsg(&buf, "=stdin", "@{s}", .{fn_});
         break :blk s;
     } else "=stdin";
 
@@ -921,7 +921,7 @@ pub fn luaL_fileresult(L: *lua.lua_State, stat: bool, fname: ?[]const u8, eno: i
         const msg = if (eno != 0) strerrorName(eno) else "(no extra info)";
         if (fname) |fn_| {
             var buf: [256]u8 = undefined;
-            const full = std.fmt.bufPrint(&buf, "{s}: {s}", .{ fn_, msg }) catch "error";
+            const full = lua.fmtMsg(&buf, "error", "{s}: {s}", .{ fn_, msg });
             _ = lua.lua_pushstring(L, full);
         } else {
             _ = lua.lua_pushstring(L, msg);

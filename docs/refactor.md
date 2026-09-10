@@ -47,7 +47,7 @@ sources:
 | D2 | **CallInfo-unwind loop copy-pasted 6×** ("destroy CIs from `L.ci` down to `old_ci`") | `lua.zig`:957 (`precall`), :3856 (`lua_pcallk`), :4448 (`precover`); `ltm.zig`:143 (`luaD_call`), :186, :218 | one inline loop in `luaD_call_func`/`luaC_…` — 3 sites max, no ltm copy |
 | D3 | **`close_one_slot`**: two ~30-line near-identical catch blocks (the `callTM2`/`callTM1` branches differ only in call shape) | `lua.zig` 475–540 | C inlines one `aux_close` path |
 | D4 | **`luaG_*` message builders**: seven functions, each ~80% identical boilerplate (fmt → `luaS_new` → push → return) | `lua.zig` 4062–4148 | C shares `luaG_typeerror`-family plumbing |
-| D5 | **`var buf: [128]u8 + std.fmt.bufPrint … catch "fallback"` idiom ×58** | `lua.zig` ×28, `lauxlib.zig` ×14, `lparser.zig` ×11, `llex.zig` ×5 | C uses one `buffprint` helper |
+| D5 | **`var buf: [N]u8 + std.fmt.bufPrint … catch "fallback"` idiom ×41** (verified: `lua.zig` ×23, `lauxlib.zig` ×8, `lparser.zig` ×10; the other 31 `bufPrint` uses are *different* families — `try`-propagating traceback sites, `if (bufPrint)` branches, the lexer's persistent `errmsg_buf`, and `lib/string/*`'s `string.format` implementation — and are out of scope) | `lua.zig`, `lauxlib.zig`, `lparser.zig` | C uses one `buffprint` helper |
 | D6 | **`LUAI_MAXCCALLS` constant defined twice** | `llimits.zig` (shared) **and** `lparser.zig:25` (local copy = 200) | single `luaconf.h` constant |
 | D7 | **C-call-limit check duplicated**: `luaD_call` re-checks `nCcalls` after `precall` already enforces it | `ltm.zig` 135–141 vs `lua.zig` 936–943 | review item: confirm vs C `luaD_call` (C checks *before* the call, not after) |
 
@@ -56,9 +56,11 @@ sources:
 Order = cheap/safe wins first, riskiest last:
 
 - **A5 → commit 1**: add one `fmtMsg` helper (the D5 idiom as a function:
-  format into a 128-byte buffer, return the fallback literal on
-  `bufPrint` error). Convert all 58 sites across the four files.
-  Mechanical; zero behavior change (fallbacks are the same strings).
+  `fmtMsg(buf, fallback, comptime fmt, args)` formats into the caller's
+  fixed buffer, returning `fallback` verbatim on overflow —
+  behavior-identical to the original `catch` expression). Convert all 41
+  D5-family sites in `lua.zig`/`lauxlib.zig`/`lparser.zig`. Mechanical;
+  zero behavior change (same buffers, same fallbacks).
 - **A6 → commit 2**: single-source `LUAI_MAXCCALLS` in `llimits.zig`;
   delete the `lparser.zig:25` local copy. While in `ltm.zig`, **review
   D7** against C `luaD_call` (C checks the limit before invoking the

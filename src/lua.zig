@@ -499,7 +499,7 @@ fn close_one_slot(L: *lua_State, abs: usize, err_val: ?TValue) anyerror!?TValue 
                     .lightud, .upval, .proto => "???",
                 };
                 var buf: [128]u8 = undefined;
-                const msg = std.fmt.bufPrint(&buf, "attempt to call a {s} value (metamethod 'close')", .{tname}) catch "attempt to call a bad value (metamethod 'close')";
+                const msg = fmtMsg(&buf, "attempt to call a bad value (metamethod 'close')", "attempt to call a {s} value (metamethod 'close')", .{tname});
                 const ts = lstring.luaS_new(L, msg) catch {
                     return saved_err;
                 };
@@ -529,7 +529,7 @@ fn close_one_slot(L: *lua_State, abs: usize, err_val: ?TValue) anyerror!?TValue 
                     .lightud, .upval, .proto => "???",
                 };
                 var buf: [128]u8 = undefined;
-                const msg = std.fmt.bufPrint(&buf, "attempt to call a {s} value (metamethod 'close')", .{tname}) catch "attempt to call a bad value (metamethod 'close')";
+                const msg = fmtMsg(&buf, "attempt to call a bad value (metamethod 'close')", "attempt to call a {s} value (metamethod 'close')", .{tname});
                 const ts = lstring.luaS_new(L, msg) catch {
                     return saved_err;
                 };
@@ -1790,7 +1790,7 @@ pub fn tostringbuffFloat(n: f64, buff: *[128]u8) usize {
 
 pub fn luaO_tostringbuff(val: TValue, buff: *[128]u8) []const u8 {
     return switch (val) {
-        .integer => |i| std.fmt.bufPrint(buff, "{d}", .{i}) catch "",
+        .integer => |i| fmtMsg(buff, "", "{d}", .{i}),
         .number => |n| {
             if (std.math.isNan(n)) {
                 return "nan";
@@ -1803,6 +1803,16 @@ pub fn luaO_tostringbuff(val: TValue, buff: *[128]u8) []const u8 {
         .string => |s| if (s) |str| str.s else "",
         else => "",
     };
+}
+
+/// D5 dedupe (docs/refactor.md): shared "format into a fixed buffer, fall
+/// back to `fallback` on overflow" helper. Replaces the
+/// `std.fmt.bufPrint(&buf, fmt, args) catch "..."` idiom that was
+/// copy-pasted across lua.zig / lauxlib.zig / lparser.zig. Behavior is
+/// identical: the formatted slice is returned when it fits, otherwise
+/// `fallback` verbatim.
+pub fn fmtMsg(buf: []u8, fallback: []const u8, comptime fmt: []const u8, args: anytype) []const u8 {
+    return std.fmt.bufPrint(buf, fmt, args) catch fallback;
 }
 
 pub fn lua_tolstring(L: *lua_State, idx: i32, len: ?*usize) ?[]const u8 {
@@ -3986,7 +3996,7 @@ fn tvEqual(a: TValue, b: TValue) bool {
 /// Mirror PUC-Rio `varinfo`: locate `o` in the current Lua frame and build a
 /// description such as ` (field 'huge')` or ` (global 'x')`, written into `buf`.
 /// Returns the slice of `buf` used, or `""` if unknown.
-fn luaG_varinfo(L: *lua_State, o_ptr: *const TValue, buf: []u8) []u8 {
+fn luaG_varinfo(L: *lua_State, o_ptr: *const TValue, buf: []u8) []const u8 {
     var ci = L.ci orelse return "";
     if (!isLua(ci, L)) {
         ci = ci.previous orelse return "";
@@ -4004,7 +4014,7 @@ fn luaG_varinfo(L: *lua_State, o_ptr: *const TValue, buf: []u8) []u8 {
         if (opt_uv) |uv| {
             if (uv.v == o_ptr) {
                 const uname = upvalname(lcl.p, uv_idx);
-                return std.fmt.bufPrint(buf, " (upvalue '{s}')", .{uname}) catch "";
+                return fmtMsg(buf, "", " (upvalue '{s}')", .{uname});
             }
         }
     }
@@ -4030,7 +4040,7 @@ fn luaG_varinfo(L: *lua_State, o_ptr: *const TValue, buf: []u8) []u8 {
             if (opt_uv) |uv| {
                 if (tvEqual(uv.v.*, o_ptr.*)) {
                     const uname = upvalname(lcl.p, uv_idx);
-                    return std.fmt.bufPrint(buf, " (upvalue '{s}')", .{uname}) catch "";
+                    return fmtMsg(buf, "", " (upvalue '{s}')", .{uname});
                 }
             }
         }
@@ -4052,7 +4062,7 @@ fn luaG_varinfo(L: *lua_State, o_ptr: *const TValue, buf: []u8) []u8 {
     var name: ?[]const u8 = null;
     const kind = getobjname(p, currentpc(ci), reg, &name) orelse return "";
     if (name == null) return "";
-    return std.fmt.bufPrint(buf, " ({s} '{s}')", .{ kind, name.? }) catch "";
+    return fmtMsg(buf, "", " ({s} '{s}')", .{ kind, name.? });
 }
 
 /// Error when a value cannot be converted to an integer (bitwise/shift operand
@@ -4068,14 +4078,14 @@ pub fn luaG_errnnil(L: *lua_State, proto: *const lua_Proto, k: i32) !void {
         }
     }
     var buf: [256]u8 = undefined;
-    const msg = std.fmt.bufPrint(&buf, "global '{s}' already defined", .{globalname}) catch "global already defined";
+    const msg = fmtMsg(&buf, "global already defined", "global '{s}' already defined", .{globalname});
     return luaG_runerror(L, msg);
 }
 
 pub fn luaG_forerror(L: *lua_State, o: TValue, what: []const u8) !void {
     const t = ltm.luaT_objtypename(L, o);
     var msg: [256]u8 = undefined;
-    const mslice = std.fmt.bufPrint(&msg, "bad 'for' {s} (number expected, got {s})", .{ what, t }) catch "bad 'for' value";
+    const mslice = fmtMsg(&msg, "bad 'for' value", "bad 'for' {s} (number expected, got {s})", .{ what, t });
     return luaG_runerror(L, mslice);
 }
 
@@ -4083,7 +4093,7 @@ pub fn luaG_tointerror(L: *lua_State, o: TValue) !void {
     var buf: [256]u8 = undefined;
     const info = luaG_varinfo(L, &o, &buf);
     var msg: [320]u8 = undefined;
-    const mslice = std.fmt.bufPrint(&msg, "number{s} has no integer representation", .{info}) catch "number has no integer representation";
+    const mslice = fmtMsg(&msg, "number has no integer representation", "number{s} has no integer representation", .{info});
     return luaG_runerror(L, mslice);
 }
 
@@ -4096,7 +4106,7 @@ pub fn luaG_typeerrorPtr(L: *lua_State, o: *const TValue, op: []const u8) !void 
     const info = luaG_varinfo(L, o, &buf);
     const t = ltm.luaT_objtypename(L, o.*);
     var msg: [320]u8 = undefined;
-    const mslice = std.fmt.bufPrint(&msg, "attempt to {s} a {s} value{s}", .{ op, t, info }) catch "attempt to perform operation on value";
+    const mslice = fmtMsg(&msg, "attempt to perform operation on value", "attempt to {s} a {s} value{s}", .{ op, t, info });
     return luaG_runerror(L, mslice);
 }
 
@@ -4110,7 +4120,7 @@ pub fn luaG_callerror(L: *lua_State, o: TValue) !void {
     var msg: [320]u8 = undefined;
     if (kind) |k| {
         if (fname) |fnm| {
-            const mslice = std.fmt.bufPrint(&msg, "attempt to call a {s} value ({s} '{s}')", .{ t, k, fnm }) catch "attempt to call a non-function value";
+            const mslice = fmtMsg(&msg, "attempt to call a non-function value", "attempt to call a {s} value ({s} '{s}')", .{ t, k, fnm });
             return luaG_runerror(L, mslice);
         }
     }
@@ -4141,9 +4151,9 @@ pub fn luaG_ordererror(L: *lua_State, p1: TValue, p2: TValue) !void {
     const t2 = ltm.luaT_objtypename(L, p2);
     var msg: [256]u8 = undefined;
     const mslice = if (std.mem.eql(u8, t1, t2))
-        std.fmt.bufPrint(&msg, "attempt to compare two {s} values", .{t1}) catch "attempt to compare values"
+        fmtMsg(&msg, "attempt to compare values", "attempt to compare two {s} values", .{t1})
     else
-        std.fmt.bufPrint(&msg, "attempt to compare {s} with {s}", .{ t1, t2 }) catch "attempt to compare values";
+        fmtMsg(&msg, "attempt to compare values", "attempt to compare {s} with {s}", .{ t1, t2 });
     return luaG_runerror(L, mslice);
 }
 
@@ -4165,7 +4175,7 @@ pub fn lua_load(L: *lua_State, reader: lua_Reader, dt: ?*anyopaque, chunkname: [
     if (first_slice == null or size == 0 or first_slice.?.len == 0) {
         if (std.mem.indexOfScalar(u8, mode, 't') == null) {
             var msg: [128]u8 = undefined;
-            const m = std.fmt.bufPrint(&msg, "attempt to load a text chunk (mode is '{s}')", .{mode}) catch "attempt to load a text chunk";
+            const m = fmtMsg(&msg, "attempt to load a text chunk", "attempt to load a text chunk (mode is '{s}')", .{mode});
             _ = lua_pushstring(L, m);
             if (L.top > initial_top) {
                 const err_val = L.stack[L.top - 1];
@@ -4191,7 +4201,7 @@ pub fn lua_load(L: *lua_State, reader: lua_Reader, dt: ?*anyopaque, chunkname: [
     if (c == '\x1b') {
         if (std.mem.indexOfScalar(u8, mode, 'b') == null and std.mem.indexOfScalar(u8, mode, 'B') == null) {
             var msg: [128]u8 = undefined;
-            const m = std.fmt.bufPrint(&msg, "attempt to load a binary chunk (mode is '{s}')", .{mode}) catch "attempt to load a binary chunk";
+            const m = fmtMsg(&msg, "attempt to load a binary chunk", "attempt to load a binary chunk (mode is '{s}')", .{mode});
             _ = lua_pushstring(L, m);
             if (L.top > initial_top) {
                 const err_val = L.stack[L.top - 1];
@@ -4204,13 +4214,13 @@ pub fn lua_load(L: *lua_State, reader: lua_Reader, dt: ?*anyopaque, chunkname: [
             if (e == error.OutOfMemory) return LUA_ERRMEM;
             var msg_buf: [256]u8 = undefined;
             const msg = switch (e) {
-                error.TruncatedChunk => std.fmt.bufPrint(&msg_buf, "{s}: truncated chunk", .{chunkname}) catch "truncated chunk",
-                error.IntegerOverflow => std.fmt.bufPrint(&msg_buf, "{s}: integer overflow", .{chunkname}) catch "integer overflow",
-                error.VersionMismatch => std.fmt.bufPrint(&msg_buf, "{s}: bad binary format (version mismatch)", .{chunkname}) catch "bad binary format (version mismatch)",
-                error.FormatMismatch => std.fmt.bufPrint(&msg_buf, "{s}: bad binary format (format mismatch)", .{chunkname}) catch "bad binary format (format mismatch)",
-                error.BadHeader, error.CorruptedChunk => std.fmt.bufPrint(&msg_buf, "{s}: bad binary format (corrupted chunk)", .{chunkname}) catch "bad binary format (corrupted chunk)",
-                error.TypeSizeMismatch, error.TypeFormatMismatch => std.fmt.bufPrint(&msg_buf, "{s}: bad binary format (size mismatch)", .{chunkname}) catch "bad binary format (size mismatch)",
-                else => std.fmt.bufPrint(&msg_buf, "{s}: corrupted chunk", .{chunkname}) catch "corrupted chunk",
+                error.TruncatedChunk => fmtMsg(&msg_buf, "truncated chunk", "{s}: truncated chunk", .{chunkname}),
+                error.IntegerOverflow => fmtMsg(&msg_buf, "integer overflow", "{s}: integer overflow", .{chunkname}),
+                error.VersionMismatch => fmtMsg(&msg_buf, "bad binary format (version mismatch)", "{s}: bad binary format (version mismatch)", .{chunkname}),
+                error.FormatMismatch => fmtMsg(&msg_buf, "bad binary format (format mismatch)", "{s}: bad binary format (format mismatch)", .{chunkname}),
+                error.BadHeader, error.CorruptedChunk => fmtMsg(&msg_buf, "bad binary format (corrupted chunk)", "{s}: bad binary format (corrupted chunk)", .{chunkname}),
+                error.TypeSizeMismatch, error.TypeFormatMismatch => fmtMsg(&msg_buf, "bad binary format (size mismatch)", "{s}: bad binary format (size mismatch)", .{chunkname}),
+                else => fmtMsg(&msg_buf, "corrupted chunk", "{s}: corrupted chunk", .{chunkname}),
             };
             _ = lua_pushstring(L, msg);
             if (L.top > initial_top) {
@@ -4235,7 +4245,7 @@ pub fn lua_load(L: *lua_State, reader: lua_Reader, dt: ?*anyopaque, chunkname: [
     } else {
         if (std.mem.indexOfScalar(u8, mode, 't') == null) {
             var msg: [128]u8 = undefined;
-            const m = std.fmt.bufPrint(&msg, "attempt to load a text chunk (mode is '{s}')", .{mode}) catch "attempt to load a text chunk";
+            const m = fmtMsg(&msg, "attempt to load a text chunk", "attempt to load a text chunk (mode is '{s}')", .{mode});
             _ = lua_pushstring(L, m);
             if (L.top > initial_top) {
                 const err_val = L.stack[L.top - 1];
