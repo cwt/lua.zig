@@ -34,7 +34,7 @@ stale_after: 2026-12-31T00:00:00Z
 | P2 (loop-local pc + hookmask) | ✅ DONE (2026-09-10) — 14.66s wall; instr count 403B (see P2 note) |
 | P3 (`getLibm` pointer) | ✅ DONE (2026-09-10) — 403B → 394B, 13.8s wall |
 | P4 (`luaL_checknumber` fast path) | ✅ DONE (2026-09-10) — 394B → 375B, 12.7s wall |
-| Remaining: RC1/RC5 deep pass (D1–D4) | 📋 PLANNED (not implemented) — strip the `!` ABI off the hot VM helper calls |
+| RC1/RC5 deep pass (D1–D4) | D1 ✅ done · D2 ⬅️ attempted+reverted · D3/D4 deferred |
 | Tracking | [BUG-174](bugs/174.md) |
 
 ## Benchmark
@@ -309,42 +309,73 @@ its C-call plumbing.
 
 **Ordered steps (minimal-change discipline; one commit each):**
 
-- **D1 — Measure & attribute (read-only).** Per-helper table: for each
-  hot `call <helper>` in `lvm.run`, count the ABI-slot reload + branch
-  instructions and % of `lvm.run`. Confirm which helpers carry the cost
-  (expect `precall`/`poscall` dominant on the pi benchmark; `luaT_*` on
-  table/metamethod workloads). No code change; updates this document.
-- **D2 — `precall`/`poscall` fast/slow split (the P4 pattern for the VM
-  call machinery).** Add non-error entry points that return a plain status
-  (e.g. `0` = C-call completed inline, `1` = Lua frame set up, `2` =
-  yield, `3` = error) with the result (`*CallInfo`) / error object written
-  to an out-param / side-channel (`L.err`). The hot `.CALL`/`.TAILCALL`/
-  `.RETURN` arms branch on the plain register (predictable-not-taken on
-  error/yield) instead of paying the `!` ABI + slot reload. The rare
-  error/yield path is behavior-identical to today. Est. −20–40B on the pi
-  benchmark. **Risk: HIGH** — coroutine yield, OOM, `StackOverflow`,
-  `__close`, and hook semantics must be preserved exactly. Tripwires:
-  `locals.lua`, corolib tests, `cstack`, the full upstream suite, 0 leaks.
+- **D1 — Measure & attribute (read-only) ✅ DONE (2026-09-10):**
+  - Frame: `sub rsp, 0x1158` = 4440B (was 4696B pre-P1..P4 — P1–P4
+    shrank it ~256B).
+  - The dominant residual hot line in `lvm.run` is the **error-union ABI
+    slot of `precall`**: `movzx edx, word [rbp-0xba8]` + `test` + `jne`
+    immediately after `call lua.precall` (8.26% of `lvm.run` samples in
+    the P4 build). `precall` returns `!?*CallInfo` (value + error), whose
+    caller-reserved return slot is reloaded after every call. The `.CALL`
+    arm (2×/iter on the pi benchmark: `math.log`, `math.floor`) and
+    `.TFORCALL` are the hot sites.
+  - **Important ABI nuance found:** the `!void` helpers (`poscall`,
+    `closeupvals`) use a *cheap* register ABI (error in `ax`,
+    `test ax,ax` + `jne` — no stack slot). Only the value-carrying
+    `!?*CallInfo` return of `precall` pays the slot reload. So D2
+    targets `precall` only; `poscall`/`closeupvals` are already near-C
+    cheap at the ABI level.
+  - The per-iteration loop-state frame mirrors (`mov [rbp-0x38], pc+1`
+    ≈1.2% in P4) are the RC1 frame-pinning residual; the TValue tag
+    byte-loads are intrinsic (C pays them too).
+- **D2 — `precall` fast/slow split ⬅️ ATTEMPTED, REVERTED (2026-09-10).**
+  Implemented `precallStatus` (enum + `*?*CallInfo`/`*anyerror`
+  out-params; the `!` `precall` became a thin wrapper; all three VM
+  sites — `.CALL`, TAILCALL-`.c`, `.TFORCALL` — converted), with
+  behavior-identical semantics (182/182 tests, 20/0/0 upstream,
+  byte-identical pi output). **Measured: −0.8B instructions, +0.2s
+  wall (12.74 → 12.95s) — the −20..−40B projection was falsified.**
+  Re-disasm: the ABI slot reloads are indeed gone, but the backend
+  re-spilled: the back-edge now mirrors `ci`/`base`/`pc+1` into the
+  frame every iteration (`lea r10,[rbx+1]` 4.65% +
+  `mov [rbp-0x40], r10` 4.75% + 2 more stores), offsetting the saving.
+  **Lesson:** removing one helper's return-ABI slot does not reduce the
+  overall register pressure of `lvm.run` enough to stop the loop-state
+  frame mirrors (the RC1 effect); the extra out-params even raised
+  pressure. Reverted to the P4 state (375B / 12.7s, the best achieved).
 - **D3 — `luaT_*` + `closeupvals`/`checkclosemth` fast paths.** The
   no-metamethod / no-to-be-closed case is pure (no user code, no error) —
-  return the result directly; only fall through to the `!` slow path when a
-  metamethod runs or a `__close` can raise. Est. −10–20B on
+  return the result directly; only fall through to the `!` slow path when
+  a metamethod runs or a `__close` can raise. Est. −10–20B on
   table/metamethod workloads (near-zero on pi). **Risk: MEDIUM.**
-- **D4 — Frame shrink / register pinning (measure-driven, optional).**
-  After D2–D3, re-check the frame size; if it is still large, restructure
-  to cut live-range overlap so the backend pins the loop state. May be
-  automatic once the ABI slots are gone. **Low confidence; purely
-  empirical.**
+  *Status: deferred — D2's lesson (out-params raise register pressure,
+  and pi doesn't execute these helpers anyway) suggests the expected
+  benefit on the pi benchmark is ~0; only worthwhile for
+  metatable-heavy workloads. Not attempted.*
+- **D4 — Frame shrink / register pinning (the real RC1 lever).** The D2
+  attempt showed the residual cost is the backend keeping loop-state
+  (`ci`/`base`/`pc`) mirrored into the 4.4KB frame every iteration.
+  Closing it needs to reduce `run`'s *global* register pressure (fewer
+  simultaneously-live values across the 57 arms + helper calls) or split
+  `run` so the register allocator can pin the loop state — a structural
+  change, low confidence, high effort. **Out of the current scope;
+  recorded as the remaining work on BUG-174.**
 
 **Verification per D-step:** `zig build` + `zig build test` (182, 0
 leaks) + `./run_testes.sh` (must stay 20 PASS / 0 FAIL / 0 CRASH) +
 pi benchmark (wall + `perf stat -e instructions`) + re-disasm to confirm
 the ABI-slot reloads are gone from the hot arms.
 
-**Projection (optimistic):** 375B → ~330–350B / ~11–12s (~1.35–1.45× C).
-Full parity with the C reference (192B / 8.2s) is not expected from this
-pass; the intrinsic TValue tag loads and Zig's `anyerror` design floor
-the instruction count above C's longjmp model.
+**Projection (revised post-D2):** D2's revert means the post-pass state
+stays at **375B / 12.7s (≈1.55× C)** — the best achieved. The original
+"375B → ~330–350B" projection is abandoned: the D2 attempt showed the
+residual cost is the backend's loop-state frame mirroring (RC1 register
+pressure), which single-helper ABI changes do not relieve. Any further
+gain requires the D4 structural pass (split / pressure-reduction of
+`lvm.run`), which is a bigger, lower-confidence effort. Full parity with
+the C reference (192B / 8.2s) is not expected from any minimal change;
+the intrinsic TValue tag loads and Zig's `anyerror` design floor the
+instruction count above C's longjmp model.
 
 ## Verification Protocol (per item)
 

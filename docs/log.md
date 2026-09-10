@@ -6,6 +6,39 @@ tags: [log, changelog]
 timestamp: 2026-09-10T23:55:00Z
 ---
 
+## 2026-09-10 — D1+D2 (BUG-174): measured and attempted the precall ABI split; reverted D2
+
+- **D1 (measure & attribute, read-only)** on the P4 build (375B / 12.7s):
+  - Frame is `sub rsp, 0x1158` = 4440B (~40× the C reference's 104B).
+  - Dominant residual hot line: the `!` error-union ABI slot of
+    `precall` — `movzx edx, word [rbp-0xba8]` + `test` + `jne` right
+    after `call lua.precall` (8.26% of `lvm.run` samples), executed 2×
+    per pi iteration (.CALL for `math.log` and `math.floor`).
+  - ABI nuance: `!void` helpers (`poscall`/`closeupvals`) already use a
+    cheap register ABI (`test ax,ax; jne`) — only the value-carrying
+    `!?*CallInfo` return of `precall` pays the stack-slot reload.
+- **D2 (attempted):** added `precallStatus` (enum status +
+  `*?*CallInfo`/`*anyerror` out-params; `precall` became a thin `!`
+  wrapper; the three VM sites converted). Behavior-identical: 182/182
+  tests, 20/0/0 upstream, byte-identical pi output.
+- **D2 result: REVERTED.** Measured −0.8B instructions (375.6 → 374.8B,
+  the plan's −20..−40B estimate was falsified) and **+0.2s wall**
+  (12.74 → 12.95s). Re-disasm: the ABI slot reloads are gone, but the
+  backend re-spilled — the back-edge now mirrors `ci`/`base`/`pc+1`
+  into the frame every iteration (the `lea r10,[rbx+1]` +
+  `mov [rbp-0x40], r10` pair ≈ 9.4% of `lvm.run` samples vs ≈1.2% in
+  P4), offsetting the saving. **Lesson:** removing one helper's
+  return-ABI slot does not lower `lvm.run`'s global register pressure
+  enough to stop the loop-state frame mirrors; extra out-params raise
+  pressure. The real lever is D4 (structural pressure reduction /
+  register pinning of the interpreter frame) — deferred, low confidence.
+- D3 (`luaT_*`/`closeupvals` fast paths) deferred: pi doesn't execute
+  those helpers, and D2's lesson suggests the out-param pattern's
+  register-pressure cost may eat the benefit; only worthwhile for
+  metatable-heavy workloads.
+- State: P4 remains the best achieved (375B / 12.7s ≈ 1.55× C); the
+  reverted D2 code is gone from the tree (`hg revert`), build clean.
+
 ## 2026-09-10 — RC1 deep pass (D1–D4) planned (BUG-174); not implemented
 
 - The P1–P4 minimal-change pass is complete (425B → 375B, 15.5s → 12.7s,
