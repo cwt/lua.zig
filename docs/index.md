@@ -34,6 +34,7 @@ timestamp: 2026-09-09T23:00:00Z
 ### Project Management
 - [Roadmap](roadmap.md) — Phase-based development plan, dependencies between layers
 - [Performance](performance.md) — 2× perf gap vs C reference: root-cause findings (RC1–RC5) + minimal-change fix plan P1–P4 (BUG-174)
+- [Refactor](refactor.md) — `lua.zig` breakdown & deduplication plan: verified duplication (D1–D7) + Phase A (dedupe) / Phase B (mirror-the-C-file-layout split)
 - [Bugs & Fixes](bugs/index.md) — Chronological lessons from debugging sessions (conformance fixes, root causes)
 - [Log](log.md) — Running modification log
 
@@ -41,7 +42,7 @@ timestamp: 2026-09-09T23:00:00Z
 
 | Module | Zig source | C reference | Status |
 |--------|-----------|-------------|--------|
-| Core API | `src/lua.zig` | `lua/lapi.c` + `lua/lua.h` | ✅ All core C API including coroutines |
+| Core API | `src/lua.zig` | `lua/lapi.c` + `lua/lua.h` | ✅ All core C API including coroutines — 6253-line monolith packing 7 C modules; planned breakdown → [refactor.md](refactor.md) |
 | Limits | `src/llimits.zig` | `lua/llimits.h` | ✅ Constants only |
 | Config | `src/luaconf.zig` | `lua/luaconf.h` | ✅ Platform config |
 | State | `src/lstate.zig` | `lua/lstate.c` + `lua/lstate.h` | ✅ Deleted (merged into `lua.zig`) |

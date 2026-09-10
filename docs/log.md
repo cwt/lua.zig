@@ -6,6 +6,33 @@ tags: [log, changelog]
 timestamp: 2026-09-10T23:55:00Z
 ---
 
+## 2026-09-10 — Refactor plan recorded: `lua.zig` breakdown + deduplication (`docs/refactor.md`)
+
+- `src/lua.zig` (6253 lines, ~21% of project LOC) is the one module that
+  does **not** mirror a single C reference file: it packs seven of them
+  (lapi + ldo + lgc + lstate + ldebug + lobject + the headers). A LOC
+  audit confirmed it is the only oversized file (lvm/lparser/lcode/
+  lauxlib/llex are all proportional to their C counterparts).
+- Duplication verified on the current tree: two separate number parsers
+  (`llex.zig` 326–474 vs `lua.zig` 5744–5902 — C shares one
+  `lobject.c` parser); the CallInfo-unwind loop copy-pasted 6×
+  (`lua.zig`:957/3856/4448 + `ltm.zig`:143/186/218);
+  `close_one_slot`'s two ~30-line identical catch blocks; seven
+  `luaG_*` message builders sharing ~80% boilerplate; the
+  `bufPrint`-with-fallback idiom ×58 across four files; and a duplicate
+  `LUAI_MAXCCALLS` constant (`lparser.zig:25` local copy).
+- Plan recorded in `docs/refactor.md`: **Phase A** (dedupe, 6 commits,
+  cheap-first ordering: bufPrint helper → constant single-source →
+  `close_one_slot` → `luaG_err` → `unwindCis` → number-parser
+  consolidation), then **Phase B** (breakdown into
+  `ldebug/lgc/ldo/lstate/lobject/lapi.zig` + a slim types-only `lua.zig`
+  hub with a re-export tail, hub-and-spoke import cycles matching the
+  codebase's existing style). Pure refactoring: zero semantic change,
+  gated per commit by build + 182 tests + 0 leaks + upstream 20/0/0 +
+  byte-identical pi output + a **perf-invariance gate**
+  (instructions within ±5B of the 375.6B P4 baseline).
+- Not started; awaiting a go-ahead to begin Phase A.
+
 ## 2026-09-10 — D1+D2 (BUG-174): measured and attempted the precall ABI split; reverted D2
 
 - **D1 (measure & attribute, read-only)** on the P4 build (375B / 12.7s):
