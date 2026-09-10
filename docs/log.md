@@ -6,6 +6,30 @@ tags: [log, changelog]
 timestamp: 2026-09-10T23:55:00Z
 ---
 
+## 2026-09-10 — Refactor B4: `ldo.zig` carved out of `lua.zig` (Phase B: 4/7)
+
+- Pure move (docs/refactor.md Phase B policy): the call/continuation
+  mechanics (the `ldo.c` port) moved verbatim from `lua.zig` into the
+  new `src/ldo.zig` (935 lines, 3 chunks): the CallInfo pool +
+  upvalue-close + hooks region (`close_one_slot`, `luaF_closeupval`,
+  `closeupvals`, `luaD_hook`/`luaG_traceexec`, `poscall`,
+  `allocCallInfo`/`freeCallInfo`/`freeAllCallInfos`/`recycleCallInfos`,
+  `unwindCis`, `PF_VAHID`/`PF_VATAB`, `precall`), the resume/yield
+  block (`lua_yieldk`/`lua_yield`, `resume_error`,
+  `completePcallRecovery`, `precover`, `unroll`, `do_resume`,
+  `lua_resume`, `lua_status`, `lua_isyieldable`), and the error
+  entry points (`luaG_errormsg`, `lua_error`). `lua.zig` 4544 -> 3633
+  lines; 24 symbols re-exported so every call site (lvm, ltm, corolib,
+  baselib, oslib, lauxlib, lgc, tests) keeps its `lua.` qualification.
+- Mechanical qualification + visibility bumps only: `lua.` prefixes on
+  lua.zig-side names; direct `lvm`/`ltm`/`llimits`/`lstring` imports in
+  ldo.zig; `closeCallFailed`/`reserveErrorStack`/`close_one_slot`/
+  `recycleCallInfos` exposed pub (no signature changes).
+- Verification: 188/188 unit tests; upstream PASS 20 / FAIL 0;
+  `tests/pi-5.5.lua` byte-identical; perf gate 375.59B instructions
+  (P4 baseline 375.6B - invariant). §0.1: move + qualification, no
+  semantic edits.
+
 ## 2026-09-10 — Refactor B2: `lgc.zig` carved out of `lua.zig` (Phase B: 2/7)
 
 - Pure move (docs/refactor.md Phase B policy): the GC engine (the
