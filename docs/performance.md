@@ -34,7 +34,7 @@ stale_after: 2026-12-31T00:00:00Z
 | P2 (loop-local pc + hookmask) | ✅ DONE (2026-09-10) — 14.66s wall; instr count 403B (see P2 note) |
 | P3 (`getLibm` pointer) | ✅ DONE (2026-09-10) — 403B → 394B, 13.8s wall |
 | P4 (`luaL_checknumber` fast path) | ✅ DONE (2026-09-10) — 394B → 375B, 12.7s wall |
-| Remaining: RC1 frame/register-pinning | ⏳ DEEPER PASS — out of the minimal-change scope |
+| Remaining: RC1/RC5 deep pass (D1–D4) | 📋 PLANNED (not implemented) — strip the `!` ABI off the hot VM helper calls |
 | Tracking | [BUG-174](bugs/174.md) |
 
 ## Benchmark
@@ -103,6 +103,13 @@ its C-call plumbing.
   10.3%, `savedpc` store 4.6%, `gc_running` load 4.7%, `gccount` jbe 4.9%,
   bounds `cmpq` 3.9%, `hookmask` load+branch 4.2%+1.1% ≈ **~35% local
   (~22% of total runtime ≈ 95B of 425B)** vs ~15B for the same work in C.
+- **Status update (post P1–P4):** the per-instruction loop-head costs above
+  are GONE — P1 removed the GC check and P2 pinned `pc`/`hookmask` in
+  registers (the back-edge is now a register compare + register hook test).
+  What remains is the **error-union ABI slot of the hot helper calls**
+  (`precall`/`poscall`/`luaT_*`/`closeupvals`/`checkclosemth`) and the
+  still-large frame — see the "RC1 deep pass (D1–D4)" plan below. The
+  TValue tag byte-loads are intrinsic and shared with the C reference.
 
 ### RC2 — per-instruction GC check is a deviation from the reference
 
@@ -270,14 +277,74 @@ its C-call plumbing.
   reference; 182/182 unit tests, 0 leaks; upstream suite
   20 PASS / 0 FAIL / 0 CRASH.
 - **Remaining gap vs C (192B / 8.2s):** `lvm.run` is now the dominant
-  single frame (~60% of samples); its cost is the RC1 4.7KB interpreter
-  frame / register-pinning issue — the deeper second-pass work explicitly
-  out of scope for this minimal-change pass.
+  single frame (~60% of samples). See the RC1 deep pass (D1–D4) below for
+  the plan to close it.
 
-### Explicitly NOT doing this pass
+### RC1 deep pass (D1–D4) — plan, NOT yet implemented
 
-- Opcode body rewrites, `TValue` layout changes, GC engine changes,
-  `precall`/`poscall` restructuring, backend register-pinning workarounds.
+**Refined root cause (post-P4 disasm, `perf annotate` on the 375B build):**
+- The `lvm.run` back-edge is already register-pinned (P2): `pc`/`hookmask`
+  are register compares (`jae`/`testb`), not frame reloads. The loop-
+  invariant TValue tag byte-loads (`movzx …, byte [base+0x8]`) are
+  intrinsic to Lua's stack-in-memory model — the C reference pays the same
+  byte-loads.
+- The frame shrank 0x1258 → **0x1158 (4440B)** but is still ~40× the C
+  reference's 104B. The dominant *residual* hot cost is the **error-union
+  return ABI of the hot helper calls**: the 8.26% line
+  `movzx edx, word [rbp-0xba8]` sits immediately after
+  `call lua.precall` (it reloads the caller-reserved `anyerror` slot).
+  `lvm.run` makes ~354 `call`s, top targets: `poscall` (×8), `precall`
+  (×6), `closeupvals` (×4), `checkclosemth` (×4), `getnumargs` (×6),
+  `ltable.set` (×4). **This is RC5 manifesting inside the VM** — C's
+  `luaD_precall`/`luaD_poscall` are `void` and throw via `longjmp`, so the
+  hot path is a single predictable branch, not a value-carrying error
+  return.
+- Therefore the RC1 deep pass is, mechanically, an **RC5 pass**: remove
+  the `!` error-union ABI from the hot VM helper-call paths (the P4
+  fast/slow-split idea, applied to `precall`/`poscall`/`luaT_*`/
+  `closeupvals`/`checkclosemth`). As the ABI slots and their live error
+  values disappear, the 4.4KB frame should shrink and the backend should
+  be able to pin `L`/`ci`/`base`/`G`/`proto` in callee-saved registers
+  (the C model) — the actual RC1 win.
+
+**Ordered steps (minimal-change discipline; one commit each):**
+
+- **D1 — Measure & attribute (read-only).** Per-helper table: for each
+  hot `call <helper>` in `lvm.run`, count the ABI-slot reload + branch
+  instructions and % of `lvm.run`. Confirm which helpers carry the cost
+  (expect `precall`/`poscall` dominant on the pi benchmark; `luaT_*` on
+  table/metamethod workloads). No code change; updates this document.
+- **D2 — `precall`/`poscall` fast/slow split (the P4 pattern for the VM
+  call machinery).** Add non-error entry points that return a plain status
+  (e.g. `0` = C-call completed inline, `1` = Lua frame set up, `2` =
+  yield, `3` = error) with the result (`*CallInfo`) / error object written
+  to an out-param / side-channel (`L.err`). The hot `.CALL`/`.TAILCALL`/
+  `.RETURN` arms branch on the plain register (predictable-not-taken on
+  error/yield) instead of paying the `!` ABI + slot reload. The rare
+  error/yield path is behavior-identical to today. Est. −20–40B on the pi
+  benchmark. **Risk: HIGH** — coroutine yield, OOM, `StackOverflow`,
+  `__close`, and hook semantics must be preserved exactly. Tripwires:
+  `locals.lua`, corolib tests, `cstack`, the full upstream suite, 0 leaks.
+- **D3 — `luaT_*` + `closeupvals`/`checkclosemth` fast paths.** The
+  no-metamethod / no-to-be-closed case is pure (no user code, no error) —
+  return the result directly; only fall through to the `!` slow path when a
+  metamethod runs or a `__close` can raise. Est. −10–20B on
+  table/metamethod workloads (near-zero on pi). **Risk: MEDIUM.**
+- **D4 — Frame shrink / register pinning (measure-driven, optional).**
+  After D2–D3, re-check the frame size; if it is still large, restructure
+  to cut live-range overlap so the backend pins the loop state. May be
+  automatic once the ABI slots are gone. **Low confidence; purely
+  empirical.**
+
+**Verification per D-step:** `zig build` + `zig build test` (182, 0
+leaks) + `./run_testes.sh` (must stay 20 PASS / 0 FAIL / 0 CRASH) +
+pi benchmark (wall + `perf stat -e instructions`) + re-disasm to confirm
+the ABI-slot reloads are gone from the hot arms.
+
+**Projection (optimistic):** 375B → ~330–350B / ~11–12s (~1.35–1.45× C).
+Full parity with the C reference (192B / 8.2s) is not expected from this
+pass; the intrinsic TValue tag loads and Zig's `anyerror` design floor
+the instruction count above C's longjmp model.
 
 ## Verification Protocol (per item)
 
@@ -315,11 +382,13 @@ its C-call plumbing.
     estimate; `luaL_checknumber` no longer appears as a hot frame.
 - The original "425B → ~310–330B / ~1.3–1.4× C" projection was optimistic;
   the actual post-pass state is **375B / 12.7s ≈ 1.55× C**. The remaining
-  gap to C is dominated by RC1 — the ~4.7KB `lvm.run` interpreter frame
-  that the backend does not pin into callee-saved registers (C uses a 104B
-  frame with pinned `L`/`ci`/`base`/`G`/`proto`). Closing that gap needs a
-  deeper register-pinning / structure-rewrite pass, explicitly out of the
-  minimal-change scope of BUG-174. See "Explicitly NOT doing this pass".
+  gap to C is dominated by RC1/RC5 — the `lvm.run` frame (~4.4KB vs C's
+  104B) kept large by the `!` error-union ABI of its hot helper calls
+  (`precall`/`poscall`/`luaT_*`/`closeupvals`/`checkclosemth`). The plan
+  to close it is the **"RC1 deep pass (D1–D4)"** section above (strip the
+  `!` ABI off the hot VM helper-call paths, P4-style; the frame should then
+  shrink and the backend pin the loop state). It is a deeper, higher-risk
+  pass, explicitly out of the minimal-change scope of the P1–P4 work.
 
 ## Related
 

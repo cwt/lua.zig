@@ -6,6 +6,40 @@ tags: [log, changelog]
 timestamp: 2026-09-10T23:55:00Z
 ---
 
+## 2026-09-10 — RC1 deep pass (D1–D4) planned (BUG-174); not implemented
+
+- The P1–P4 minimal-change pass is complete (425B → 375B, 15.5s → 12.7s,
+  ≈1.55× C). The residual gap to the C reference (192B / 8.2s) is now
+  understood more precisely via post-P4 `perf annotate` on a symbolized
+  build:
+  - The `lvm.run` back-edge is already register-pinned (P2): `pc`/
+    `hookmask` are register compares, and the per-instruction GC check is
+    gone (P1). The frame shrank 0x1258 → 0x1158 (4440B) but is still ~40×
+    the C reference's 104B.
+  - The dominant *residual* hot cost is the **error-union return ABI of
+    the hot helper calls** — the 8.26% line
+    `movzx edx, word [rbp-0xba8]` sits immediately after
+    `call lua.precall` (it reloads the caller-reserved `anyerror` slot).
+    `lvm.run` makes ~354 calls; top targets: `poscall` (×8), `precall`
+    (×6), `closeupvals` (×4), `checkclosemth` (×4), `getnumargs` (×6),
+    `ltable.set` (×4). This is **RC5 manifesting inside the VM** — C's
+    `luaD_precall`/`luaD_poscall` are `void` + `longjmp`, so their hot
+    path is a single predictable branch, not a value-carrying error
+    return.
+- **Plan recorded** (`docs/performance.md` "RC1 deep pass (D1–D4)"):
+  - **D1** measure & attribute the per-helper ABI-slot cost (read-only).
+  - **D2** `precall`/`poscall` fast/slow split (the P4 pattern for the VM
+    call machinery): non-error entry points returning a plain status +
+    out-param/side-channel; hot arms branch on the register. Est. −20–40B.
+    HIGH risk (coroutine yield, OOM, `__close`, hooks).
+  - **D3** `luaT_*` + `closeupvals`/`checkclosemth` no-metamethod /
+    no-TBC fast paths. Est. −10–20B. MEDIUM risk.
+  - **D4** frame shrink / register pinning (measure-driven, optional).
+  - Verification per step: build + 182 tests + 0 leaks + upstream
+    20/0/0 + pi benchmark + re-disasm. Projection 375B → ~330–350B.
+- Not implemented yet; BUG-174 stays OPEN with the D-pass as the
+  remaining work.
+
 ## 2026-09-10 — P4 (BUG-174): non-error tonumber fast path in `mathlib`
 
 - **Re-measure first (per the plan):** after P1–P3, `luaL_checknumber`
