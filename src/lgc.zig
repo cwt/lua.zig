@@ -51,7 +51,7 @@ pub fn registerGC(L: *lua.lua_State, val: anytype) !void {
         .userdata => |ud| @sizeOf(lua.lua_Udata) + ud.data.len + ud.uv.len * @sizeOf(lua.TValue),
         .proto => @sizeOf(lua.lua_Proto),
         .upval => @sizeOf(lua.UpVal),
-        .thread => |th| @sizeOf(lua.lua_State) + th.stack.len * @sizeOf(lua.TValue),
+        .thread => |th| (if (th.has_extraspace) @as(usize, @sizeOf(lua.LX)) else @as(usize, @sizeOf(lua.lua_State))) + th.stack.len * @sizeOf(lua.TValue),
     };
     g.totalbytes += sz + @sizeOf(lua.VMGCObject);
 }
@@ -283,7 +283,7 @@ pub fn freeGCObject(L: *lua.lua_State, gc: *lua.VMGCObject) void {
         .userdata => |ud| @sizeOf(lua.lua_Udata) + ud.data.len + ud.uv.len * @sizeOf(lua.TValue),
         .proto => @sizeOf(lua.lua_Proto),
         .upval => @sizeOf(lua.UpVal),
-        .thread => |th| @sizeOf(lua.lua_State) + th.stack.len * @sizeOf(lua.TValue),
+        .thread => |th| (if (th.has_extraspace) @as(usize, @sizeOf(lua.LX)) else @as(usize, @sizeOf(lua.lua_State))) + th.stack.len * @sizeOf(lua.TValue),
     };
     if (g.totalbytes >= sz + @sizeOf(lua.VMGCObject)) {
         g.totalbytes -= sz + @sizeOf(lua.VMGCObject);
@@ -343,7 +343,12 @@ pub fn freeGCObject(L: *lua.lua_State, gc: *lua.VMGCObject) void {
             lua.freeAllCallInfos(th);
             th.tbclist.deinit(th.allocator);
             th.allocator.free(th.stack);
-            th.allocator.destroy(th);
+            if (th.has_extraspace) {
+                const lx: *lua.LX = @fieldParentPtr("l", th);
+                th.allocator.destroy(lx);
+            } else {
+                th.allocator.destroy(th);
+            }
         },
     }
     L.allocator.destroy(gc);

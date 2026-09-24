@@ -117,8 +117,13 @@ pub fn lua_xmove(from: *lua.lua_State, to: *lua.lua_State, n: i32) void {
 
 pub fn lua_newthread(L: *lua.lua_State) !*lua.lua_State {
     const g = lua.G(L);
-    const L1 = try L.allocator.create(lua.lua_State);
-    errdefer L.allocator.destroy(L1);
+    const lx = try L.allocator.create(lua.LX);
+    errdefer L.allocator.destroy(lx);
+    lx.* = .{
+        .extra_ = [_]u8{0} ** lua.luaconf.LUA_EXTRASPACE,
+        .l = undefined,
+    };
+    const L1 = &lx.l;
     const stack = try L.allocator.alloc(lua.TValue, llimits.LUA_MINSTACK + 1);
     for (stack) |*item| {
         item.* = .{ .nil = {} };
@@ -151,10 +156,18 @@ pub fn lua_newthread(L: *lua.lua_State) !*lua.lua_State {
         .hookmask = 0,
         .transferinfo = .{ .ftransfer = 0, .ntransfer = 0 },
         .allocator = L.allocator,
+        .has_extraspace = true,
     };
     L1.ci = &L1.base_ci;
     L1.twups = g.thread_list;
     g.thread_list = L1;
+    if (g.mainthread) |mt| {
+        if (mt.has_extraspace) {
+            const src: [*]const u8 = @ptrCast(lua.lua_getextraspace(mt));
+            const dst: [*]u8 = @ptrCast(lua.lua_getextraspace(L1));
+            @memcpy(dst[0..lua.luaconf.LUA_EXTRASPACE], src[0..lua.luaconf.LUA_EXTRASPACE]);
+        }
+    }
     try lua.registerGC(L, L1);
     try growStack(L, L.top + 1);
     L.stack[L.top] = lua.TValue{ .thread = L1 };
@@ -515,7 +528,12 @@ pub fn lua_close(L: *lua.lua_State) void {
     L.tbclist.deinit(L.allocator);
     L.allocator.free(L.stack);
     if (is_c) {
-        alloc.destroy(L);
+        if (L.has_extraspace) {
+            const lx: *lua.LX = @fieldParentPtr("l", L);
+            alloc.destroy(lx);
+        } else {
+            alloc.destroy(L);
+        }
     }
 }
 
@@ -525,12 +543,18 @@ fn c_lua_close(L: *lua.lua_State) callconv(.c) void {
 
 fn c_luaL_newstate() callconv(.c) ?*lua.lua_State {
     const alloc = std.heap.c_allocator;
-    const L = alloc.create(lua.lua_State) catch return null;
+    const lx = alloc.create(lua.LX) catch return null;
+    lx.* = .{
+        .extra_ = [_]u8{0} ** lua.luaconf.LUA_EXTRASPACE,
+        .l = undefined,
+    };
+    const L = &lx.l;
     luaL_newstate(L, alloc) catch {
-        alloc.destroy(L);
+        alloc.destroy(lx);
         return null;
     };
     L.is_c_allocated = true;
+    L.has_extraspace = true;
     return L;
 }
 
@@ -541,10 +565,15 @@ fn c_lua_newstate(f: ?*const anyopaque, ud: ?*anyopaque, seed: c_uint) callconv(
     return c_luaL_newstate();
 }
 
+fn c_lua_getextraspace(L: *lua.lua_State) callconv(.c) ?*anyopaque {
+    return lua.lua_getextraspace(L);
+}
+
 comptime {
     @export(&c_lua_close, .{ .name = "lua_close" });
     @export(&c_luaL_newstate, .{ .name = "luaL_newstate" });
     @export(&c_lua_newstate, .{ .name = "lua_newstate" });
+    @export(&c_lua_getextraspace, .{ .name = "lua_getextraspace" });
 }
 
 // B7: moved from lua.zig hub.

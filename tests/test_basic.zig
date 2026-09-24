@@ -6348,6 +6348,7 @@ test "BUG-175: luaL_openselectedlibs preload and bitmasks" {
 extern fn luaL_newstate() ?*lua.lua_State;
 extern fn lua_close(L: *lua.lua_State) void;
 extern fn luaopen_math(L: *lua.lua_State) callconv(.c) i32;
+extern fn lua_getextraspace(L: *lua.lua_State) ?*anyopaque;
 
 test "BUG-176: C-ABI embedding entry points luaL_newstate, lua_close, luaopen_*" {
     const L = luaL_newstate() orelse return error.NullState;
@@ -6438,4 +6439,32 @@ test "BUG-178: luaL_checkunsigned, luaL_optunsigned, luaL_getmetatable, luaL_opt
 
     const opt_str_none = try lauxlib.luaL_opt(&L, lauxlib.luaL_checkstring, 6, "default");
     try std.testing.expectEqualStrings("default", opt_str_none);
+}
+
+test "BUG-179: LUA_EXTRASPACE and lua_getextraspace" {
+    try std.testing.expectEqual(@sizeOf(?*anyopaque), lua.LUA_EXTRASPACE);
+
+    const L = luaL_newstate() orelse return error.NullState;
+    defer lua_close(L);
+
+    // 1. Check lua_getextraspace via C export and Zig helper
+    const extra_c = lua_getextraspace(L) orelse return error.NullExtra;
+    const extra_zig = lua.lua_getextraspace(L);
+    try std.testing.expectEqual(extra_c, extra_zig);
+
+    // Write a pointer/value into extraspace
+    const extra_val: *usize = @ptrCast(@alignCast(extra_c));
+    extra_val.* = 0xCAFE_BABE_DEAD_BEEF;
+    try std.testing.expectEqual(@as(usize, 0xCAFE_BABE_DEAD_BEEF), extra_val.*);
+
+    // 2. New thread inherits extraspace from mainthread
+    const th = try lua.lua_newthread(L);
+    const extra_th_c = lua_getextraspace(th) orelse return error.NullExtra;
+    const extra_th_val: *usize = @ptrCast(@alignCast(extra_th_c));
+    try std.testing.expectEqual(@as(usize, 0xCAFE_BABE_DEAD_BEEF), extra_th_val.*);
+
+    // Modifying thread's extraspace does not affect parent's extraspace
+    extra_th_val.* = 0x1234_5678_9ABC_DEF0;
+    try std.testing.expectEqual(@as(usize, 0x1234_5678_9ABC_DEF0), extra_th_val.*);
+    try std.testing.expectEqual(@as(usize, 0xCAFE_BABE_DEAD_BEEF), extra_val.*);
 }

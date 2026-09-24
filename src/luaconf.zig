@@ -93,7 +93,7 @@ pub const LUA_COMPAT_LOOPVAR: bool = false;
 // ===================================================================
 
 // LUA_EXTRASPACE: size of raw memory area associated with a Lua state
-pub const LUA_EXTRASPACE: usize = @sizeOf(void);
+pub const LUA_EXTRASPACE: usize = @sizeOf(?*anyopaque);
 
 // LUA_IDSIZE: maximum size for the description of the source of a function
 pub const LUA_IDSIZE: usize = 60;

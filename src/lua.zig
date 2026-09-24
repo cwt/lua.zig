@@ -1,6 +1,7 @@
 const std = @import("std");
 const lprefix = @import("lprefix.zig");
 const llimits = @import("llimits.zig");
+pub const luaconf = @import("luaconf.zig");
 pub const lvm = @import("lvm.zig");
 pub const ltable = @import("ltable.zig");
 pub const lstring = @import("lstring.zig");
@@ -834,7 +835,20 @@ pub const lua_State = struct {
     },
     allocator: std.mem.Allocator,
     is_c_allocated: bool = false,
+    has_extraspace: bool = false,
 };
+
+pub const LX = struct {
+    extra_: [luaconf.LUA_EXTRASPACE]u8 = [_]u8{0} ** luaconf.LUA_EXTRASPACE,
+    l: lua_State,
+};
+
+pub const LUA_EXTRASPACE = luaconf.LUA_EXTRASPACE;
+
+pub inline fn lua_getextraspace(L: *lua_State) *anyopaque {
+    const ptr: [*]u8 = @ptrCast(L);
+    return @ptrCast(ptr - luaconf.LUA_EXTRASPACE);
+}
 
 pub extern "c" fn snprintf(buf: [*]u8, size: usize, format: [*]const u8, ...) c_int;
 extern "c" fn strtod(nptr: [*:0]const u8, endptr: ?*?[*:0]const u8) f64;

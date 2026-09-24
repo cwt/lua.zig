@@ -6,6 +6,17 @@ tags: [log, changelog]
 timestamp: 2026-09-24T00:00:00Z
 ---
 
+## 2026-09-24 — Fix BUG-179: port LUA_EXTRASPACE and lua_getextraspace for C embedding
+
+- Updated `LUA_EXTRASPACE` in `src/luaconf.zig` to `@sizeOf(?*anyopaque)` (8), matching Lua 5.5.1 `luaconf.h`.
+- Defined `LX` wrapper struct in `src/lua.zig` with zero-padding assertion (`@offsetOf(LX, "l") == luaconf.LUA_EXTRASPACE`).
+- Added `has_extraspace: bool` to `lua_State`.
+- Implemented `lua_getextraspace(L: *lua_State) *anyopaque` calculating `(char *)L - LUA_EXTRASPACE` in `src/lua.zig`.
+- Exported C-ABI entry point `lua_getextraspace` in `src/lstate.zig`.
+- Updated `c_luaL_newstate()` and `lua_newthread(L)` to allocate `LX` blocks and copy extraspace on new thread creation.
+- Updated `lua_close` and `lgc.zig:freeGCObject` to destroy `LX` via `@fieldParentPtr("l", L)` when `has_extraspace` is set.
+- Added unit test in `tests/test_basic.zig`. 193/193 unit tests pass; upstream 20/20 pass.
+
 ## 2026-09-24 — Fix BUG-178: missing auxlib functions (luaL_checkunsigned, luaL_optunsigned, luaL_opt, luaL_getmetatable)
 
 - Implemented `luaL_checkunsigned` and `luaL_optunsigned` in `src/lauxlib.zig` with two's-complement bitcast to `lua_Unsigned`.
