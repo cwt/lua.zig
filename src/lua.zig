@@ -833,6 +833,7 @@ pub const lua_State = struct {
         ntransfer: i32,
     },
     allocator: std.mem.Allocator,
+    is_c_allocated: bool = false,
 };
 
 pub extern "c" fn snprintf(buf: [*]u8, size: usize, format: [*]const u8, ...) c_int;

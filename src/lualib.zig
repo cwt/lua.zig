@@ -179,3 +179,51 @@ pub fn openutf8lib(L: *lua.lua_State) !void {
     lua.lua_pop(L, 1);
     try registerLoaded(L, "utf8");
 }
+
+fn c_luaopen_base(L: *lua.lua_State) callconv(.c) i32 {
+    return luaopen_base(L) catch 0;
+}
+fn c_luaopen_package(L: *lua.lua_State) callconv(.c) i32 {
+    return luaopen_package(L) catch 0;
+}
+fn c_luaopen_coroutine(L: *lua.lua_State) callconv(.c) i32 {
+    return luaopen_coroutine(L) catch 0;
+}
+fn c_luaopen_table(L: *lua.lua_State) callconv(.c) i32 {
+    return luaopen_table(L) catch 0;
+}
+fn c_luaopen_string(L: *lua.lua_State) callconv(.c) i32 {
+    return luaopen_string(L) catch 0;
+}
+fn c_luaopen_math(L: *lua.lua_State) callconv(.c) i32 {
+    return luaopen_math(L) catch 0;
+}
+fn c_luaopen_os(L: *lua.lua_State) callconv(.c) i32 {
+    return luaopen_os(L) catch 0;
+}
+fn c_luaopen_io(L: *lua.lua_State) callconv(.c) i32 {
+    return luaopen_io(L) catch 0;
+}
+fn c_luaopen_debug(L: *lua.lua_State) callconv(.c) i32 {
+    return luaopen_debug(L) catch 0;
+}
+fn c_luaopen_bit32(L: *lua.lua_State) callconv(.c) i32 {
+    return luaopen_bit32(L) catch 0;
+}
+fn c_luaopen_utf8(L: *lua.lua_State) callconv(.c) i32 {
+    return luaopen_utf8(L) catch 0;
+}
+
+comptime {
+    @export(&c_luaopen_base, .{ .name = "luaopen_base" });
+    @export(&c_luaopen_package, .{ .name = "luaopen_package" });
+    @export(&c_luaopen_coroutine, .{ .name = "luaopen_coroutine" });
+    @export(&c_luaopen_table, .{ .name = "luaopen_table" });
+    @export(&c_luaopen_string, .{ .name = "luaopen_string" });
+    @export(&c_luaopen_math, .{ .name = "luaopen_math" });
+    @export(&c_luaopen_os, .{ .name = "luaopen_os" });
+    @export(&c_luaopen_io, .{ .name = "luaopen_io" });
+    @export(&c_luaopen_debug, .{ .name = "luaopen_debug" });
+    @export(&c_luaopen_bit32, .{ .name = "luaopen_bit32" });
+    @export(&c_luaopen_utf8, .{ .name = "luaopen_utf8" });
+}

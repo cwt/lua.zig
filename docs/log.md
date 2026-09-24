@@ -6,6 +6,13 @@ tags: [log, changelog]
 timestamp: 2026-09-24T00:00:00Z
 ---
 
+## 2026-09-24 — Fix BUG-176: C-ABI embedding entry points (lua_newstate, lua_close, luaopen_*)
+
+- Added `is_c_allocated: bool` to `lua_State` tracking heap-allocated C-ABI states.
+- Exported C-callable symbols `luaL_newstate`, `lua_newstate`, and `lua_close` in `src/lstate.zig`.
+- Exported all standard library openers with C linkage (`luaopen_base`, `luaopen_package`, `luaopen_coroutine`, `luaopen_table`, `luaopen_string`, `luaopen_math`, `luaopen_os`, `luaopen_io`, `luaopen_debug`, `luaopen_bit32`, `luaopen_utf8`) in `src/lualib.zig`.
+- Added unit test in `tests/test_basic.zig`. 190/190 unit tests pass; upstream 20/20 pass.
+
 ## 2026-09-24 — Fix BUG-175: luaL_openselectedlibs preload support and bitmask alignment
 
 - Ported `LUA_GLIBK`…`LUA_UTF8LIBK` bitmask constants, `LUA_NOLIB`, and

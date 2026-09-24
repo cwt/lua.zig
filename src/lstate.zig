@@ -29,7 +29,6 @@ pub fn reserveErrorStack(L: *lua.lua_State) !void {
     try reallocStack(L, llimits.ERRORSTACKSIZE);
 }
 
-
 /// Shrink the stack back to a reasonable size after it was overgrown (e.g. by
 /// a stack overflow). Mirrors luaD_shrinkstack: notably, it does NOT shrink
 /// when the stack is still being used at/over the working limit (inuse >
@@ -511,8 +510,41 @@ pub fn lua_close(L: *lua.lua_State) void {
 
         L.allocator.destroy(g);
     }
+    const is_c = L.is_c_allocated;
+    const alloc = L.allocator;
     L.tbclist.deinit(L.allocator);
     L.allocator.free(L.stack);
+    if (is_c) {
+        alloc.destroy(L);
+    }
+}
+
+fn c_lua_close(L: *lua.lua_State) callconv(.c) void {
+    lua_close(L);
+}
+
+fn c_luaL_newstate() callconv(.c) ?*lua.lua_State {
+    const alloc = std.heap.c_allocator;
+    const L = alloc.create(lua.lua_State) catch return null;
+    luaL_newstate(L, alloc) catch {
+        alloc.destroy(L);
+        return null;
+    };
+    L.is_c_allocated = true;
+    return L;
+}
+
+fn c_lua_newstate(f: ?*const anyopaque, ud: ?*anyopaque, seed: c_uint) callconv(.c) ?*lua.lua_State {
+    _ = f;
+    _ = ud;
+    _ = seed;
+    return c_luaL_newstate();
+}
+
+comptime {
+    @export(&c_lua_close, .{ .name = "lua_close" });
+    @export(&c_luaL_newstate, .{ .name = "luaL_newstate" });
+    @export(&c_lua_newstate, .{ .name = "lua_newstate" });
 }
 
 // B7: moved from lua.zig hub.

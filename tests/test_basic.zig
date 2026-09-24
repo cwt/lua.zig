@@ -6344,3 +6344,18 @@ test "BUG-175: luaL_openselectedlibs preload and bitmasks" {
     try std.testing.expectEqual(@as(i32, 1), lua.lua_toboolean(&L, -1));
     lua.lua_pop(&L, 1);
 }
+
+extern fn luaL_newstate() ?*lua.lua_State;
+extern fn lua_close(L: *lua.lua_State) void;
+extern fn luaopen_math(L: *lua.lua_State) callconv(.c) i32;
+
+test "BUG-176: C-ABI embedding entry points luaL_newstate, lua_close, luaopen_*" {
+    const L = luaL_newstate() orelse return error.NullState;
+    defer lua_close(L);
+
+    _ = luaopen_math(L);
+    try std.testing.expectEqual(@as(i32, lua.LUA_TTABLE), lua.lua_type(L, -1));
+    _ = try lua.lua_getfield(L, -1, "sin");
+    try std.testing.expectEqual(@as(i32, lua.LUA_TFUNCTION), lua.lua_type(L, -1));
+    lua.lua_pop(L, 2);
+}
