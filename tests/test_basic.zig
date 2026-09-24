@@ -6381,3 +6381,61 @@ test "BUG-177: math.cosh, math.sinh, math.tanh, math.log10" {
     try std.testing.expectEqual(@as(i32, 1), lua.lua_toboolean(&L, -1));
     lua.lua_pop(&L, 1);
 }
+
+test "BUG-178: luaL_checkunsigned, luaL_optunsigned, luaL_getmetatable, luaL_opt" {
+    const gpa = std.testing.allocator;
+    var L: lua.lua_State = undefined;
+    try lua.luaL_newstate(&L, gpa);
+    defer lua.lua_close(&L);
+
+    // 1. luaL_checkunsigned & luaL_optunsigned with positive and negative integers
+    lua.lua_pushinteger(&L, 42);
+    const res_u1 = try lauxlib.luaL_checkunsigned(&L, -1);
+    try std.testing.expectEqual(@as(lua.lua_Unsigned, 42), res_u1);
+
+    lua.lua_pushinteger(&L, -1);
+    const res_u2 = try lauxlib.luaL_checkunsigned(&L, -1);
+    try std.testing.expectEqual(@as(lua.lua_Unsigned, 0xFFFF_FFFF_FFFF_FFFF), res_u2);
+
+    // luaL_optunsigned: argument present vs absent/nil
+    const opt_val = lauxlib.luaL_optunsigned(&L, 1, 100);
+    try std.testing.expectEqual(@as(lua.lua_Unsigned, 42), opt_val);
+    const opt_def = lauxlib.luaL_optunsigned(&L, 10, 100);
+    try std.testing.expectEqual(@as(lua.lua_Unsigned, 100), opt_def);
+
+    // luaL_checkunsigned fails on non-integer
+    _ = lua.lua_pushstring(&L, "not a number");
+    try std.testing.expectError(error.RuntimeError, lauxlib.luaL_checkunsigned(&L, -1));
+
+    lua.lua_settop(&L, 0);
+
+    // 2. luaL_getmetatable
+    const created = try lauxlib.luaL_newmetatable(&L, "MetaBUG178");
+    try std.testing.expectEqual(@as(i32, 1), created);
+    lua.lua_pop(&L, 1); // pop table created by newmetatable
+
+    const mt_type = try lauxlib.luaL_getmetatable(&L, "MetaBUG178");
+    try std.testing.expectEqual(@as(i32, lua.LUA_TTABLE), mt_type);
+    try std.testing.expectEqual(@as(i32, lua.LUA_TTABLE), lua.lua_type(&L, -1));
+    lua.lua_pop(&L, 1);
+
+    const non_mt_type = try lauxlib.luaL_getmetatable(&L, "NonExistentMeta");
+    try std.testing.expectEqual(@as(i32, lua.LUA_TNIL), non_mt_type);
+    try std.testing.expectEqual(@as(i32, lua.LUA_TNIL), lua.lua_type(&L, -1));
+    lua.lua_pop(&L, 1);
+
+    // 3. generic luaL_opt
+    lua.lua_pushinteger(&L, 123);
+    const opt_int = try lauxlib.luaL_opt(&L, lauxlib.luaL_checkinteger, 1, @as(i64, 999));
+    try std.testing.expectEqual(@as(i64, 123), opt_int);
+
+    const opt_int_none = try lauxlib.luaL_opt(&L, lauxlib.luaL_checkinteger, 5, @as(i64, 999));
+    try std.testing.expectEqual(@as(i64, 999), opt_int_none);
+
+    _ = lua.lua_pushstring(&L, "hello");
+    const opt_str = try lauxlib.luaL_opt(&L, lauxlib.luaL_checkstring, 2, "default");
+    try std.testing.expectEqualStrings("hello", opt_str);
+
+    const opt_str_none = try lauxlib.luaL_opt(&L, lauxlib.luaL_checkstring, 6, "default");
+    try std.testing.expectEqualStrings("default", opt_str_none);
+}

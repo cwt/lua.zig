@@ -204,7 +204,7 @@ timestamp: '2026-09-24T00:00:00Z'
 | [BUG-175](175.md) | `lualib.zig`/`lauxlib.zig`: `luaL_openselectedlibs` preload omission + `LUA_*LIBK` bitmask alignment | `MED` | ✅ FIXED |
 | [BUG-176](176.md) | `lstate.zig`/`lualib.zig`: no C-ABI `lua_newstate` / `lua_close` / `luaopen_*` entry points — luazig is not a drop-in `liblua` for C embedding | `MED` | ✅ FIXED |
 | [BUG-177](177.md) | `lib/mathlib.zig`: missing `math.cosh` / `math.sinh` / `math.tanh` / `math.log10` | `MED` | ✅ FIXED |
-| [BUG-178](178.md) | `lauxlib.zig`: missing `luaL_checkunsigned` / `luaL_optunsigned` / generic `luaL_opt` / `luaL_getmetatable` | `MED` | ⏳ OPEN |
+| [BUG-178](178.md) | `lauxlib.zig`: missing `luaL_checkunsigned` / `luaL_optunsigned` / generic `luaL_opt` / `luaL_getmetatable` | `MED` | ✅ FIXED |
 | [BUG-179](179.md) | `lua.zig`/`luaconf.zig`: `LUA_EXTRASPACE` not ported — no reserved bytes at the top of the state for C embedding | `LOW` | ⏳ OPEN |
 
 ## Systematic Bug Audits

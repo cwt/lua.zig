@@ -6,6 +6,14 @@ tags: [log, changelog]
 timestamp: 2026-09-24T00:00:00Z
 ---
 
+## 2026-09-24 — Fix BUG-178: missing auxlib functions (luaL_checkunsigned, luaL_optunsigned, luaL_opt, luaL_getmetatable)
+
+- Implemented `luaL_checkunsigned` and `luaL_optunsigned` in `src/lauxlib.zig` with two's-complement bitcast to `lua_Unsigned`.
+- Implemented generic `luaL_opt(L, func, idx, def)` in `src/lauxlib.zig` propagating errors cleanly when `func` returns an error union.
+- Implemented `luaL_getmetatable(L, tname)` in `src/lauxlib.zig` retrieving metatable from `LUA_REGISTRYINDEX`.
+- Re-exported all four functions in `src/lua.zig`.
+- Added unit tests in `tests/test_basic.zig`. 192/192 unit tests pass; upstream 20/20 pass.
+
 ## 2026-09-24 — Fix BUG-177: missing math functions (cosh, sinh, tanh, log10, atan2)
 
 - Added `cosh`, `sinh`, and `tanh` to `Libm` struct, `resolve()`, and fallbacks in `src/libm.zig`.

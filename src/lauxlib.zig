@@ -110,6 +110,51 @@ pub fn luaL_optinteger(L: *lua.lua_State, idx: i32, def: i64) i64 {
     return luaL_checkinteger(L, idx) catch def;
 }
 
+pub fn luaL_checkunsigned(L: *lua.lua_State, idx: i32) !lua.lua_Unsigned {
+    const n = try luaL_checkinteger(L, idx);
+    return @as(lua.lua_Unsigned, @bitCast(n));
+}
+
+pub fn luaL_optunsigned(L: *lua.lua_State, idx: i32, def: lua.lua_Unsigned) lua.lua_Unsigned {
+    const def_i: i64 = @bitCast(def);
+    const n = luaL_optinteger(L, idx, def_i);
+    return @as(lua.lua_Unsigned, @bitCast(n));
+}
+
+fn FuncPayloadType(comptime Func: anytype) type {
+    const info = @typeInfo(@TypeOf(Func));
+    const ret = switch (info) {
+        .@"fn" => info.@"fn".return_type orelse @compileError("luaL_opt: func must be a function"),
+        else => @compileError("luaL_opt: func must be a function"),
+    };
+    return switch (@typeInfo(ret)) {
+        .error_union => |eu| eu.payload,
+        else => ret,
+    };
+}
+
+fn OptReturnType(comptime Func: anytype) type {
+    const info = @typeInfo(@TypeOf(Func));
+    const ret = switch (info) {
+        .@"fn" => info.@"fn".return_type orelse @compileError("luaL_opt: func must be a function"),
+        else => @compileError("luaL_opt: func must be a function"),
+    };
+    return switch (@typeInfo(ret)) {
+        .error_union => |eu| anyerror!eu.payload,
+        else => ret,
+    };
+}
+
+pub fn luaL_opt(L: *lua.lua_State, comptime func: anytype, idx: i32, def: FuncPayloadType(func)) OptReturnType(func) {
+    if (lua.lua_isnoneornil(L, idx)) return def;
+    const res = func(L, idx);
+    if (comptime @typeInfo(@TypeOf(res)) == .error_union) {
+        return try res;
+    } else {
+        return res;
+    }
+}
+
 pub fn luaL_checknumber(L: *lua.lua_State, idx: i32) !lua.lua_Number {
     const n = lua.lua_tonumber(L, idx);
     if (n == null) {
@@ -861,6 +906,10 @@ pub fn luaL_gsub(L: *lua.lua_State, s: []const u8, p: []const u8, r: []const u8)
     const result = lua.lua_tolstring(L, -1, null) orelse return error.NotAString;
     b.buf.deinit(L.allocator);
     return result;
+}
+
+pub fn luaL_getmetatable(L: *lua.lua_State, tname: []const u8) !i32 {
+    return lua.lua_getfield(L, lua.LUA_REGISTRYINDEX, tname);
 }
 
 pub fn luaL_newmetatable(L: *lua.lua_State, tname: []const u8) !i32 {
