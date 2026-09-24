@@ -2,19 +2,19 @@
 type: directory_index
 title: Bug Reports & Defect Catalog
 description: Index of all tracked defects, conformance fixes, and architectural bugs
-  in luazig (BUG-001 through BUG-174).
+  in luazig (BUG-001 through BUG-179).
 tags:
 - bugs
 - defects
 - index
 - catalog
-timestamp: '2026-09-09T23:00:00Z'
+timestamp: '2026-09-24T00:00:00Z'
 ---
 
 # Bug Reports & Defect Catalog — luazig
 
 > Working catalog of defects, bug-avoidance audits, and conformance fixes in the `luazig` codebase.
-> Bugs are numbered `BUG-001` through `BUG-174`.
+> Bugs are numbered `BUG-001` through `BUG-179`.
 > Each document records the location, defect, impact, and fix or resolution.
 
 ## Legend
@@ -201,6 +201,11 @@ timestamp: '2026-09-09T23:00:00Z'
 | [BUG-172](172.md) | `lua.zig`/`ltable.zig`: weak-key table element count diverges after collection — gc.lua:249 fails | `HIGH` | ✅ FIXED |
 | [BUG-173](173.md) | `lua.zig`: ephemeron convergence loop missing (convergeephemerons) — gc.lua ephemerons section diverges | `HIGH` | ⏳ OPEN |
 | [BUG-174](174.md) | `lvm.zig`/`libm.zig`/`lauxlib.zig`: interpreter ~2x slower than C reference (425B vs 192B instructions on pi-5.5; per-opcode overhead from 4.7KB `run` frame, per-instruction GC check, 112B-by-value `getLibm()`) — fix plan P1–P4 in `docs/performance.md` | `MED` | ⏳ OPEN |
+| [BUG-175](175.md) | `lualib.zig`/`lauxlib.zig`: `luaL_openselectedlibs` preload omission + `LUA_*LIBK` bitmask alignment | `MED` | ✅ FIXED |
+| [BUG-176](176.md) | `lstate.zig`/`lualib.zig`: no C-ABI `lua_newstate` / `lua_close` / `luaopen_*` entry points — luazig is not a drop-in `liblua` for C embedding | `MED` | ⏳ OPEN |
+| [BUG-177](177.md) | `lib/mathlib.zig`: missing `math.cosh` / `math.sinh` / `math.tanh` / `math.log10` | `MED` | ⏳ OPEN |
+| [BUG-178](178.md) | `lauxlib.zig`: missing `luaL_checkunsigned` / `luaL_optunsigned` / generic `luaL_opt` / `luaL_getmetatable` | `MED` | ⏳ OPEN |
+| [BUG-179](179.md) | `lua.zig`/`luaconf.zig`: `LUA_EXTRASPACE` not ported — no reserved bytes at the top of the state for C embedding | `LOW` | ⏳ OPEN |
 
 ## Systematic Bug Audits
 - [BUG-050](050.md) – [BUG-054](054.md): Systematic Bug-Pattern Audit (2026-07-31) cross-cutting codebase analysis.
@@ -209,6 +214,7 @@ timestamp: '2026-09-09T23:00:00Z'
 - [BUG-116](116.md) – [BUG-138](138.md): Deep Audit vs Lua 5.5.1 Reference (2026-08-24) — full-source review with differential testing against `lua/lua`; found the rev-152 loader regression (all `.luac` loading broken, 127/132 tests), dump-format wire incompatibility, table chain-corruption hazard, GC gaps (threads never collected, `__gc` resurrection UAF), float-to-string regressions, and assorted conformance divergences.
 - [BUG-139](139.md) – [BUG-154](154.md): Memory Safety, Conformance & Dead Code Deep Audit (2026-09-08) — static analysis hunting for UAF, double-free, uninitialized pointers, stack growth no-ops, I/O boundary defects, and Zig 0.16.0 rule compliance.
 - [BUG-155](155.md) – [BUG-167](167.md): Upstream `lua/testes/` Standalone Re-Verification Audit (2026-09-08) — re-ran all 34 upstream test files standalone (23 PASS / 11 FAIL incl. 1 core dump) and two parallel line-by-line code audits vs the C reference. Discovered that the "PASS 19, FAIL 0" claim holds only under the harness skip list (15 files skipped): real bugs in string.sub (`posrelatI` off-by-one reading OOB), `coroutine.wrap` dead-resume error, `package.searchpath` init/sep, GC mode return value, stdin seek result shape, yield tracking in resumed metamethods (big.lua), a crash in the `coroutine.close` chain (cstack.lua), missing `luaV_finishOp` comparison/concat cases, VM string-coercion shadowing of string metamethods, placeholder `debug.debug()`, default `package.cpath` missing `lua/5.5` components, plus harness blind spots and housekeeping items.
+- [BUG-175](175.md) – [BUG-179](179.md): Reference API-Surface Gap Audit (2026-09-24) — systematic comparison of `luazig` against the `lua/lua.h` / `lua/lauxlib.h` / standard-library C sources (Lua 5.5.1). Found: `luaL_openselectedlibs` preload omission + bitmask alignment (BUG-175), no C-ABI embedding entry points (`lua_newstate` / `luaopen_*`, BUG-176), missing `math.cosh`/`sinh`/`tanh`/`log10` (BUG-177), missing `luaL_checkunsigned`/`optunsigned`/generic `luaL_opt`/`luaL_getmetatable` (BUG-178), `LUA_EXTRASPACE` not ported (BUG-179). All are API/conformance gaps, not runtime bugs.
 
 ---
 - [← Documentation Root](../index.md)

@@ -6317,3 +6317,30 @@ test "A1 lexer: source number literals via shared engine" {
     const s7 = try lua.luaL_dostring(&L, "return 0x", "=(a1)");
     try std.testing.expectEqual(@as(i32, lua.LUA_ERRSYNTAX), s7);
 }
+
+test "BUG-175: luaL_openselectedlibs preload and bitmasks" {
+    const gpa = std.testing.allocator;
+    var L: lua.lua_State = undefined;
+    try lua.luaL_newstate(&L, gpa);
+    defer lua.lua_close(&L);
+
+    // Open base + package, preload io
+    try lua.luaL_openselectedlibs(&L, lua.LUA_GLIBK | lua.LUA_LOADLIBK, lua.LUA_IOLIBK);
+
+    // io should not be in globals yet
+    _ = lua.lua_getglobal(&L, "io");
+    try std.testing.expectEqual(@as(i32, lua.LUA_TNIL), lua.lua_type(&L, -1));
+    lua.lua_pop(&L, 1);
+
+    // require "io" should succeed using preloaded opener
+    const script =
+        \\local io = require "io"
+        \\assert(type(io) == "table")
+        \\assert(type(io.open) == "function")
+        \\return true
+    ;
+    const status = try lua.luaL_dostring(&L, script, "=(test)");
+    try std.testing.expectEqual(@as(i32, lua.LUA_OK), status);
+    try std.testing.expectEqual(@as(i32, 1), lua.lua_toboolean(&L, -1));
+    lua.lua_pop(&L, 1);
+}

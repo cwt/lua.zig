@@ -26,7 +26,6 @@ pub const findupval = ldo.findupval;
 pub const closeCallFailed = ldo.closeCallFailed;
 pub const fmtMsg = lobject.fmtMsg;
 
-
 // Re-exports of the shared number-parsing engine (lobject.zig, Phase A.1):
 // lvm.zig's hot path calls `tonumberValue`; the standard libraries call
 // `lua_stringtonumber` (stringlib/iolib/baselib).
@@ -47,7 +46,6 @@ pub const luaG_callerror = lobject.luaG_callerror;
 pub const luaG_opinterror = lobject.luaG_opinterror;
 pub const luaG_concaterror = lobject.luaG_concaterror;
 pub const luaG_ordererror = lobject.luaG_ordererror;
-
 
 // Re-exports of the debug-introspection module (ldebug.zig, Refactor B1):
 // callers keep the `lua.` qualification unchanged.
@@ -237,7 +235,6 @@ pub const lua_isyieldable = ldo.lua_isyieldable;
 pub const luaG_errormsg = ldo.luaG_errormsg;
 pub const lua_error = ldo.lua_error;
 
-
 // Re-exports of the GC constants + cross-module GC helper (lgc.zig, Refactor B2).
 pub const LUA_GCSTOP = lgc.LUA_GCSTOP;
 pub const LUA_GCRESTART = lgc.LUA_GCRESTART;
@@ -257,8 +254,6 @@ pub const LUA_GCPSTEPMUL = lgc.LUA_GCPSTEPMUL;
 pub const LUA_GCPSTEPSIZE = lgc.LUA_GCPSTEPSIZE;
 pub const LUA_GCPN = lgc.LUA_GCPN;
 pub const freeGCObject = lgc.freeGCObject;
-
-
 
 pub const lua_Number = llimits.lua_Number;
 pub const lua_Integer = llimits.lua_Integer;
@@ -619,9 +614,6 @@ pub const lua_Proto = struct {
     gc: ?*VMGCObject = null,
 };
 
-
-
-
 /// A3 (docs/refactor.md): shared failure handling for `__close` metamethod
 /// calls. Previously two ~30-line catch blocks copy-pasted in
 /// `close_one_slot` (one per callTM shape). Propagates `Yield`/
@@ -629,8 +621,6 @@ pub const lua_Proto = struct {
 /// BUG-168); a `NotAFunction` call produces the reference's "attempt to
 /// call a <type> value (metamethod 'close')" error object; any other
 /// failure reports the object the handler itself pushed (`saved_err`).
-
-
 pub const UpVal = struct {
     value: TValue,
     v: *TValue,
@@ -778,8 +768,6 @@ pub const global_State = struct {
     gc_step_accum: usize = 0,
 };
 
-
-
 pub const GCObject = struct {
     tt: i8,
     marked: u8,
@@ -851,16 +839,15 @@ pub extern "c" fn snprintf(buf: [*]u8, size: usize, format: [*]const u8, ...) c_
 extern "c" fn strtod(nptr: [*:0]const u8, endptr: ?*?[*:0]const u8) f64;
 extern "c" fn strspn(str1: [*]const u8, str2: [*]const u8) usize;
 
-
 /// D5 dedupe (docs/refactor.md): shared "format into a fixed buffer, fall
 /// back to `fallback` on overflow" helper. Replaces the
 /// `std.fmt.bufPrint(&buf, fmt, args) catch "..."` idiom that was
 /// copy-pasted across lua.zig / lauxlib.zig / lparser.zig. Behavior is
 /// identical: the formatted slice is returned when it fits, otherwise
 /// `fallback` verbatim.
-
 pub const lauxlib = @import("lauxlib.zig");
 pub const luaL_openlibs = lauxlib.luaL_openlibs;
+pub const luaL_openselectedlibs = lauxlib.luaL_openselectedlibs;
 pub const luaL_newmetatable = @import("lauxlib.zig").luaL_newmetatable;
 pub const luaL_setmetatable = @import("lauxlib.zig").luaL_setmetatable;
 pub const luaL_testudata = @import("lauxlib.zig").luaL_testudata;
@@ -869,18 +856,34 @@ pub const luaL_getenv = @import("lauxlib.zig").luaL_getenv;
 pub const luaL_newtable = @import("lauxlib.zig").luaL_newtable;
 pub const luaL_len = @import("lauxlib.zig").luaL_len;
 pub const luaL_where = @import("lauxlib.zig").luaL_where;
+pub const lualib = @import("lualib.zig");
 
-pub const LUA_BASELIB: i32 = 1 << 0;
-pub const LUA_COLIB: i32 = 1 << 1;
-pub const LUA_TABLIB: i32 = 1 << 2;
-pub const LUA_IOLIB: i32 = 1 << 3;
-pub const LUA_OSLIB: i32 = 1 << 4;
-pub const LUA_STRLIB: i32 = 1 << 5;
-pub const LUA_MATHLIB: i32 = 1 << 6;
-pub const LUA_UTF8LIB: i32 = 1 << 7;
-pub const LUA_DBLIB: i32 = 1 << 8;
-pub const LUA_LOADLIB: i32 = 1 << 9;
-pub const LUA_BITLIB: i32 = 1 << 10;
-pub const LUA_COROLIB: i32 = 1 << 1;
+// Standard library bitmask constants (matching Lua 5.5.1 lualib.h)
+pub const LUA_GLIBK: i32 = 1;
+pub const LUA_LOADLIBK: i32 = LUA_GLIBK << 1;
+pub const LUA_COLIBK: i32 = LUA_LOADLIBK << 1;
+pub const LUA_DBLIBK: i32 = LUA_COLIBK << 1;
+pub const LUA_IOLIBK: i32 = LUA_DBLIBK << 1;
+pub const LUA_MATHLIBK: i32 = LUA_IOLIBK << 1;
+pub const LUA_OSLIBK: i32 = LUA_MATHLIBK << 1;
+pub const LUA_STRLIBK: i32 = LUA_OSLIBK << 1;
+pub const LUA_TABLIBK: i32 = LUA_STRLIBK << 1;
+pub const LUA_UTF8LIBK: i32 = LUA_TABLIBK << 1;
+pub const LUA_BITLIBK: i32 = LUA_UTF8LIBK << 1;
 
+pub const LUA_NOLIB: i32 = 0;
+pub const LUA_ALL_LIBS: i32 = ~@as(i32, 0);
 
+// Backward-compatibility aliases
+pub const LUA_BASELIB: i32 = LUA_GLIBK;
+pub const LUA_LOADLIB: i32 = LUA_LOADLIBK;
+pub const LUA_COLIB: i32 = LUA_COLIBK;
+pub const LUA_COROLIB: i32 = LUA_COLIBK;
+pub const LUA_TABLIB: i32 = LUA_TABLIBK;
+pub const LUA_IOLIB: i32 = LUA_IOLIBK;
+pub const LUA_OSLIB: i32 = LUA_OSLIBK;
+pub const LUA_STRLIB: i32 = LUA_STRLIBK;
+pub const LUA_MATHLIB: i32 = LUA_MATHLIBK;
+pub const LUA_UTF8LIB: i32 = LUA_UTF8LIBK;
+pub const LUA_DBLIB: i32 = LUA_DBLIBK;
+pub const LUA_BITLIB: i32 = LUA_BITLIBK;

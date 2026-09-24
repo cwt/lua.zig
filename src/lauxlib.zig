@@ -728,14 +728,14 @@ pub fn luaL_getsubtable(L: *lua.lua_State, idx: i32, fname: []const u8) !i32 {
 /// `package.loaded` and optionally in the global table.
 pub fn luaL_requiref(L: *lua.lua_State, modname: []const u8, openf: lua.lua_CFunction, glb: i32) !void {
     _ = try luaL_getsubtable(L, lua.LUA_REGISTRYINDEX, LUA_LOADED_TABLE);
-    _ = lua.lua_getfield(L, -1, modname);
+    _ = try lua.lua_getfield(L, -1, modname);
     if (lua.lua_toboolean(L, -1) == 0) {
         lua.lua_pop(L, 1);
         lua.lua_pushcfunction(L, openf);
         _ = lua.lua_pushstring(L, modname);
         try lua.lua_call(L, 1, 1);
         lua.lua_pushvalue(L, -1);
-        lua.lua_setfield(L, -3, modname);
+        try lua.lua_setfield(L, -3, modname);
     }
     lua.lua_remove(L, -2);
     if (glb != 0) {
@@ -1043,40 +1043,17 @@ pub fn luaL_openlibs(L: *lua.lua_State) !void {
 }
 
 pub fn luaL_openselectedlibs(L: *lua.lua_State, openmask: i32, closedmask: i32) !void {
-    _ = closedmask;
-    if ((openmask & lua.LUA_BASELIB) != 0) {
-        try lualib.openbaselib(L);
+    _ = try luaL_getsubtable(L, lua.LUA_REGISTRYINDEX, LUA_PRELOAD_TABLE);
+    for (lualib.stdlibs) |lib| {
+        if ((openmask & lib.mask) != 0) {
+            try luaL_requiref(L, lib.name, lib.func, 1);
+            lua.lua_pop(L, 1);
+        } else if ((closedmask & lib.mask) != 0) {
+            lua.lua_pushcfunction(L, lib.func);
+            try lua.lua_setfield(L, -2, lib.name);
+        }
     }
-    if ((openmask & lua.LUA_COROLIB) != 0) {
-        try lualib.opencorolib(L);
-    }
-    if ((openmask & lua.LUA_TABLIB) != 0) {
-        try lualib.opentablib(L);
-    }
-    if ((openmask & lua.LUA_STRLIB) != 0) {
-        try lualib.openstringlib(L);
-    }
-    if ((openmask & lua.LUA_MATHLIB) != 0) {
-        try lualib.openmathlib(L);
-    }
-    if ((openmask & lua.LUA_OSLIB) != 0) {
-        try lualib.openoslib(L);
-    }
-    if ((openmask & lua.LUA_IOLIB) != 0) {
-        try lualib.openio(L);
-    }
-    if ((openmask & lua.LUA_LOADLIB) != 0) {
-        try lualib.openloadlib(L);
-    }
-    if ((openmask & lua.LUA_DBLIB) != 0) {
-        try lualib.opendbalib(L);
-    }
-    if ((openmask & lua.LUA_BITLIB) != 0) {
-        try lualib.openbit32(L);
-    }
-    if ((openmask & lua.LUA_UTF8LIB) != 0) {
-        try lualib.openutf8lib(L);
-    }
+    lua.lua_pop(L, 1);
 }
 
 pub fn luaL_getenv(L: *lua.lua_State, name: []const u8) anyerror!?[]const u8 {

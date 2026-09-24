@@ -3,8 +3,50 @@ type: lessons_learned
 title: Modification Log
 description: Running chronological log of bundle modifications and significant changes.
 tags: [log, changelog]
-timestamp: 2026-09-10T23:55:00Z
+timestamp: 2026-09-24T00:00:00Z
 ---
+
+## 2026-09-24 — Fix BUG-175: luaL_openselectedlibs preload support and bitmask alignment
+
+- Ported `LUA_GLIBK`…`LUA_UTF8LIBK` bitmask constants, `LUA_NOLIB`, and
+  `LUA_ALL_LIBS` to `src/lua.zig` matching Lua 5.5.1 `lualib.h`, while
+  maintaining backward-compatibility aliases for `LUA_BASELIB` etc.
+- Added `luaopen_*` standard library openers and `stdlibs` table in
+  `src/lualib.zig`.
+- Updated `luaL_openselectedlibs` in `src/lauxlib.zig` to populate
+  `package.preload` when `closedmask & lib.mask != 0`, and load eagerly
+  via `luaL_requiref` when `openmask & lib.mask != 0`.
+- Added unit test `BUG-175: luaL_openselectedlibs preload and bitmasks`
+  in `tests/test_basic.zig`. 189/189 unit tests pass; upstream 20/20 pass.
+
+## 2026-09-24 — Reference API-Surface Gap Audit (BUG-175 through BUG-179)
+
+- Systematic comparison of `luazig` against the Lua 5.5.1 C reference
+  (`lua/lua.h`, `lua/lauxlib.h`, and the standard-library C sources)
+  identified five open API/conformance gaps, logged as BUG-175 through
+  BUG-179 in `docs/bugs/`:
+
+  - **BUG-175** — `luaL_openselectedlibs` preload omission + bitmask
+    alignment: `src/lauxlib.zig:1045` ignores `closedmask` and uses
+    divergent bitmasks instead of `LUA_GLIBK`…`LUA_UTF8LIBK` /
+    `LUA_NOLIB`. C consumers cannot preload a subset of standard
+    libraries.
+  - **BUG-176** — no C-ABI embedding entry points: `lua_newstate` /
+    `lua_newstateat` / `lua_close` / `luaopen_*` are not callable from
+    C; `luazig` is not a drop-in `liblua` for C embedding.
+  - **BUG-177** — `math.cosh` / `math.sinh` / `math.tanh` /
+    `math.log10` missing from `src/lib/mathlib.zig` (reference
+    `lmathlib.c:731-736`).
+  - **BUG-178** — `luaL_checkunsigned` / `luaL_optunsigned` / generic
+    `luaL_opt` / `luaL_getmetatable` missing from `src/lauxlib.zig`.
+  - **BUG-179** — `LUA_EXTRASPACE` not ported; `lua_State` layout has
+    no reserved leading bytes for the C embedding idiom.
+
+- All five are API-surface / conformance gaps, not runtime bugs. The
+  upstream test suite is unaffected. `docs/bugs/index.md` catalog
+  bumped from BUG-001–174 to BUG-001–179; a new "Reference
+  API-Surface Gap Audit (2026-09-24)" entry was added under
+  "Systematic Bug Audits".
 
 ## 2026-09-10 — Refactor B7: hub cleanup - `lua.zig` is now types + re-exports only (Phase B complete)
 
