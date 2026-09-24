@@ -86,6 +86,24 @@ fn math_atan(L: *lua.lua_State) !i32 {
     return 1;
 }
 
+fn math_cosh(L: *lua.lua_State) !i32 {
+    const m = libm.getLibm();
+    lua.lua_pushnumber(L, m.cosh(lua.lua_tonumber(L, 1) orelse try lauxlib.luaL_checknumber(L, 1)));
+    return 1;
+}
+
+fn math_sinh(L: *lua.lua_State) !i32 {
+    const m = libm.getLibm();
+    lua.lua_pushnumber(L, m.sinh(lua.lua_tonumber(L, 1) orelse try lauxlib.luaL_checknumber(L, 1)));
+    return 1;
+}
+
+fn math_tanh(L: *lua.lua_State) !i32 {
+    const m = libm.getLibm();
+    lua.lua_pushnumber(L, m.tanh(lua.lua_tonumber(L, 1) orelse try lauxlib.luaL_checknumber(L, 1)));
+    return 1;
+}
+
 fn math_toint(L: *lua.lua_State) !i32 {
     var isnum: i32 = 0;
     const n = lua.lua_tointegerx(L, 1, &isnum);
@@ -167,6 +185,12 @@ fn math_log(L: *lua.lua_State) !i32 {
         break :blk if (base == 2.0) m.log2(x) else if (base == 10.0) m.log10(x) else m.log(x) / m.log(base);
     };
     lua.lua_pushnumber(L, res);
+    return 1;
+}
+
+fn math_log10(L: *lua.lua_State) !i32 {
+    const m = libm.getLibm();
+    lua.lua_pushnumber(L, m.log10(lua.lua_tonumber(L, 1) orelse try lauxlib.luaL_checknumber(L, 1)));
     return 1;
 }
 
@@ -363,15 +387,17 @@ fn math_randomseed(L: *lua.lua_State) !i32 {
 // ===================================================================
 
 pub fn openmathlib(L: *lua.lua_State) !void {
-    lua.lua_createtable(L, 0, 25);
+    lua.lua_createtable(L, 0, 30);
 
     for ([_]struct { name: []const u8, func: lua.lua_CFunction }{
         .{ .name = "abs", .func = math_abs },
         .{ .name = "acos", .func = math_acos },
         .{ .name = "asin", .func = math_asin },
         .{ .name = "atan", .func = math_atan },
+        .{ .name = "atan2", .func = math_atan },
         .{ .name = "ceil", .func = math_ceil },
         .{ .name = "cos", .func = math_cos },
+        .{ .name = "cosh", .func = math_cosh },
         .{ .name = "deg", .func = math_deg },
         .{ .name = "exp", .func = math_exp },
         .{ .name = "floor", .func = math_floor },
@@ -379,14 +405,17 @@ pub fn openmathlib(L: *lua.lua_State) !void {
         .{ .name = "frexp", .func = math_frexp },
         .{ .name = "ldexp", .func = math_ldexp },
         .{ .name = "log", .func = math_log },
+        .{ .name = "log10", .func = math_log10 },
         .{ .name = "max", .func = math_max },
         .{ .name = "min", .func = math_min },
         .{ .name = "modf", .func = math_modf },
         .{ .name = "pow", .func = math_pow },
         .{ .name = "rad", .func = math_rad },
         .{ .name = "sin", .func = math_sin },
+        .{ .name = "sinh", .func = math_sinh },
         .{ .name = "sqrt", .func = math_sqrt },
         .{ .name = "tan", .func = math_tan },
+        .{ .name = "tanh", .func = math_tanh },
         .{ .name = "tointeger", .func = math_toint },
         .{ .name = "type", .func = math_type },
         .{ .name = "ult", .func = math_ult },

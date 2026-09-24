@@ -27,6 +27,9 @@ pub const Libm = struct {
     asin: *const fn (f64) callconv(.c) f64,
     acos: *const fn (f64) callconv(.c) f64,
     atan2: *const fn (f64, f64) callconv(.c) f64,
+    sinh: *const fn (f64) callconv(.c) f64,
+    cosh: *const fn (f64) callconv(.c) f64,
+    tanh: *const fn (f64) callconv(.c) f64,
     log: *const fn (f64) callconv(.c) f64,
     log2: *const fn (f64) callconv(.c) f64,
     log10: *const fn (f64) callconv(.c) f64,
@@ -45,9 +48,23 @@ var libm_handle: ?std.DynLib = null;
 var libm_resolved: Libm = undefined;
 var libm_resolved_ok: bool = false;
 const libm_fallback: Libm = Libm{
-    .sin = fbSin, .cos = fbCos, .tan = fbTan, .asin = fbAsin, .acos = fbAcos,
-    .atan2 = fbAtan2, .log = fbLog, .log2 = fbLog2, .log10 = fbLog10, .exp = fbExp,
-    .pow = fbPow, .fmod = fbFmod, .frexp = fbFrexp, .ldexp = fbLdexp,
+    .sin = fbSin,
+    .cos = fbCos,
+    .tan = fbTan,
+    .asin = fbAsin,
+    .acos = fbAcos,
+    .atan2 = fbAtan2,
+    .sinh = fbSinh,
+    .cosh = fbCosh,
+    .tanh = fbTanh,
+    .log = fbLog,
+    .log2 = fbLog2,
+    .log10 = fbLog10,
+    .exp = fbExp,
+    .pow = fbPow,
+    .fmod = fbFmod,
+    .frexp = fbFrexp,
+    .ldexp = fbLdexp,
 };
 
 pub fn getLibm() *const Libm {
@@ -74,6 +91,9 @@ fn resolve() bool {
     const asin = lib.lookup(*const fn (f64) callconv(.c) f64, "asin") orelse return false;
     const acos = lib.lookup(*const fn (f64) callconv(.c) f64, "acos") orelse return false;
     const atan2 = lib.lookup(*const fn (f64, f64) callconv(.c) f64, "atan2") orelse return false;
+    const sinh = lib.lookup(*const fn (f64) callconv(.c) f64, "sinh") orelse return false;
+    const cosh = lib.lookup(*const fn (f64) callconv(.c) f64, "cosh") orelse return false;
+    const tanh = lib.lookup(*const fn (f64) callconv(.c) f64, "tanh") orelse return false;
     const log = lib.lookup(*const fn (f64) callconv(.c) f64, "log") orelse return false;
     const log2 = lib.lookup(*const fn (f64) callconv(.c) f64, "log2") orelse return false;
     const log10 = lib.lookup(*const fn (f64) callconv(.c) f64, "log10") orelse return false;
@@ -84,9 +104,23 @@ fn resolve() bool {
     const ldexp = lib.lookup(*const fn (f64, i32) callconv(.c) f64, "ldexp") orelse return false;
     libm_handle = handle;
     libm_resolved = .{
-        .sin = sin, .cos = cos, .tan = tan, .asin = asin, .acos = acos,
-        .atan2 = atan2, .log = log, .log2 = log2, .log10 = log10, .exp = exp,
-        .pow = pow, .fmod = fmod, .frexp = frexp, .ldexp = ldexp,
+        .sin = sin,
+        .cos = cos,
+        .tan = tan,
+        .asin = asin,
+        .acos = acos,
+        .atan2 = atan2,
+        .sinh = sinh,
+        .cosh = cosh,
+        .tanh = tanh,
+        .log = log,
+        .log2 = log2,
+        .log10 = log10,
+        .exp = exp,
+        .pow = pow,
+        .fmod = fmod,
+        .frexp = frexp,
+        .ldexp = ldexp,
     };
     return true;
 }
@@ -108,6 +142,15 @@ fn fbAcos(x: f64) callconv(.c) f64 {
 }
 fn fbAtan2(y: f64, x: f64) callconv(.c) f64 {
     return std.math.atan2(y, x);
+}
+fn fbSinh(x: f64) callconv(.c) f64 {
+    return std.math.sinh(x);
+}
+fn fbCosh(x: f64) callconv(.c) f64 {
+    return std.math.cosh(x);
+}
+fn fbTanh(x: f64) callconv(.c) f64 {
+    return std.math.tanh(x);
 }
 fn fbLog(x: f64) callconv(.c) f64 {
     return @log(x);

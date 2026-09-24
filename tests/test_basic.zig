@@ -6359,3 +6359,25 @@ test "BUG-176: C-ABI embedding entry points luaL_newstate, lua_close, luaopen_*"
     try std.testing.expectEqual(@as(i32, lua.LUA_TFUNCTION), lua.lua_type(L, -1));
     lua.lua_pop(L, 2);
 }
+
+test "BUG-177: math.cosh, math.sinh, math.tanh, math.log10" {
+    const gpa = std.testing.allocator;
+    var L: lua.lua_State = undefined;
+    try lua.luaL_newstate(&L, gpa);
+    defer lua.lua_close(&L);
+
+    try lua.luaL_openlibs(&L);
+
+    const script =
+        \\assert(math.cosh(0) == 1)
+        \\assert(math.sinh(0) == 0)
+        \\assert(math.tanh(0) == 0)
+        \\assert(math.log10(100) == 2)
+        \\assert(math.atan2(0, 1) == 0)
+        \\return true
+    ;
+    const status = try lua.luaL_dostring(&L, script, "=(test)");
+    try std.testing.expectEqual(@as(i32, lua.LUA_OK), status);
+    try std.testing.expectEqual(@as(i32, 1), lua.lua_toboolean(&L, -1));
+    lua.lua_pop(&L, 1);
+}

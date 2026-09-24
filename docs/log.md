@@ -6,6 +6,13 @@ tags: [log, changelog]
 timestamp: 2026-09-24T00:00:00Z
 ---
 
+## 2026-09-24 — Fix BUG-177: missing math functions (cosh, sinh, tanh, log10, atan2)
+
+- Added `cosh`, `sinh`, and `tanh` to `Libm` struct, `resolve()`, and fallbacks in `src/libm.zig`.
+- Implemented `math_cosh`, `math_sinh`, `math_tanh`, and `math_log10` in `src/lib/mathlib.zig`.
+- Registered `cosh`, `sinh`, `tanh`, `log10`, and `atan2` in `math` library table (`openmathlib`).
+- Added unit test in `tests/test_basic.zig`. 191/191 unit tests pass; upstream 20/20 pass.
+
 ## 2026-09-24 — Fix BUG-176: C-ABI embedding entry points (lua_newstate, lua_close, luaopen_*)
 
 - Added `is_c_allocated: bool` to `lua_State` tracking heap-allocated C-ABI states.
