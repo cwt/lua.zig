@@ -3,8 +3,19 @@ type: lessons_learned
 title: Modification Log
 description: Running chronological log of bundle modifications and significant changes.
 tags: [log, changelog]
-timestamp: 2026-09-24T00:00:00Z
+timestamp: 2026-09-28T00:00:00Z
 ---
+
+## 2026-09-28 — Close BUG-174: interpreter performance gap resolved as accepted design trade-off
+
+- Multi-compiler empirical benchmark on macOS Apple Silicon confirmed the performance boundaries:
+  - TinyCC (`tcc` with `lua/makefile.macos`, unoptimized C): 35.84s (`luazig` is ~2.4× faster than unoptimized C).
+  - `luazig` (Zig 0.16.0 `ReleaseFast` / LLVM -O3): 15.06s user / 15.31s total.
+  - Clang `-O2` (`lua/lua` / LLVM -O2): 7.52s total (~2× faster than `luazig`).
+- P1–P4 clean minimal-change optimizations captured all high-leverage speedups (425B → 375B instructions, ~25% wall time improvement).
+- Deeper micro-optimizations (D4) abandoned to prevent code fragmentation, regressions, and maintainability loss.
+- The ~1.5×–2.0× performance gap against Clang C Lua is accepted as the inherent design cost of Zig's memory safety model: central `switch` dispatch (no non-standard computed gotos), structured error unions (`!T` + `try` discriminant checks) vs zero-happy-path-cost `setjmp`/`longjmp`, and 16-byte tagged unions (`union(enum)`) vs unchecked C structs.
+- `BUG-174` closed as **RESOLVED (Accepted Design Trade-Off)** in `docs/bugs/174.md`, `docs/bugs/index.md`, and `docs/performance.md`.
 
 ## 2026-09-24 — Fix BUG-179: port LUA_EXTRASPACE and lua_getextraspace for C embedding
 

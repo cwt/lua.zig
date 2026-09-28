@@ -200,7 +200,7 @@ timestamp: '2026-09-24T00:00:00Z'
 | [BUG-171](171.md) | FALSE POSITIVE: assigned-at-declaration self-capture (`local co = f(function() ... co ... end)`) refers to the global per Lua visibility rules — luazig matches the reference | `HIGH` | ❌ FALSE POSITIVE |
 | [BUG-172](172.md) | `lua.zig`/`ltable.zig`: weak-key table element count diverges after collection — gc.lua:249 fails | `HIGH` | ✅ FIXED |
 | [BUG-173](173.md) | `lua.zig`: ephemeron convergence loop missing (convergeephemerons) — gc.lua ephemerons section diverges | `HIGH` | ⏳ OPEN |
-| [BUG-174](174.md) | `lvm.zig`/`libm.zig`/`lauxlib.zig`: interpreter ~2x slower than C reference (425B vs 192B instructions on pi-5.5; per-opcode overhead from 4.7KB `run` frame, per-instruction GC check, 112B-by-value `getLibm()`) — fix plan P1–P4 in `docs/performance.md` | `MED` | ⏳ OPEN |
+| [BUG-174](174.md) | `lvm.zig`/`libm.zig`/`lauxlib.zig`: interpreter ~2x slower than C reference (425B vs 192B instructions on pi-5.5; per-opcode overhead from 4.7KB `run` frame, per-instruction GC check, 112B-by-value `getLibm()`) — fix plan P1–P4 in `docs/performance.md` | `MED` | ✅ CLOSED |
 | [BUG-175](175.md) | `lualib.zig`/`lauxlib.zig`: `luaL_openselectedlibs` preload omission + `LUA_*LIBK` bitmask alignment | `MED` | ✅ FIXED |
 | [BUG-176](176.md) | `lstate.zig`/`lualib.zig`: no C-ABI `lua_newstate` / `lua_close` / `luaopen_*` entry points — luazig is not a drop-in `liblua` for C embedding | `MED` | ✅ FIXED |
 | [BUG-177](177.md) | `lib/mathlib.zig`: missing `math.cosh` / `math.sinh` / `math.tanh` / `math.log10` | `MED` | ✅ FIXED |

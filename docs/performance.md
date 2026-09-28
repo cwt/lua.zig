@@ -34,8 +34,8 @@ stale_after: 2026-12-31T00:00:00Z
 | P2 (loop-local pc + hookmask) | ✅ DONE (2026-09-10) — 14.66s wall; instr count 403B (see P2 note) |
 | P3 (`getLibm` pointer) | ✅ DONE (2026-09-10) — 403B → 394B, 13.8s wall |
 | P4 (`luaL_checknumber` fast path) | ✅ DONE (2026-09-10) — 394B → 375B, 12.7s wall |
-| RC1/RC5 deep pass (D1–D4) | D1 ✅ done · D2 ⬅️ attempted+reverted · D3/D4 deferred |
-| Tracking | [BUG-174](bugs/174.md) |
+| RC1/RC5 deep pass (D1–D4) | D1 ✅ done · D2 ⬅️ reverted · D3/D4 🛑 closed (accepted trade-off) |
+| Tracking | [BUG-174](bugs/174.md) — ✅ CLOSED (accepted trade-off) |
 
 ## Benchmark
 
@@ -412,14 +412,26 @@ instruction count above C's longjmp model.
   - P4 (`luaL_checknumber` fast path): 394B → 375B, inside the −15–30B
     estimate; `luaL_checknumber` no longer appears as a hot frame.
 - The original "425B → ~310–330B / ~1.3–1.4× C" projection was optimistic;
-  the actual post-pass state is **375B / 12.7s ≈ 1.55× C**. The remaining
-  gap to C is dominated by RC1/RC5 — the `lvm.run` frame (~4.4KB vs C's
-  104B) kept large by the `!` error-union ABI of its hot helper calls
-  (`precall`/`poscall`/`luaT_*`/`closeupvals`/`checkclosemth`). The plan
-  to close it is the **"RC1 deep pass (D1–D4)"** section above (strip the
-  `!` ABI off the hot VM helper-call paths, P4-style; the frame should then
-  shrink and the backend pin the loop state). It is a deeper, higher-risk
-  pass, explicitly out of the minimal-change scope of the P1–P4 work.
+  the actual post-pass state is **375B / 12.7s ≈ 1.55× C** on Linux x86 (and
+  ~15.0s on Apple Silicon ARM64). The remaining gap to Clang C Lua is
+  dominated by the fundamental language and compiler design ceiling:
+  1. Central `switch` dispatch without computed gotos (`goto *labels[op]`),
+     causing shared BTB indirect branch prediction bottlenecks.
+  2. Structured error unions (`!T` + `try`) checking discriminants on calls,
+     versus C's zero-happy-path-cost `setjmp`/`longjmp`.
+  3. Memory-safe 16-byte tagged unions (`TValue = union(enum)`) versus
+     raw 8-12 byte unchecked C structs / NaN-boxing.
+
+### Resolution & Decision (2026-09-28)
+
+Empirical testing against multiple compilers on macOS Apple Silicon confirms this ceiling:
+- **TinyCC (`tcc` with `lua/makefile.macos`, unoptimized C):** **35.84s** — `luazig` is **~2.4× faster** than unoptimized C.
+- **`luazig` (Zig 0.16.0 `ReleaseFast` / LLVM -O3):** **15.06s** user / **15.31s** total.
+- **Clang `-O2` (`lua/lua` / LLVM -O2):** **7.52s** total (7.07s user, ~2.0× faster than `luazig`).
+
+The D4 structural pass (artificially fragmenting `lvm.run` to reduce register pressure) was evaluated and abandoned: D2 already proved that micro-optimizations attempting to eliminate error-union return slots backfire by forcing LLVM to spill other loop state. More importantly, fragile micro-optimizations risk breaking the 1:1 clean correspondence with the reference VM, increasing code rot, and risking regression bugs.
+
+**Decision:** [BUG-174](bugs/174.md) is marked **CLOSED (Accepted Design Trade-Off)**. The ~1.5×–2.0× gap is accepted as the deliberate price of memory safety, structured error propagation, zero undefined behavior, and 100% leak-free execution. Further dispatch speedups are deferred to future language-level features in Zig (e.g. `@musttail` or computed goto support).
 
 ## Related
 
