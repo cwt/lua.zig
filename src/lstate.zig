@@ -120,7 +120,7 @@ pub fn lua_newthread(L: *lua.lua_State) !*lua.lua_State {
     const lx = try L.allocator.create(lua.LX);
     errdefer L.allocator.destroy(lx);
     lx.* = .{
-        .extra_ = [_]u8{0} ** lua.luaconf.LUA_EXTRASPACE,
+        .extra_ = std.mem.zeroes([lua.luaconf.LUA_EXTRASPACE]u8),
         .l = undefined,
     };
     const L1 = &lx.l;
@@ -330,8 +330,8 @@ pub fn luaL_newstate_io(L: *lua.lua_State, gpa: std.mem.Allocator, io: std.Io) !
         .strt = std.array_hash_map.String(*lua.lua_TString).empty,
         .seed = @intFromPtr(L) ^ 0x9e3779b97f4a7c15,
         .registry = lua.TValue{ .nil = {} },
-        .mt = [_]?*lua.lua_Table{null} ** 9,
-        .tmname = [_]?*lua.lua_TString{null} ** 25,
+        .mt = std.mem.zeroes([9]?*lua.lua_Table),
+        .tmname = std.mem.zeroes([25]?*lua.lua_TString),
         .io_backend = null,
         .io = io,
         .prng_state = [_]u64{ 0, 0, 0, 0 },
@@ -545,7 +545,7 @@ fn c_luaL_newstate() callconv(.c) ?*lua.lua_State {
     const alloc = std.heap.c_allocator;
     const lx = alloc.create(lua.LX) catch return null;
     lx.* = .{
-        .extra_ = [_]u8{0} ** lua.luaconf.LUA_EXTRASPACE,
+        .extra_ = std.mem.zeroes([lua.luaconf.LUA_EXTRASPACE]u8),
         .l = undefined,
     };
     const L = &lx.l;

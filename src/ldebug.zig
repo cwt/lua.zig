@@ -256,8 +256,8 @@ fn funcnamefromcode(L: *lua.lua_State, p: *const lua.lua_Proto, pc: i32, name: *
         .MMBIN, .MMBINI, .MMBINK => {
             const tm_idx = lvm.GETARG_C(i);
             const TMS = @import("ltm.zig").TMS;
-            if (tm_idx >= 0 and tm_idx < @typeInfo(TMS).@"enum".fields.len) {
-                tm = @enumFromInt(tm_idx);
+            if (std.enums.fromInt(TMS, tm_idx)) |valid_tm| {
+                tm = valid_tm;
             }
         },
         .ADD, .ADDK, .ADDI => tm = .ADD,

@@ -724,8 +724,8 @@ pub const global_State = struct {
     allgc: ?*VMGCObject = null,
     /// Objects awaiting their __gc finalizer (kept alive for one cycle).
     finobj: ?*VMGCObject = null,
-    mt: [9]?*lua_Table = [_]?*lua_Table{null} ** 9,
-    tmname: [25]?*lua_TString = [_]?*lua_TString{null} ** 25,
+    mt: [9]?*lua_Table = std.mem.zeroes([9]?*lua_Table),
+    tmname: [25]?*lua_TString = std.mem.zeroes([25]?*lua_TString),
     io_backend: ?std.Io.Threaded = null,
     io: std.Io,
     warnf: ?lua_WarnFunction = null,
@@ -839,7 +839,7 @@ pub const lua_State = struct {
 };
 
 pub const LX = struct {
-    extra_: [luaconf.LUA_EXTRASPACE]u8 = [_]u8{0} ** luaconf.LUA_EXTRASPACE,
+    extra_: [luaconf.LUA_EXTRASPACE]u8 = std.mem.zeroes([luaconf.LUA_EXTRASPACE]u8),
     l: lua_State,
 };
 
@@ -906,3 +906,5 @@ pub const LUA_MATHLIB: i32 = LUA_MATHLIBK;
 pub const LUA_UTF8LIB: i32 = LUA_UTF8LIBK;
 pub const LUA_DBLIB: i32 = LUA_DBLIBK;
 pub const LUA_BITLIB: i32 = LUA_BITLIBK;
+
+pub const compat = @import("compat.zig");

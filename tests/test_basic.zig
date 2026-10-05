@@ -4239,7 +4239,7 @@ test "H.5 lua_pushexternalstring (LSTRMEM) frees external bytes on GC" {
 
     var ctx: ExtAllocCtx = .{ .alloc = gpa, .free_count = 0 };
     // 11 bytes, NUL-terminated (C contract: s[len] == 0).
-    const external = try gpa.dupeZ(u8, "external!!");
+    const external = try lua.compat.dupeZ(gpa, "external!!");
     const s = lua.lua_pushexternalstring(
         &L,
         external,

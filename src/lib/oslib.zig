@@ -1,6 +1,7 @@
 const std = @import("std");
 const lua = @import("../lua.zig");
 const lauxlib = @import("../lauxlib.zig");
+const compat = @import("../compat.zig");
 
 const L = lua.lua_State;
 const luaL_Reg = lauxlib.luaL_Reg;
@@ -90,7 +91,7 @@ fn os_remove(L_: *L) !i32 {
         lua.lua_pushnil(L_);
         return 1;
     };
-    const filename = L_.allocator.dupeZ(u8, filename_s) catch {
+    const filename = compat.dupeZ(L_.allocator, filename_s) catch {
         lua.lua_pushboolean(L_, 0);
         return 1;
     };
@@ -106,9 +107,9 @@ fn os_remove(L_: *L) !i32 {
 fn os_rename(L_: *L) !i32 {
     const from_s = lua.lua_tostring(L_, 1) orelse return luaL_error(L_, "missing 'from' argument");
     const to_s = lua.lua_tostring(L_, 2) orelse return luaL_error(L_, "missing 'to' argument");
-    const from = L_.allocator.dupeZ(u8, from_s) catch return luaL_error(L_, "out of memory");
+    const from = compat.dupeZ(L_.allocator, from_s) catch return luaL_error(L_, "out of memory");
     defer L_.allocator.free(from);
-    const to = L_.allocator.dupeZ(u8, to_s) catch return luaL_error(L_, "out of memory");
+    const to = compat.dupeZ(L_.allocator, to_s) catch return luaL_error(L_, "out of memory");
     defer L_.allocator.free(to);
     if (rename(from, to) != 0) {
         lua.lua_pushboolean(L_, 0);
@@ -208,7 +209,7 @@ fn os_date(L_: *L) !i32 {
         return 1;
     }
 
-    const cfmt = L_.allocator.dupeZ(u8, fmt) catch return error.OutOfMemory;
+    const cfmt = compat.dupeZ(L_.allocator, fmt) catch return error.OutOfMemory;
     defer L_.allocator.free(cfmt);
     var tm: Tm = undefined;
     if (is_utc) {
@@ -295,7 +296,7 @@ fn os_setlocale(L_: *L) !i32 {
     const locale = lua.lua_tostring(L_, 1);
     const category_s = if (lua.lua_gettop(L_) >= 2) lua.lua_tostring(L_, 2) else null;
     const cat = classcat(category_s);
-    const locale_z = if (locale) |l| L_.allocator.dupeZ(u8, l) catch return error.OutOfMemory else null;
+    const locale_z = if (locale) |l| compat.dupeZ(L_.allocator, l) catch return error.OutOfMemory else null;
     defer if (locale_z) |lz| L_.allocator.free(lz);
     const res = std.c.setlocale(cat, if (locale_z) |lz| lz else null);
     if (res) |r| {

@@ -6,6 +6,19 @@ tags: [log, changelog]
 timestamp: 2026-09-28T00:00:00Z
 ---
 
+## 2026-10-05 — Dual-build: support Zig 0.16.0 and Zig 0.17.0 from one source tree
+
+- Enabled compiling and running the full project under both Zig 0.16.0 and Zig 0.17.0 without version drift, following the `zig-0.16.0-development` dual-safe conventions (and patterns from `szn` r755 and `fts5-icu-tokenizer` r153).
+- **Changes applied:**
+  - `build.zig`: version-agnostic OptimizeMode enum tag detection (`release_fast_mode` / `debug_mode`) via `@hasField(OptimizeMode, "fast")` and `@hasField(OptimizeMode, "debug")`.
+  - `src/compat.zig`: introduced new cross-version compatibility module with `dupeZ(allocator, slice)` backed by `allocSentinel`. Re-exported in `src/lua.zig`.
+  - `src/lib/oslib.zig` & `tests/test_basic.zig`: replaced `Allocator.dupeZ` calls with `compat.dupeZ`.
+  - `src/ldebug.zig`: replaced `@typeInfo(TMS).@"enum".fields.len` check with safe `std.enums.fromInt(TMS, tm_idx)`.
+  - `src/lua.zig` & `src/lstate.zig`: replaced `**` array repetition (removed in 0.17) with `std.mem.zeroes` across 7 struct field definitions and initializers.
+- **Verification:**
+  - `zig build test`: 184/193 tests passed (9 skipped, 0 failed), 0 leaks on BOTH Zig 0.16.0 and Zig 0.17.0.
+  - `./run_testes.sh`: PASS 20, FAIL 0, CRASH 0 on upstream test suite for binaries built with both compilers.
+
 ## 2026-09-28 — Close BUG-174: interpreter performance gap resolved as accepted design trade-off
 
 - Multi-compiler empirical benchmark on macOS Apple Silicon confirmed the performance boundaries:

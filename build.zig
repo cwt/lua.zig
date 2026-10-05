@@ -12,11 +12,14 @@ pub fn build(b: *std.Build) void {
     // the upstream `lua/testes` suite (a 1M-deep recursion takes ~5s in Debug
     // vs ~0.08s in an optimized build), which is what times out
     // `constructs.lua`.
+    const OptimizeMode = std.builtin.OptimizeMode;
+    const release_fast_mode: OptimizeMode = if (@hasField(OptimizeMode, "fast")) .fast else .ReleaseFast;
+    const debug_mode: OptimizeMode = if (@hasField(OptimizeMode, "debug")) .debug else .Debug;
     const optimize = b.option(
-        std.builtin.OptimizeMode,
+        OptimizeMode,
         "mode",
         "Optimization mode (default: ReleaseFast)",
-    ) orelse .ReleaseFast;
+    ) orelse release_fast_mode;
 
     // Memory-safety build options (mirror talyn/build.zig):
     //  - asan: build with the C sanitizer (sanitize_c = .full, i.e. UBSan),
@@ -62,14 +65,14 @@ pub fn build(b: *std.Build) void {
     // triggers an LLVM backend crash in this toolchain.
     // Additionally, on Darwin (macOS), Zig's native Mach-O linker does not support LTO
     // and LLD for Mach-O is unsupported in Zig 0.16.
-    const use_lto = (optimize != .Debug) and !target.result.os.tag.isDarwin();
+    const use_lto = (optimize != debug_mode) and !target.result.os.tag.isDarwin();
 
     const exe = b.addExecutable(.{
         .name = "luazig",
         .root_module = root_module,
     });
     exe.lto = if (use_lto) .thin else .none;
-    exe.root_module.strip = (optimize != .Debug);
+    exe.root_module.strip = (optimize != debug_mode);
 
     b.installArtifact(exe);
 
@@ -78,7 +81,7 @@ pub fn build(b: *std.Build) void {
         .root_module = root_module,
     });
     lib.lto = if (use_lto) .thin else .none;
-    lib.root_module.strip = (optimize != .Debug);
+    lib.root_module.strip = (optimize != debug_mode);
 
     b.installArtifact(lib);
 
