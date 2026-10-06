@@ -846,8 +846,8 @@ pub const LX = struct {
 pub const LUA_EXTRASPACE = luaconf.LUA_EXTRASPACE;
 
 pub inline fn lua_getextraspace(L: *lua_State) *anyopaque {
-    const ptr: [*]u8 = @ptrCast(L);
-    return @ptrCast(ptr - luaconf.LUA_EXTRASPACE);
+    const lx: *LX = @fieldParentPtr("l", L);
+    return @ptrCast(&lx.extra_);
 }
 
 pub extern "c" fn snprintf(buf: [*]u8, size: usize, format: [*]const u8, ...) c_int;

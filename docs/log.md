@@ -6,6 +6,15 @@ tags: [log, changelog]
 timestamp: 2026-09-28T00:00:00Z
 ---
 
+## 2026-10-06 — Fix `lua_getextraspace` pointer arithmetic on non-extern struct LX (BUG-179 followup)
+
+- Addressed code review finding where `lua_getextraspace` computed `(u8*)L - LUA_EXTRASPACE` assuming C declared field order in `LX`.
+- Because `LX` is a plain Zig struct (not an `extern struct`), Zig optimizes field layout and places `l` at offset 0 with `extra_` positioned after `l`. Subtracting `LUA_EXTRASPACE` from `L` returned a pointer 8 bytes before the allocated memory block, corrupting the malloc chunk header and causing glibc to abort with `double free or corruption (out)` upon `lua_close`.
+- Replaced pointer arithmetic in `src/lua.zig` with `const lx: *LX = @fieldParentPtr("l", L); return @ptrCast(&lx.extra_);`, resolving the actual field address regardless of struct field reordering.
+- Verification:
+  - `zig build test`: 193/193 unit tests pass with zero aborts or leaks.
+  - `./run_testes.sh`: 20 PASS / 0 FAIL / 14 SKIP on the upstream test suite.
+
 ## 2026-10-05 — Dual-build: support Zig 0.16.0 and Zig 0.17.0 from one source tree
 
 - Enabled compiling and running the full project under both Zig 0.16.0 and Zig 0.17.0 without version drift, following the `zig-0.16.0-development` dual-safe conventions (and patterns from `szn` r755 and `fts5-icu-tokenizer` r153).
