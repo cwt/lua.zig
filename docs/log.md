@@ -3928,3 +3928,33 @@ Completed analysis, verification, test coverage, and implementation of defects B
 - Zero memory leaks detected.
 
 
+
+### Gap closure (Zig-idiomatic) — 2026-10-24
+
+- **`lua_numbertocstring`** re-implemented in `src/lapi.zig` (was deleted in BUG-137 as unreferenced) and re-exported from `src/lua.zig`.
+- **`luaL_addgsub`** added to `src/lauxlib.zig` (buffer variant of `luaL_gsub`).
+- **`debug.debug()`** now runs an interactive command loop via `std.Io` (stdin/stderr), loading and pcalling each line, matching the reference `db_debug`.
+- **`-l` / `doLibrary`** fixed: `require` returns 2 values (module + loader data); the CLI now requests exactly 1 result so the global receives the module, not the loader data.
+- **`c_lua_newstate`** now applies the `seed` argument to `global_State.seed` (custom `lua_Alloc` callback remains unsupported by design — Zig uses capability-based allocators).
+- Verification: `zig build` and `zig build test` (193/193) pass.
+
+- **Readline support** in the REPL: `luaInitReadline` now resolves `readline` and `add_history` from the dynamically loaded library; `runRepl` uses them for line editing/history when available, falling back to plain line-based input otherwise. Multi-line accumulation and `exit`/`quit` handling preserved.
+
+### Gap-closure fix-ups (diff review) — 2026-10-24
+
+Review of the uncommitted gap-closure diff surfaced five issues; all fixed here.
+
+- **`lua_numbertocstring` buffer contract** (`src/lapi.zig`): the C-ABI path no longer reinterprets the caller's buffer as a blind `*[128]u8`; it slices to the documented `LUA_N2SBUFFSZ` (64) contract (`lua.h:374`) and asserts the final NUL fits, mirroring the reference's `lua_assert(len < LUA_N2SBUFFSZ)` in `lobject.c:456`. Supporting change: `luaO_tostringbuff` and `tostringbuffFloat` now take `[]u8` (all existing `&buf` call sites coerce unchanged).
+- **`c_lua_newstate` seed fidelity** (`src/lstate.zig`): `g->seed = seed` is assigned unconditionally like the reference (`lstate.c:359`); a zero seed now overrides the pointer-derived default seed, giving deterministic (non-randomized) string hashing, as C does.
+- **`docall` shape unified** (`src/luazig.zig`): `pcallWithHandler` gained the `nres` parameter of the reference `docall(L, narg, nres)`; `doLibrary` reuses it (`docall(L, 1, 1)`) instead of duplicating the pcall mechanics, and the dead `rc` status computation was removed.
+- **REPL history timing** (`src/luazig.zig`): `add_history` is now called once per *assembled* chunk (reference `lua_saveline` in `loadline`, lua.c:669-671), not on the first raw line — multi-line inputs land in history as a single entry. Also removed a duplicated two-line comment and replaced a manual NUL scan with `std.mem.span`.
+- **`build.zig`**: dropped `linker_allow_shlib_undefined` (nothing in the port links against shared libraries with unresolved symbols — readline is `dlopen`'d at runtime via `std.DynLib`); `rdynamic` retained with a rationale comment (exports the C-ABI `lua_*` surface for runtime-loaded extension modules).
+
+New tests in `tests/test_basic.zig` (§7: every implemented function gets one):
+- `lua_numbertocstring` against a 64-byte buffer (integer max, 0.1, non-number → 0).
+- `c_lua_newstate` seed propagation for seed 0 and non-zero.
+- `luaL_addgsub` replacement and no-occurrence paths.
+- CLI `-l` subprocess test: `_G[mod]` receives the module table, not the loader data.
+- `debug.debug()` subprocess test with redirected stdin: commands execute inside the session, `cont` terminates, prompt appears on stderr.
+
+Verification: `zig build` clean; `zig build test` — **198/198 pass, 9/9 steps succeeded**, zero leaks.

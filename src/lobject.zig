@@ -241,7 +241,7 @@ pub fn parseNumericFloat(gpa: ?Allocator, s: []const u8, dp: u8) ?f64 {
         // arbitrarily long digit strings.
         return std.fmt.parseFloat(f64, s) catch null;
     }
-    
+
     var small: [1024]u8 = undefined;
     if (s.len <= small.len) {
         for (s, 0..) |c, i| small[i] = if (c == dp) '.' else c;
@@ -313,22 +313,23 @@ pub fn lua_stringtonumber(L: *lua.lua_State, s: []const u8) usize {
     return 0;
 }
 
-
 // ---------------------------------------------------------------------------
 // Message builders + tostring/ equality helpers (lobject.c remainder,
 // Refactor B3 — moved from lua.zig; re-exported by lua.zig)
 // ---------------------------------------------------------------------------
-pub fn tostringbuffFloat(n: f64, buff: *[128]u8) usize {
-    var len = lua.snprintf(buff, 128, "%.15g", n);
+pub fn tostringbuffFloat(n: f64, buff: []u8) usize {
+    std.debug.assert(buff.len >= lua.LUA_N2SBUFFSZ); // number formats fit in < 64 bytes
+    const size = buff.len;
+    var len = lua.snprintf(buff.ptr, size, "%.15g", n);
     if (len < 0) return 0;
     buff[@intCast(len)] = 0;
-    const check = strtod(@ptrCast(buff), null);
+    const check = strtod(@ptrCast(buff.ptr), null);
     if (check != n) {
-        len = lua.snprintf(buff, 128, "%.17g", n);
+        len = lua.snprintf(buff.ptr, size, "%.17g", n);
         if (len < 0) return 0;
         buff[@intCast(len)] = 0;
     }
-    const idx = strspn(buff, "-0123456789");
+    const idx = strspn(buff.ptr, "-0123456789");
     if (buff[idx] == 0) {
         const ulen: usize = @intCast(len);
         buff[ulen] = '.';
@@ -339,7 +340,7 @@ pub fn tostringbuffFloat(n: f64, buff: *[128]u8) usize {
     return @intCast(len);
 }
 
-pub fn luaO_tostringbuff(val: lua.TValue, buff: *[128]u8) []const u8 {
+pub fn luaO_tostringbuff(val: lua.TValue, buff: []u8) []const u8 {
     return switch (val) {
         .integer => |i| lua.fmtMsg(buff, "", "{d}", .{i}),
         .number => |n| {

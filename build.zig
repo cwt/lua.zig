@@ -73,6 +73,10 @@ pub fn build(b: *std.Build) void {
     });
     exe.lto = if (use_lto) .thin else .none;
     exe.root_module.strip = (optimize != debug_mode);
+    // Export the C-ABI entry points (lua_*/luaopen_* from the @export block in
+    // lstate.zig) so shared objects loaded at runtime (`package.loadlib`,
+    // readline's dlopen of C modules) can resolve the Lua API in this binary.
+    exe.rdynamic = true;
 
     b.installArtifact(exe);
 

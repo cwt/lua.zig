@@ -139,14 +139,14 @@ fn msghandler(L: *lua.lua_State) anyerror!i32 {
     return 1;
 }
 
-/// Protected call wrapper (mirrors lua.c's `docall`): push `msghandler` under
-/// the function+args and run it as the error function so uncaught errors get
-/// a full stack traceback. Returns the pcall status.
-fn pcallWithHandler(L: *lua.lua_State, nargs: i32) i32 {
+/// Protected call wrapper (mirrors lua.c's `docall(L, narg, nres)`): push
+/// `msghandler` under the function+args and run it as the error function so
+/// uncaught errors get a full stack traceback. Returns the pcall status.
+fn pcallWithHandler(L: *lua.lua_State, nargs: i32, nres: i32) i32 {
     const base = lua.lua_gettop(L) - nargs; // index of the target function
     lua.lua_pushcfunction(L, msghandler);
     lua.lua_insert(L, base); // insert msghandler immediately before function
-    const status = lua.lua_pcallk(L, nargs, lua.LUA_MULTRET, base, 0, null) catch |e| {
+    const status = lua.lua_pcallk(L, nargs, nres, base, 0, null) catch |e| {
         return if (e == error.Yield) lua.LUA_YIELD else lua.LUA_ERRRUN;
     };
     lua.lua_remove(L, base);
@@ -156,7 +156,7 @@ fn pcallWithHandler(L: *lua.lua_State, nargs: i32) i32 {
 /// Run a chunk already loaded at the top of the stack (with `nargs` extra
 /// arguments just below it). Returns true if an error occurred.
 fn runLoadedChunk(L: *lua.lua_State, io: std.Io, progname: ?[]const u8, nargs: i32) !bool {
-    const status = pcallWithHandler(L, nargs);
+    const status = pcallWithHandler(L, nargs, lua.LUA_MULTRET);
     if (status != lua.LUA_OK) {
         printError(L, io, progname);
         return true;
@@ -259,7 +259,10 @@ fn doLibrary(L: *lua.lua_State, io: std.Io, progname: ?[]const u8, name: []const
         return false;
     }
     _ = lua.lua_pushstring(L, modname);
-    const status = pcallWithHandler(L, 1);
+    // Request exactly one result (the module), mirroring the reference's
+    // `docall(L, 1, 1)`. `require` returns 2 values (module + loader data);
+    // asking for 1 discards the loader data so `setglobal` pops the module.
+    const status = pcallWithHandler(L, 1, 1);
     if (status == lua.LUA_OK) {
         try lua.lua_setglobal(L, globname);
         return false;
@@ -329,6 +332,12 @@ fn readAllStdin(io: std.Io, gpa: std.mem.Allocator) ![]u8 {
 /// reference never dlclose's it either).
 var readline_lib: ?*std.DynLib = null;
 
+/// Function pointers resolved from the dynamically loaded readline library.
+/// `null` when readline is unavailable, in which case the REPL falls back to
+/// plain line-based input.
+var readline_fn: ?*const fn ([*:0]const u8) callconv(.c) ?[*:0]u8 = null;
+var add_history_fn: ?*const fn ([*:0]const u8) callconv(.c) void = null;
+
 /// Port of the reference `lua_initreadline` (lua/lua.c:515): try to
 /// dynamically load the readline library named by the LUA_READLINELIB
 /// environment variable (or the luaconf default) for the REPL. On failure
@@ -354,11 +363,11 @@ fn luaInitReadline(L: *lua.lua_State) !void {
         lua.lua_warning(L, "'", 0);
         return;
     };
-    // Could load the library: resolve the facilities (unused by this
-    // line-based REPL, but resolved so a non-readline library fails here,
-    // like the reference).
-    const has_readline = lib.lookup(?*const anyopaque, "readline") != null;
-    if (!has_readline) {
+    // Resolve the facilities (like the reference). A missing 'readline'
+    // symbol makes the load fail here.
+    const rl = lib.lookup(*const fn ([*:0]const u8) callconv(.c) ?[*:0]u8, "readline");
+    const ah = lib.lookup(*const fn ([*:0]const u8) callconv(.c) void, "add_history");
+    if (rl == null) {
         lib.close();
         L.allocator.destroy(lib);
         lua.lua_warning(L, "unable to load readline library '", 1);
@@ -366,7 +375,24 @@ fn luaInitReadline(L: *lua.lua_State) !void {
         lua.lua_warning(L, "'", 0);
         return;
     }
+    readline_fn = rl;
+    add_history_fn = ah;
     readline_lib = lib; // everything ok
+}
+
+/// Add the assembled chunk to the readline history buffer, mirroring the
+/// reference `lua_saveline` (lua/lua.c): called once per complete chunk,
+/// after all continuation lines were gathered. Strips the newline(s) appended
+/// during accumulation. No-op when no history facility is available.
+fn luaSaveline(gpa: std.mem.Allocator, chunk: []const u8) void {
+    const ah = add_history_fn orelse return;
+    var len = chunk.len;
+    while (len > 0 and chunk[len - 1] == '\n') len -= 1;
+    if (len == 0) return; // nothing left to record
+    const z = gpa.allocSentinel(u8, len, 0) catch return;
+    defer gpa.free(z);
+    @memcpy(z[0..len], chunk[0..len]);
+    ah(z);
 }
 
 fn runRepl(L: *lua.lua_State, io: std.Io, gpa: std.mem.Allocator, print_banner: bool) !void {
@@ -381,15 +407,35 @@ fn runRepl(L: *lua.lua_State, io: std.Io, gpa: std.mem.Allocator, print_banner: 
     defer accum.deinit(gpa);
     // Buffer stdin through std.Io's reader so a single read does not consume
     // more than one line (which would discard the rest of multi-line input).
+    // When readline is available, it is used instead (with editing/history).
     var read_buf: [4096]u8 = undefined;
     var file_reader = std.Io.File.Reader.init(std.Io.File.stdin(), io, &read_buf);
     const reader = &file_reader.interface;
 
     while (true) {
-        try stdoutWrite(io, if (accum.items.len == 0) "> " else ">> ");
-        const line = reader.takeDelimiter('\n') catch |err| {
-            return err;
-        } orelse break;
+        const prompt: []const u8 = if (accum.items.len == 0) "> " else ">> ";
+        var line: []const u8 = undefined;
+        var owned_line: ?[*:0]u8 = null;
+        defer if (owned_line) |p_| std.c.free(p_);
+
+        if (readline_fn) |rl| {
+            const prompt_z = try gpa.allocSentinel(u8, prompt.len, 0);
+            defer gpa.free(prompt_z);
+            @memcpy(prompt_z[0..prompt.len], prompt);
+            const raw = rl(prompt_z) orelse break;
+            owned_line = raw;
+            // Strip trailing newline if present (readline usually omits it).
+            const s = std.mem.span(raw);
+            var len = s.len;
+            if (len > 0 and s[len - 1] == '\n') len -= 1;
+            line = s[0..len];
+        } else {
+            try stdoutWrite(io, prompt);
+            const l = reader.takeDelimiter('\n') catch |err| {
+                return err;
+            } orelse break;
+            line = l;
+        }
 
         if (accum.items.len == 0) {
             if (line.len == 0) continue;
@@ -401,14 +447,14 @@ fn runRepl(L: *lua.lua_State, io: std.Io, gpa: std.mem.Allocator, print_banner: 
 
         // Try to compile the accumulated input.
         const status = lauxlib.luaL_loadstring(L, accum.items);
+        var chunk_done = true;
         if (status == lua.LUA_OK) {
-            const call_status = pcallWithHandler(L, 0);
+            const call_status = pcallWithHandler(L, 0, lua.LUA_MULTRET);
             if (call_status != lua.LUA_OK) {
                 printError(L, io, null);
             } else {
                 try printResults(L, io);
             }
-            accum.clearRetainingCapacity();
         } else if (status == lua.LUA_ERRSYNTAX) {
             const incomplete = blk: {
                 if (lua.lua_tostring(L, -1)) |msg| {
@@ -422,12 +468,18 @@ fn runRepl(L: *lua.lua_State, io: std.Io, gpa: std.mem.Allocator, print_banner: 
             };
             if (incomplete) {
                 lua.lua_pop(L, 1); // discard the incomplete-input error
-                continue;
+                chunk_done = false; // more continuation lines to come
+            } else {
+                printError(L, io, null);
             }
-            printError(L, io, null);
-            accum.clearRetainingCapacity();
         } else {
             printError(L, io, null);
+        }
+        if (chunk_done) {
+            // Complete chunk (or its final error): keep the assembled input
+            // in history, like the reference `lua_saveline` in loadline —
+            // called once per chunk, after all continuation lines were read.
+            luaSaveline(gpa, accum.items);
             accum.clearRetainingCapacity();
         }
     }

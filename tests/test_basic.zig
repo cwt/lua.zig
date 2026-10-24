@@ -6468,3 +6468,183 @@ test "BUG-179: LUA_EXTRASPACE and lua_getextraspace" {
     try std.testing.expectEqual(@as(usize, 0x1234_5678_9ABC_DEF0), extra_th_val.*);
     try std.testing.expectEqual(@as(usize, 0xCAFE_BABE_DEAD_BEEF), extra_val.*);
 }
+
+// ===========================================================================
+// Gap-closure fix-ups (2026-10-24): focused tests for the corrected
+// lua_numbertocstring / c_lua_newstate(seed) / luaL_addgsub / CLI -l and
+// debug.debug() paths.
+// ===========================================================================
+
+extern fn lua_newstate(f: ?*const anyopaque, ud: ?*anyopaque, seed: c_uint) ?*lua.lua_State;
+
+test "gap-closure: lua_numbertocstring honors the LUA_N2SBUFFSZ (64-byte) buffer contract" {
+    const gpa = std.testing.allocator;
+    var L: lua.lua_State = undefined;
+    try lua.luaL_newstate(&L, gpa);
+    defer lua.lua_close(&L);
+
+    // Largest integer formats into well under LUA_N2SBUFFSZ bytes; the
+    // returned length includes the terminating zero (C reference contract).
+    lua.lua_pushinteger(&L, 9223372036854775807);
+    var buf: [lua.LUA_N2SBUFFSZ]u8 = undefined;
+    const n_int = lua.lua_numbertocstring(&L, -1, &buf);
+    lua.lua_pop(&L, 1);
+    try std.testing.expectEqual(@as(c_uint, 20), n_int);
+    try std.testing.expectEqualStrings("9223372036854775807", buf[0 .. n_int - 1]);
+    try std.testing.expectEqual(@as(u8, 0), buf[n_int - 1]);
+
+    // Floats (%.15g / %.17g) likewise fit, including the final zero.
+    lua.lua_pushnumber(&L, 0.1);
+    var buf2: [lua.LUA_N2SBUFFSZ]u8 = undefined;
+    const n_f = lua.lua_numbertocstring(&L, -1, &buf2);
+    lua.lua_pop(&L, 1);
+    try std.testing.expectEqual(@as(c_uint, 4), n_f);
+    try std.testing.expectEqualStrings("0.1", buf2[0 .. n_f - 1]);
+
+    // Non-numbers return 0 per the C contract.
+    _ = lua.lua_pushstring(&L, "nope");
+    try std.testing.expectEqual(@as(c_uint, 0), lua.lua_numbertocstring(&L, -1, &buf));
+    lua.lua_pop(&L, 1);
+}
+
+test "gap-closure: c_lua_newstate applies the seed argument (deterministic for seed=0)" {
+    // Reference (lstate.c:359) assigns g->seed = seed unconditionally; a zero
+    // seed must overwrite the pointer-derived default seed so hashing is
+    // deterministic, and a non-zero seed must be stored as-is.
+    const L0 = lua_newstate(null, null, 0) orelse return error.NullState;
+    defer lua_close(L0);
+    try std.testing.expectEqual(@as(usize, 0), L0.l_G.?.seed);
+
+    const Ls = lua_newstate(null, null, 0x2468_1357) orelse return error.NullState;
+    defer lua_close(Ls);
+    try std.testing.expectEqual(@as(usize, 0x2468_1357), Ls.l_G.?.seed);
+}
+
+test "gap-closure: luaL_addgsub appends prefix/replacement/suffix to a buffer" {
+    const gpa = std.testing.allocator;
+    var L: lua.lua_State = undefined;
+    try lua.luaL_newstate(&L, gpa);
+    defer lua.lua_close(&L);
+
+    // Replace every '/' with " -> " (loadlib builds its error strings this way).
+    var b: lauxlib.luaL_Buffer = .{};
+    lauxlib.luaL_buffinit(&L, &b);
+    defer b.buf.deinit(L.allocator);
+    try lauxlib.luaL_addgsub(&L, &b, "a/b/c", "/", " -> ");
+    try std.testing.expectEqualStrings("a -> b -> c", lauxlib.luaL_buffaddr(&b));
+
+    // No occurrences: the whole string is appended verbatim.
+    var b2: lauxlib.luaL_Buffer = .{};
+    lauxlib.luaL_buffinit(&L, &b2);
+    defer b2.buf.deinit(L.allocator);
+    try lauxlib.luaL_addgsub(&L, &b2, "no pattern here", "/", " -> ");
+    try std.testing.expectEqualStrings("no pattern here", lauxlib.luaL_buffaddr(&b2));
+}
+
+test "gap-closure: CLI -l stores the require result module in the global" {
+    const gpa = std.testing.allocator;
+    var threaded: std.Io.Threaded = .init_single_threaded;
+    threaded.allocator = gpa;
+    defer threaded.deinit();
+    const io = threaded.io();
+
+    const bin = "zig-out/bin/luazig";
+    std.Io.Dir.cwd().access(io, bin, .{}) catch |err| switch (err) {
+        error.FileNotFound => return, // binary not built; skip
+        else => return err,
+    };
+
+    // A module file in the cwd whose loaded value visibly differs from the
+    // loader data require() also returns.
+    const tmp = try std.Io.Dir.cwd().createFile(io, "gap_lmod_tmp.lua", .{});
+    defer std.Io.Dir.cwd().deleteFile(io, "gap_lmod_tmp.lua") catch {};
+    defer tmp.close(io);
+    try tmp.writeStreamingAll(io, "return { tag = 'modulevalue' }");
+
+    // require() returns 2 values (module + loader data); `-l` must request
+    // exactly one result so the global receives the module itself. If the
+    // pcall asked for all results (the old bug), the global would be the
+    // loader data (a string) and this print would error.
+    var child = try std.process.spawn(io, .{
+        .argv = &.{
+            bin,
+            "-e",
+            "package.path = './?.lua;' .. package.path",
+            "-l",
+            "gap_lmod_tmp",
+            "-e",
+            "print(_G.gap_lmod_tmp.tag)",
+        },
+        .stdout = .pipe,
+        .stderr = .pipe,
+    });
+    defer child.kill(io);
+    var mrb: std.Io.File.MultiReader.Buffer(2) = undefined;
+    var mr: std.Io.File.MultiReader = undefined;
+    mr.init(gpa, io, mrb.toStreams(), &.{ child.stdout.?, child.stderr.? });
+    defer mr.deinit();
+    while (mr.fill(64, .none)) |_| {} else |err| switch (err) {
+        error.EndOfStream => {},
+        else => return err,
+    }
+    try mr.checkAnyError();
+    const term = try child.wait(io);
+    try std.testing.expectEqual(std.process.Child.Term{ .exited = 0 }, term);
+
+    const stdout = try mr.toOwnedSlice(0);
+    defer gpa.free(stdout);
+    try std.testing.expectEqualStrings("modulevalue\n", stdout);
+}
+
+test "gap-closure: debug.debug executes buffered commands until 'cont'" {
+    const gpa = std.testing.allocator;
+    var threaded: std.Io.Threaded = .init_single_threaded;
+    threaded.allocator = gpa;
+    defer threaded.deinit();
+    const io = threaded.io();
+
+    const bin = "zig-out/bin/luazig";
+    std.Io.Dir.cwd().access(io, bin, .{}) catch |err| switch (err) {
+        error.FileNotFound => return, // binary not built; skip
+        else => return err,
+    };
+
+    // Child stdin: two commands for the debug session.
+    {
+        const in_f = try std.Io.Dir.cwd().createFile(io, "gap_dbg_stdin.tmp", .{});
+        defer in_f.close(io);
+        try in_f.writeStreamingAll(io, "after_debug = 'from inside'\ncont\n");
+    }
+    defer std.Io.Dir.cwd().deleteFile(io, "gap_dbg_stdin.tmp") catch {};
+    const in_r = try std.Io.Dir.cwd().openFile(io, "gap_dbg_stdin.tmp", .{});
+    defer in_r.close(io);
+
+    {
+        const out_f = try std.Io.Dir.cwd().createFile(io, "gap_dbg_out.tmp", .{});
+        defer out_f.close(io);
+        defer std.Io.Dir.cwd().deleteFile(io, "gap_dbg_out.tmp") catch {};
+        const err_f = try std.Io.Dir.cwd().createFile(io, "gap_dbg_err.tmp", .{});
+        defer err_f.close(io);
+        defer std.Io.Dir.cwd().deleteFile(io, "gap_dbg_err.tmp") catch {};
+
+        // -e chunk: run the debug session, then prove its command took effect.
+        var child = try std.process.spawn(io, .{
+            .argv = &.{ bin, "-e", "debug.debug() print('after-debug', after_debug)" },
+            .stdin = .{ .file = in_r },
+            .stdout = .{ .file = out_f },
+            .stderr = .{ .file = err_f },
+        });
+        const term = try child.wait(io);
+        try std.testing.expectEqual(std.process.Child.Term{ .exited = 0 }, term);
+
+        // The debug session set the global; the -e chunk then printed it.
+        const out = try std.Io.Dir.cwd().readFileAlloc(io, "gap_dbg_out.tmp", gpa, .limited(1024));
+        defer gpa.free(out);
+        try std.testing.expectEqualStrings("after-debug\tfrom inside\n", out);
+
+        // The prompt went to stderr, proving the interactive loop ran.
+        const errout = try std.Io.Dir.cwd().readFileAlloc(io, "gap_dbg_err.tmp", gpa, .limited(4096));
+        defer gpa.free(errout);
+        try std.testing.expect(std.mem.indexOf(u8, errout, "lua_debug>") != null);
+    }
+}

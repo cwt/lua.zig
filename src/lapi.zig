@@ -162,9 +162,6 @@ pub fn lua_copy(L: *lua.lua_State, fromidx: i32, toidx: i32) void {
     dst.* = src.*;
 }
 
-
-
-
 pub fn stackAt(L: *lua.lua_State, idx: i32) lua.TValue {
     const ptr = lua.idxPtr(L, idx) orelse return lua.TValue{ .nil = {} };
     return ptr.*;
@@ -350,6 +347,26 @@ pub fn lua_toboolean(L: *lua.lua_State, idx: i32) i32 {
     return if (v.toBoolean()) 1 else 0;
 }
 
+pub fn lua_numbertocstring(L: *lua.lua_State, idx: i32, buff: [*]u8) u32 {
+    const ptr = lua.idxPtr(L, idx) orelse return 0;
+    switch (ptr.*) {
+        .integer, .number => {
+            // Caller contract (lua.h): `buff` holds at least LUA_N2SBUFFSZ
+            // (64) bytes. All number formats ("{d}" integers, %15g/%17g
+            // floats) produce far fewer bytes, so the value plus the final
+            // NUL always fit; the assert mirrors the C reference's
+            // lua_assert(len < LUA_N2SBUFFSZ) in lobject.c.
+            const b = buff[0..lua.LUA_N2SBUFFSZ];
+            const slice = lua.luaO_tostringbuff(ptr.*, b);
+            const n: usize = slice.len;
+            std.debug.assert(n < lua.LUA_N2SBUFFSZ);
+            buff[n] = 0; // add final zero (C: buff[len++] = '\0')
+            return @intCast(n + 1);
+        },
+        else => return 0,
+    }
+}
+
 pub fn lua_tolstring(L: *lua.lua_State, idx: i32, len: ?*usize) ?[]const u8 {
     const ptr = lua.idxPtr(L, idx) orelse return null;
     switch (ptr.*) {
@@ -446,7 +463,6 @@ pub fn luaV_shift(x: i64, s: i64) i64 {
 
 /// Try to convert a lua.TValue to a numeric lua.TValue (integer or float).
 /// For strings, attempts number parsing. Returns null if not numeric.
-
 pub fn lua_arith(L: *lua.lua_State, op: i32) !void {
     if (op < 0 or op > 13) return;
     const is_unary = (op == lua.LUA_OPUNM or op == lua.LUA_OPBNOT);
@@ -576,7 +592,6 @@ pub fn lua_arith(L: *lua.lua_State, op: i32) !void {
         }
     }
 }
-
 
 pub fn lua_rawequal(L: *lua.lua_State, idx1: i32, idx2: i32) i32 {
     const a = lua.stackAt(L, idx1);
@@ -904,12 +919,10 @@ pub fn lua_pushlightuserdata(L: *lua.lua_State, p: ?*anyopaque) void {
     L.top += 1;
 }
 
-
 /// Deprecated alias for `lua.lua_closethread(L, null)`.
 pub inline fn lua_resetthread(L: *lua.lua_State) i32 {
     return lua.lua_closethread(L, null);
 }
-
 
 pub fn lua_pushthread(L: *lua.lua_State) i32 {
     L.stack[L.top] = lua.TValue{ .thread = L };
@@ -1572,7 +1585,6 @@ pub inline fn lua_pcall(L: *lua.lua_State, nargs: i32, nresults: i32, errfunc: i
 /// so the surrounding protected call reports it. Mirrors PUC-Rio's
 /// `luaG_runerror`. Returns `!lua.lua.TValue` so it can be used as a function's
 /// error return regardless of the function's success payload type.
-
 pub fn lua_load(L: *lua.lua_State, reader: lua.lua_Reader, dt: ?*anyopaque, chunkname: []const u8, mode: []const u8) i32 {
     lua.luaC_condGC(L);
     const initial_top = L.top;
@@ -1769,10 +1781,6 @@ pub fn lua_dump(L: *lua.lua_State, writer: lua.lua_Writer, data: ?*anyopaque, st
     return ldump.lua_dump(L, writer, data, strip);
 }
 
-
-
-
-
 pub fn lua_next(L: *lua.lua_State, idx: i32) anyerror!i32 {
     const t = lua.getTable(L, idx) orelse return 0;
     const key = lua.stackAt(L, -1);
@@ -1881,7 +1889,6 @@ pub fn lua_len(L: *lua.lua_State, idx: i32) !void {
     }
 }
 
-
 pub fn lua_atpanic(L: *lua.lua_State, panicf: ?lua.lua_CFunction) ?lua.lua_CFunction {
     const g = lua.G(L);
     const old = g.panic;
@@ -1963,7 +1970,6 @@ pub fn lua_closeslot(L: *lua.lua_State, idx: i32) void {
     lua.luaC_condGC(L);
 }
 
-
 pub fn luaL_dostring(L: *lua.lua_State, s: []const u8, name: []const u8) !i32 {
     var data = s;
     const status = lua.lua_load(L, luaL_dostringReader, @as(?*anyopaque, @ptrCast(&data)), name, "bt");
@@ -1985,7 +1991,6 @@ pub fn luaL_dostringReader(L: *lua.lua_State, data: ?*anyopaque, size: ?*usize) 
     if (size) |s| s.* = chunk.len;
     return chunk;
 }
-
 
 /// Deprecated H.5 alias for `lua_tolstring` (null len).
 pub fn lua_tostring(L: *lua.lua_State, idx: i32) ?[]const u8 {

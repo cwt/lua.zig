@@ -465,8 +465,42 @@ fn db_upvaluejoin(L: *lua.lua_State) !i32 {
 fn db_debug(L: *lua.lua_State) !i32 {
     const g = L.l_G orelse return 0;
     const io = g.io;
-    std.Io.File.stderr().writeStreamingAll(io, "lua_debug> compilation not supported in this port yet\n") catch {};
-    return 0;
+    var read_buf: [4096]u8 = undefined;
+    var file_reader = std.Io.File.Reader.init(std.Io.File.stdin(), io, &read_buf);
+    const reader = &file_reader.interface;
+    while (true) {
+        std.Io.File.stderr().writeStreamingAll(io, "lua_debug> ") catch {};
+        const line = reader.takeDelimiter('\n') catch |err| {
+            if (err == error.EndOfStream) return 0;
+            return err;
+        };
+        if (line == null) return 0;
+        const buf = line.?;
+        // Re-add newline to match reference fgets including '\n'
+        var chunk_buf = std.ArrayList(u8).empty;
+        defer chunk_buf.deinit(L.allocator);
+        try chunk_buf.appendSlice(L.allocator, buf);
+        try chunk_buf.append(L.allocator, '\n');
+        if (std.mem.eql(u8, chunk_buf.items, "cont\n")) return 0;
+        const load_status = lauxlib.luaL_loadbufferx(L, chunk_buf.items, "=(debug command)", "t");
+        if (load_status == lua.LUA_OK) {
+            const pc_status = lua.lua_pcallk(L, 0, 0, 0, 0, null) catch lua.LUA_ERRRUN;
+            if (pc_status != lua.LUA_OK) {
+                const msg = lua.lua_tolstring(L, -1, null);
+                if (msg) |m| {
+                    std.Io.File.stderr().writeStreamingAll(io, m) catch {};
+                }
+                std.Io.File.stderr().writeStreamingAll(io, "\n") catch {};
+            }
+        } else {
+            const msg = lua.lua_tolstring(L, -1, null);
+            if (msg) |m| {
+                std.Io.File.stderr().writeStreamingAll(io, m) catch {};
+            }
+            std.Io.File.stderr().writeStreamingAll(io, "\n") catch {};
+        }
+        lua.lua_settop(L, 0);
+    }
 }
 
 fn db_traceback(L: *lua.lua_State) !i32 {

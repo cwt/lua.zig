@@ -559,10 +559,17 @@ fn c_luaL_newstate() callconv(.c) ?*lua.lua_State {
 }
 
 fn c_lua_newstate(f: ?*const anyopaque, ud: ?*anyopaque, seed: c_uint) callconv(.c) ?*lua.lua_State {
+    // Zig's allocator model is capability-based and does not map cleanly onto
+    // the C `lua_Alloc` (osize-tracking) callback, so a non-default `f` is
+    // not honoured here; callers wanting a custom allocator should use the
+    // Zig API (`luaL_newstate` with a `std.mem.Allocator`). Like the reference
+    // (lstate.c:359 `g->seed = seed;`), the seed is assigned unconditionally:
+    // seed == 0 means deterministic (non-randomized) string hashing.
     _ = f;
     _ = ud;
-    _ = seed;
-    return c_luaL_newstate();
+    const L = c_luaL_newstate() orelse return null;
+    if (L.l_G) |g| g.seed = seed;
+    return L;
 }
 
 fn c_lua_getextraspace(L: *lua.lua_State) callconv(.c) ?*anyopaque {

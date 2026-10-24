@@ -115,6 +115,7 @@ pub const lua_tonumber = lapi.lua_tonumber;
 pub const lua_tointeger = lapi.lua_tointeger;
 pub const lua_toboolean = lapi.lua_toboolean;
 pub const lua_tolstring = lapi.lua_tolstring;
+pub const lua_numbertocstring = lapi.lua_numbertocstring;
 pub const lua_rawlen = lapi.lua_rawlen;
 pub const lua_tocfunction = lapi.lua_tocfunction;
 pub const lua_touserdata = lapi.lua_touserdata;

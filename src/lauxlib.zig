@@ -891,6 +891,16 @@ pub fn luaL_pushresultsize(L: *lua.lua_State, b: *luaL_Buffer, sz: usize) void {
 // Utility functions (continued)
 // ===================================================================
 
+pub fn luaL_addgsub(L: *lua.lua_State, b: *luaL_Buffer, s: []const u8, p: []const u8, r: []const u8) !void {
+    var rest = s;
+    while (std.mem.indexOf(u8, rest, p)) |idx| {
+        try luaL_addlstring(L, b, rest[0..idx]);
+        try luaL_addlstring(L, b, r);
+        rest = rest[idx + p.len ..];
+    }
+    try luaL_addlstring(L, b, rest);
+}
+
 pub fn luaL_gsub(L: *lua.lua_State, s: []const u8, p: []const u8, r: []const u8) ![]const u8 {
     var b = luaL_Buffer{};
     luaL_buffinit(L, &b);
